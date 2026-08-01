@@ -1,0 +1,7 @@
+{
+  "dependencies": {
+    "@vicons/ionicons5": "^0.13.0",
+    "naive-ui": "^2.44.1",
+    "vue-router": "^5.2.0"
+  }
+}

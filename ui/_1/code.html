@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Convertible Bond Panorama | QuantTerminal Pro</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Work+Sans:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "secondary-fixed-dim": "#c1c6d7",
+                        "secondary": "#585e6c",
+                        "on-tertiary": "#ffffff",
+                        "on-tertiary-fixed": "#2c1600",
+                        "on-error-container": "#93000a",
+                        "error": "#ba1a1a",
+                        "surface-container-high": "#e6e8ef",
+                        "on-secondary-fixed-variant": "#414754",
+                        "surface-dim": "#d8dae1",
+                        "surface-container-low": "#f2f3fa",
+                        "on-background": "#181c21",
+                        "on-tertiary-fixed-variant": "#693c00",
+                        "primary": "#005ea1",
+                        "surface-variant": "#e0e2e9",
+                        "background": "#f8f9ff",
+                        "on-primary-fixed": "#001d37",
+                        "primary-container": "#2178c3",
+                        "inverse-surface": "#2d3136",
+                        "on-secondary-fixed": "#161c27",
+                        "outline-variant": "#c0c7d3",
+                        "inverse-on-surface": "#eff0f7",
+                        "on-secondary-container": "#5e6473",
+                        "on-primary": "#ffffff",
+                        "surface-bright": "#f8f9ff",
+                        "on-primary-container": "#fdfcff",
+                        "surface-tint": "#0061a5",
+                        "primary-fixed": "#d2e4ff",
+                        "secondary-container": "#dde2f3",
+                        "outline": "#717782",
+                        "primary-fixed-dim": "#9fcaff",
+                        "error-container": "#ffdad6",
+                        "surface": "#f8f9ff",
+                        "surface-container-highest": "#e0e2e9",
+                        "on-surface": "#181c21",
+                        "on-tertiary-container": "#fffbff",
+                        "surface-container": "#eceef4",
+                        "surface-container-lowest": "#ffffff",
+                        "on-primary-fixed-variant": "#00497e",
+                        "tertiary-fixed-dim": "#ffb86e",
+                        "tertiary-container": "#a96400",
+                        "on-secondary": "#ffffff",
+                        "tertiary-fixed": "#ffdcbd",
+                        "inverse-primary": "#9fcaff",
+                        "secondary-fixed": "#dde2f3",
+                        "on-surface-variant": "#414751",
+                        "on-error": "#ffffff",
+                        "tertiary": "#864f00",
+                        "risk-orange": "#f97316",
+                        "opportunity-blue": "#005ea1",
+                        "success-green": "#16a34a"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "row-height-dense": "32px",
+                        "unit": "4px",
+                        "gutter": "12px",
+                        "sidebar-width": "240px",
+                        "container-padding": "16px",
+                        "header-height": "48px",
+                        "row-height-standard": "40px"
+                    },
+                    "fontFamily": {
+                        "display-lg": ["Work Sans"],
+                        "data-tabular": ["JetBrains Mono"],
+                        "label-caps": ["Work Sans"],
+                        "body-sm": ["Work Sans"],
+                        "body-md": ["Work Sans"],
+                        "headline-md": ["Work Sans"]
+                    },
+                    "fontSize": {
+                        "display-lg": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.02em", "fontWeight": "600"}],
+                        "data-tabular": ["13px", {"lineHeight": "16px", "fontWeight": "500"}],
+                        "label-caps": ["11px", {"lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "700"}],
+                        "body-sm": ["12px", {"lineHeight": "16px", "fontWeight": "400"}],
+                        "body-md": ["14px", {"lineHeight": "20px", "fontWeight": "400"}],
+                        "headline-md": ["18px", {"lineHeight": "24px", "fontWeight": "600"}]
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        body { font-family: 'Work Sans', sans-serif; background-color: #F5F7FA; overflow: hidden; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .custom-shadow-sm { box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+        .border-base { border: 1px solid #E2E8F0; }
+        .data-grid-header { background-color: #EBF0F5; }
+        .truncate-1 { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+    </style>
+</head>
+<body class="text-on-surface">
+<!-- TopNavBar -->
+<header class="fixed top-0 left-0 w-full z-50 flex items-center justify-between px-gutter h-[48px] bg-surface-container-lowest border-b border-outline-variant">
+<div class="flex items-center gap-4">
+<span class="font-headline-md text-headline-md font-bold text-primary">QuantTerminal Pro</span>
+<div class="relative flex items-center h-8 bg-white border border-outline-variant px-2 rounded w-64">
+<span class="material-symbols-outlined text-[18px] text-outline mr-2">search</span>
+<input class="bg-transparent border-none focus:ring-0 text-body-sm w-full outline-none" placeholder="Search convertible bonds..." type="text"/>
+</div>
+</div>
+<div class="flex items-center gap-3">
+<button class="material-symbols-outlined text-[20px] text-on-secondary-container hover:bg-surface-container-high p-1.5 transition-colors">schedule</button>
+<button class="material-symbols-outlined text-[20px] text-on-secondary-container hover:bg-surface-container-high p-1.5 transition-colors">autorenew</button>
+<button class="material-symbols-outlined text-[20px] text-on-secondary-container hover:bg-surface-container-high p-1.5 transition-colors">notifications</button>
+<button class="material-symbols-outlined text-[20px] text-on-secondary-container hover:bg-surface-container-high p-1.5 transition-colors">settings</button>
+</div>
+</header>
+<!-- SideNavBar -->
+<aside class="fixed left-0 top-[48px] w-[240px] h-[calc(100vh-48px)] flex flex-col py-4 border-r border-outline-variant bg-surface-container-low">
+<div class="px-4 mb-6">
+<h2 class="font-display-lg text-display-lg text-primary">QuantTerminal</h2>
+<p class="font-body-sm text-body-sm text-on-surface-variant opacity-70">Institutional Access</p>
+</div>
+<nav class="flex-1 space-y-1">
+<a class="flex items-center gap-3 px-4 py-2.5 text-on-surface-variant hover:bg-surface-container-high transition-all font-body-sm text-body-sm" href="#">
+<span class="material-symbols-outlined text-[20px]">dashboard</span>
+<span>Dashboard</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-2.5 text-on-surface-variant hover:bg-surface-container-high transition-all font-body-sm text-body-sm" href="#">
+<span class="material-symbols-outlined text-[20px]">analytics</span>
+<span>Index Analysis</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-2.5 text-on-surface-variant hover:bg-surface-container-high transition-all font-body-sm text-body-sm" href="#">
+<span class="material-symbols-outlined text-[20px]">account_balance</span>
+<span>LOF Funds</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-2.5 text-on-surface-variant hover:bg-surface-container-high transition-all font-body-sm text-body-sm" href="#">
+<span class="material-symbols-outlined text-[20px]">lock</span>
+<span>Closed Funds</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-2.5 bg-secondary-container text-primary font-bold border-r-2 border-primary font-body-sm text-body-sm" href="#">
+<span class="material-symbols-outlined text-[20px]">currency_exchange</span>
+<span>Convertible Bonds</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-2.5 text-on-surface-variant hover:bg-surface-container-high transition-all font-body-sm text-body-sm" href="#">
+<span class="material-symbols-outlined text-[20px]">star</span>
+<span>Portfolio Watchlist</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-2.5 text-on-surface-variant hover:bg-surface-container-high transition-all font-body-sm text-body-sm" href="#">
+<span class="material-symbols-outlined text-[20px]">history</span>
+<span>Alert History</span>
+</a>
+</nav>
+<div class="px-4 mt-auto border-t border-outline-variant pt-4">
+<div class="flex items-center gap-3 mb-2">
+<div class="w-8 h-8 rounded-full bg-primary-container flex items-center justify-center text-on-primary-container font-bold text-xs">JD</div>
+<div>
+<p class="font-label-caps text-label-caps text-on-surface">J. DORIAN</p>
+<p class="text-[10px] text-on-surface-variant">Senior Analyst</p>
+</div>
+</div>
+</div>
+</aside>
+<!-- Main Content -->
+<main class="ml-[240px] mt-[48px] p-gutter h-[calc(100vh-48px)] overflow-y-auto no-scrollbar bg-surface flex flex-col gap-gutter">
+<!-- Top Area: Filters & Market Stats -->
+<section class="grid grid-cols-12 gap-gutter">
+<!-- Advanced Filter Panel -->
+<div class="col-span-8 bg-surface-container-lowest p-3 border-base rounded flex items-center gap-6">
+<div class="flex-1 space-y-1">
+<label class="font-label-caps text-label-caps text-on-surface-variant">Price Range</label>
+<div class="flex items-center gap-2">
+<input class="w-full border-outline-variant border rounded px-2 h-7 text-body-sm outline-none focus:border-primary" placeholder="Min" type="text"/>
+<span class="text-on-surface-variant">—</span>
+<input class="w-full border-outline-variant border rounded px-2 h-7 text-body-sm outline-none focus:border-primary" placeholder="Max" type="text"/>
+</div>
+</div>
+<div class="flex-1 space-y-1">
+<label class="font-label-caps text-label-caps text-on-surface-variant">Premium Range</label>
+<div class="flex items-center gap-2">
+<input class="w-full border-outline-variant border rounded px-2 h-7 text-body-sm outline-none focus:border-primary" placeholder="0%" type="text"/>
+<span class="text-on-surface-variant">—</span>
+<input class="w-full border-outline-variant border rounded px-2 h-7 text-body-sm outline-none focus:border-primary" placeholder="100%" type="text"/>
+</div>
+</div>
+<div class="flex-1 space-y-1">
+<label class="font-label-caps text-label-caps text-on-surface-variant">Credit Rating</label>
+<select class="w-full border-outline-variant border rounded px-1 h-7 text-body-sm outline-none focus:border-primary">
+<option>All Ratings</option>
+<option>AAA</option>
+<option>AA+</option>
+<option>AA</option>
+</select>
+</div>
+<div class="flex-0 space-y-1">
+<label class="font-label-caps text-label-caps text-on-surface-variant opacity-0">Action</label>
+<button class="h-7 bg-primary text-on-primary px-4 rounded font-label-caps text-label-caps hover:opacity-90 transition-opacity">APPLY FILTER</button>
+</div>
+</div>
+<!-- Market Stats Bar -->
+<div class="col-span-4 bg-surface-container-lowest p-3 border-base rounded grid grid-cols-2 gap-4">
+<div class="border-r border-outline-variant pr-4">
+<p class="font-label-caps text-label-caps text-on-surface-variant">MEDIAN PRICE</p>
+<div class="flex items-baseline gap-2">
+<span class="font-display-lg text-display-lg text-on-surface">118.42</span>
+<span class="text-success-green text-[12px] font-bold">+0.12%</span>
+</div>
+</div>
+<div class="pl-2">
+<p class="font-label-caps text-label-caps text-on-surface-variant">MEDIAN PREMIUM</p>
+<div class="flex items-baseline gap-2">
+<span class="font-display-lg text-display-lg text-on-surface">35.1%</span>
+<span class="text-error text-[12px] font-bold">-2.4%</span>
+</div>
+</div>
+</div>
+</section>
+<!-- Main CB Table -->
+<section class="flex-1 min-h-[400px] bg-surface-container-lowest border-base rounded flex flex-col overflow-hidden">
+<div class="p-3 border-b border-outline-variant flex justify-between items-center bg-white">
+<h3 class="font-headline-md text-headline-md text-on-surface">Convertible Bond Panorama</h3>
+<div class="flex gap-2">
+<button class="p-1.5 rounded border border-outline-variant hover:bg-surface-container-high transition-colors">
+<span class="material-symbols-outlined text-[18px]">download</span>
+</button>
+<button class="p-1.5 rounded border border-outline-variant hover:bg-surface-container-high transition-colors">
+<span class="material-symbols-outlined text-[18px]">filter_list</span>
+</button>
+</div>
+</div>
+<div class="flex-1 overflow-auto">
+<table class="w-full text-left border-collapse min-w-[1200px]">
+<thead class="sticky top-0 z-10 data-grid-header border-b border-outline-variant">
+<tr class="h-8">
+<th class="px-4 font-label-caps text-label-caps text-on-surface-variant">CB NAME</th>
+<th class="px-2 font-label-caps text-label-caps text-on-surface-variant text-right">PRICE</th>
+<th class="px-2 font-label-caps text-label-caps text-on-surface-variant text-right">CHANGE %</th>
+<th class="px-2 font-label-caps text-label-caps text-on-surface-variant text-right">CONV. VALUE</th>
+<th class="px-2 font-label-caps text-label-caps text-on-surface-variant text-right">PREMIUM %</th>
+<th class="px-2 font-label-caps text-label-caps text-on-surface-variant text-right">YTM</th>
+<th class="px-2 font-label-caps text-label-caps text-on-surface-variant text-center">REMAINING</th>
+<th class="px-2 font-label-caps text-label-caps text-on-surface-variant text-center">RATING</th>
+<th class="px-2 font-label-caps text-label-caps text-on-surface-variant">REDEMPTION PROGRESS</th>
+<th class="px-4 font-label-caps text-label-caps text-on-surface-variant">POTENTIAL TAG</th>
+</tr>
+</thead>
+<tbody class="font-data-tabular text-data-tabular divide-y divide-outline-variant/30">
+<!-- Row 1 -->
+<tr class="h-row-height-dense hover:bg-surface-container-low transition-colors group">
+<td class="px-4 font-bold text-on-surface">Zhenghong CB 2</td>
+<td class="px-2 text-right">124.520</td>
+<td class="px-2 text-right text-success-green">+1.42%</td>
+<td class="px-2 text-right">112.40</td>
+<td class="px-2 text-right">10.78%</td>
+<td class="px-2 text-right text-error">-0.45%</td>
+<td class="px-2 text-center">3.4Y</td>
+<td class="px-2 text-center"><span class="px-1.5 py-0.5 bg-green-100 text-green-800 rounded-sm text-[10px]">AAA</span></td>
+<td class="px-2">
+<div class="w-full bg-surface-container-high h-1 rounded overflow-hidden">
+<div class="bg-risk-orange h-full" style="width: 85%"></div>
+</div>
+<div class="text-[9px] mt-1 text-on-surface-variant">12/15 days</div>
+</td>
+<td class="px-4">
+<span class="bg-blue-50 text-opportunity-blue border border-opportunity-blue/20 px-2 py-0.5 rounded-sm">Double Low</span>
+</td>
+</tr>
+<!-- Row 2 -->
+<tr class="h-row-height-dense hover:bg-surface-container-low transition-colors group">
+<td class="px-4 font-bold text-on-surface">Longwell CB</td>
+<td class="px-2 text-right">102.140</td>
+<td class="px-2 text-right text-error">-0.58%</td>
+<td class="px-2 text-right">98.50</td>
+<td class="px-2 text-right">3.69%</td>
+<td class="px-2 text-right text-success-green">+3.12%</td>
+<td class="px-2 text-center">1.2Y</td>
+<td class="px-2 text-center"><span class="px-1.5 py-0.5 bg-blue-100 text-blue-800 rounded-sm text-[10px]">AA+</span></td>
+<td class="px-2">
+<div class="w-full bg-surface-container-high h-1 rounded overflow-hidden">
+<div class="bg-opportunity-blue h-full" style="width: 20%"></div>
+</div>
+<div class="text-[9px] mt-1 text-on-surface-variant">2/15 days</div>
+</td>
+<td class="px-4">
+<span class="bg-gray-100 text-on-surface-variant border border-outline-variant/30 px-2 py-0.5 rounded-sm">Undervalued</span>
+</td>
+</tr>
+<!-- Row 3 -->
+<tr class="h-row-height-dense hover:bg-surface-container-low transition-colors group">
+<td class="px-4 font-bold text-on-surface">TechGrowth CB</td>
+<td class="px-2 text-right">245.800</td>
+<td class="px-2 text-right text-success-green">+4.15%</td>
+<td class="px-2 text-right">248.10</td>
+<td class="px-2 text-right">-0.92%</td>
+<td class="px-2 text-right text-error">-12.4%</td>
+<td class="px-2 text-center">0.5Y</td>
+<td class="px-2 text-center"><span class="px-1.5 py-0.5 bg-yellow-100 text-yellow-800 rounded-sm text-[10px]">AA</span></td>
+<td class="px-2">
+<div class="w-full bg-surface-container-high h-1 rounded overflow-hidden">
+<div class="bg-error h-full" style="width: 100%"></div>
+</div>
+<div class="text-[9px] mt-1 text-error font-bold">REDEEMED</div>
+</td>
+<td class="px-4">
+<span class="bg-red-50 text-error border border-error/20 px-2 py-0.5 rounded-sm">High Risk</span>
+</td>
+</tr>
+<!-- Row 4 -->
+<tr class="h-row-height-dense hover:bg-surface-container-low transition-colors group">
+<td class="px-4 font-bold text-on-surface">SolarEnergy CB</td>
+<td class="px-2 text-right">112.300</td>
+<td class="px-2 text-right text-success-green">+0.22%</td>
+<td class="px-2 text-right">105.40</td>
+<td class="px-2 text-right">6.54%</td>
+<td class="px-2 text-right text-success-green">+1.15%</td>
+<td class="px-2 text-center">4.8Y</td>
+<td class="px-2 text-center"><span class="px-1.5 py-0.5 bg-green-100 text-green-800 rounded-sm text-[10px]">AAA</span></td>
+<td class="px-2">
+<div class="w-full bg-surface-container-high h-1 rounded overflow-hidden">
+<div class="bg-opportunity-blue h-full" style="width: 45%"></div>
+</div>
+<div class="text-[9px] mt-1 text-on-surface-variant">7/15 days</div>
+</td>
+<td class="px-4">
+<span class="bg-blue-50 text-opportunity-blue border border-opportunity-blue/20 px-2 py-0.5 rounded-sm">Stable Yield</span>
+</td>
+</tr>
+<!-- Row 5 -->
+<tr class="h-row-height-dense hover:bg-surface-container-low transition-colors group">
+<td class="px-4 font-bold text-on-surface">AlphaLogic CB</td>
+<td class="px-2 text-right">98.420</td>
+<td class="px-2 text-right text-error">-1.12%</td>
+<td class="px-2 text-right">88.10</td>
+<td class="px-2 text-right">11.7%</td>
+<td class="px-2 text-right text-success-green">+4.58%</td>
+<td class="px-2 text-center">2.1Y</td>
+<td class="px-2 text-center"><span class="px-1.5 py-0.5 bg-blue-100 text-blue-800 rounded-sm text-[10px]">AA+</span></td>
+<td class="px-2">
+<div class="w-full bg-surface-container-high h-1 rounded overflow-hidden">
+<div class="bg-opportunity-blue h-full" style="width: 10%"></div>
+</div>
+<div class="text-[9px] mt-1 text-on-surface-variant">1/15 days</div>
+</td>
+<td class="px-4">
+<span class="bg-gray-100 text-on-surface-variant border border-outline-variant/30 px-2 py-0.5 rounded-sm">Mean Reversion</span>
+</td>
+</tr>
+<!-- Row 6 -->
+<tr class="h-row-height-dense hover:bg-surface-container-low transition-colors group">
+<td class="px-4 font-bold text-on-surface">HeavyInd CB</td>
+<td class="px-2 text-right">105.700</td>
+<td class="px-2 text-right text-success-green">+0.05%</td>
+<td class="px-2 text-right">101.20</td>
+<td class="px-2 text-right">4.44%</td>
+<td class="px-2 text-right text-success-green">+2.88%</td>
+<td class="px-2 text-center">5.9Y</td>
+<td class="px-2 text-center"><span class="px-1.5 py-0.5 bg-green-100 text-green-800 rounded-sm text-[10px]">AAA</span></td>
+<td class="px-2">
+<div class="w-full bg-surface-container-high h-1 rounded overflow-hidden">
+<div class="bg-opportunity-blue h-full" style="width: 30%"></div>
+</div>
+<div class="text-[9px] mt-1 text-on-surface-variant">4/15 days</div>
+</td>
+<td class="px-4">
+<span class="bg-blue-50 text-opportunity-blue border border-opportunity-blue/20 px-2 py-0.5 rounded-sm">Defensive</span>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- Pagination-like Footer -->
+<div class="p-2 bg-surface-container-lowest border-t border-outline-variant flex items-center justify-between">
+<span class="text-body-sm text-on-surface-variant">Showing 1-20 of 482 bonds</span>
+<div class="flex gap-1">
+<button class="px-2 py-1 border border-outline-variant rounded hover:bg-surface-container-high transition-colors text-body-sm">Prev</button>
+<button class="px-2 py-1 bg-primary text-on-primary rounded text-body-sm">1</button>
+<button class="px-2 py-1 border border-outline-variant rounded hover:bg-surface-container-high transition-colors text-body-sm">2</button>
+<button class="px-2 py-1 border border-outline-variant rounded hover:bg-surface-container-high transition-colors text-body-sm">3</button>
+<button class="px-2 py-1 border border-outline-variant rounded hover:bg-surface-container-high transition-colors text-body-sm">Next</button>
+</div>
+</div>
+</section>
+<!-- Sub-panels bottom row -->
+<section class="grid grid-cols-3 gap-gutter h-[220px]">
+<!-- List: Low Price & Low Premium -->
+<div class="bg-surface-container-lowest border-base rounded flex flex-col overflow-hidden">
+<div class="p-2 border-b border-outline-variant bg-[#EBF0F5]">
+<h4 class="font-label-caps text-label-caps text-primary">TOP RANK: DOUBLE LOW</h4>
+</div>
+<div class="flex-1 overflow-auto p-2">
+<ul class="space-y-2">
+<li class="flex justify-between items-center text-body-sm">
+<span class="text-on-surface font-medium">1. Zhenghong CB 2</span>
+<span class="font-data-tabular text-opportunity-blue">135.2 pts</span>
+</li>
+<li class="flex justify-between items-center text-body-sm">
+<span class="text-on-surface font-medium">2. Longwell CB</span>
+<span class="font-data-tabular text-opportunity-blue">105.8 pts</span>
+</li>
+<li class="flex justify-between items-center text-body-sm">
+<span class="text-on-surface font-medium">3. SolarEnergy CB</span>
+<span class="font-data-tabular text-opportunity-blue">112.4 pts</span>
+</li>
+<li class="flex justify-between items-center text-body-sm">
+<span class="text-on-surface font-medium">4. AlphaLogic CB</span>
+<span class="font-data-tabular text-opportunity-blue">109.9 pts</span>
+</li>
+</ul>
+</div>
+</div>
+<!-- List: High YTM -->
+<div class="bg-surface-container-lowest border-base rounded flex flex-col overflow-hidden">
+<div class="p-2 border-b border-outline-variant bg-[#EBF0F5]">
+<h4 class="font-label-caps text-label-caps text-primary">TOP RANK: HIGH YTM</h4>
+</div>
+<div class="flex-1 overflow-auto p-2">
+<ul class="space-y-2">
+<li class="flex justify-between items-center text-body-sm">
+<span class="text-on-surface font-medium">1. AlphaLogic CB</span>
+<span class="font-data-tabular text-success-green">4.58%</span>
+</li>
+<li class="flex justify-between items-center text-body-sm">
+<span class="text-on-surface font-medium">2. Longwell CB</span>
+<span class="font-data-tabular text-success-green">3.12%</span>
+</li>
+<li class="flex justify-between items-center text-body-sm">
+<span class="text-on-surface font-medium">3. HeavyInd CB</span>
+<span class="font-data-tabular text-success-green">2.88%</span>
+</li>
+<li class="flex justify-between items-center text-body-sm">
+<span class="text-on-surface font-medium">4. PetroChem CB</span>
+<span class="font-data-tabular text-success-green">2.45%</span>
+</li>
+</ul>
+</div>
+</div>
+<!-- List: Redemption/Repurchase Warnings -->
+<div class="bg-surface-container-lowest border-base rounded flex flex-col overflow-hidden">
+<div class="p-2 border-b border-outline-variant bg-[#EBF0F5]">
+<h4 class="font-label-caps text-label-caps text-error">REDEMPTION RISK WARNINGS</h4>
+</div>
+<div class="flex-1 overflow-auto p-2">
+<ul class="space-y-2">
+<li class="flex items-center gap-2 text-body-sm">
+<span class="material-symbols-outlined text-error text-[16px]">warning</span>
+<span class="text-on-surface font-medium">TechGrowth CB</span>
+<span class="ml-auto font-data-tabular text-error text-[11px]">85% Threshold</span>
+</li>
+<li class="flex items-center gap-2 text-body-sm opacity-70">
+<span class="material-symbols-outlined text-risk-orange text-[16px]">notifications</span>
+<span class="text-on-surface font-medium">Zhenghong CB 2</span>
+<span class="ml-auto font-data-tabular text-on-surface-variant text-[11px]">Near Term</span>
+</li>
+<li class="flex items-center gap-2 text-body-sm">
+<span class="material-symbols-outlined text-error text-[16px]">gavel</span>
+<span class="text-on-surface font-medium">MicroSys CB</span>
+<span class="ml-auto font-data-tabular text-error text-[11px]">Repurchase Active</span>
+</li>
+</ul>
+</div>
+</div>
+</section>
+</main>
+<script>
+        // Simple micro-interaction for table rows
+        document.querySelectorAll('tbody tr').forEach(row => {
+            row.addEventListener('click', () => {
+                // Flash effect
+                row.classList.add('bg-primary-container/20');
+                setTimeout(() => {
+                    row.classList.remove('bg-primary-container/20');
+                }, 300);
+            });
+        });
+
+        // Theme Toggle Logic (Placeholder for full implementation)
+        function toggleDarkMode() {
+            document.documentElement.classList.toggle('dark');
+        }
+    </script>
+</body></html>

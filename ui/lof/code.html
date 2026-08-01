@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>QuantTerminal Pro | LOF Arbitrage Analysis</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Work+Sans:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind Configuration -->
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "secondary-fixed-dim": "#c1c6d7",
+                    "secondary": "#585e6c",
+                    "on-tertiary": "#ffffff",
+                    "on-tertiary-fixed": "#2c1600",
+                    "on-error-container": "#93000a",
+                    "error": "#ba1a1a",
+                    "surface-container-high": "#e6e8ef",
+                    "on-secondary-fixed-variant": "#414754",
+                    "surface-dim": "#d8dae1",
+                    "surface-container-low": "#f2f3fa",
+                    "on-background": "#181c21",
+                    "on-tertiary-fixed-variant": "#693c00",
+                    "primary": "#005ea1",
+                    "surface-variant": "#e0e2e9",
+                    "background": "#f8f9ff",
+                    "on-primary-fixed": "#001d37",
+                    "primary-container": "#2178c3",
+                    "inverse-surface": "#2d3136",
+                    "on-secondary-fixed": "#161c27",
+                    "outline-variant": "#c0c7d3",
+                    "inverse-on-surface": "#eff0f7",
+                    "on-secondary-container": "#5e6473",
+                    "on-primary": "#ffffff",
+                    "surface-bright": "#f8f9ff",
+                    "on-primary-container": "#fdfcff",
+                    "surface-tint": "#0061a5",
+                    "primary-fixed": "#d2e4ff",
+                    "secondary-container": "#dde2f3",
+                    "outline": "#717782",
+                    "primary-fixed-dim": "#9fcaff",
+                    "error-container": "#ffdad6",
+                    "surface": "#f8f9ff",
+                    "surface-container-highest": "#e0e2e9",
+                    "on-surface": "#181c21",
+                    "on-tertiary-container": "#fffbff",
+                    "surface-container": "#eceef4",
+                    "surface-container-lowest": "#ffffff",
+                    "on-primary-fixed-variant": "#00497e",
+                    "tertiary-fixed-dim": "#ffb86e",
+                    "tertiary-container": "#a96400",
+                    "on-secondary": "#ffffff",
+                    "tertiary-fixed": "#ffdcbd",
+                    "inverse-primary": "#9fcaff",
+                    "secondary-fixed": "#dde2f3",
+                    "on-surface-variant": "#414751",
+                    "on-error": "#ffffff",
+                    "tertiary": "#864f00",
+                    "risk-orange": "#E53E3E", /* Adjusted for prompt requirement */
+                    "opportunity-blue": "#3182CE" /* Adjusted for prompt requirement */
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.25rem",
+                    "lg": "0.5rem",
+                    "xl": "0.75rem",
+                    "full": "9999px"
+            },
+            "spacing": {
+                    "row-height-dense": "32px",
+                    "unit": "4px",
+                    "gutter": "12px",
+                    "sidebar-width": "240px",
+                    "container-padding": "16px",
+                    "header-height": "48px",
+                    "row-height-standard": "40px"
+            },
+            "fontFamily": {
+                    "display-lg": ["Work Sans"],
+                    "data-tabular": ["JetBrains Mono"],
+                    "label-caps": ["Work Sans"],
+                    "body-sm": ["Work Sans"],
+                    "body-md": ["Work Sans"],
+                    "headline-md": ["Work Sans"]
+            },
+            "fontSize": {
+                    "display-lg": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.02em", "fontWeight": "600"}],
+                    "data-tabular": ["13px", {"lineHeight": "16px", "fontWeight": "500"}],
+                    "label-caps": ["11px", {"lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "700"}],
+                    "body-sm": ["12px", {"lineHeight": "16px", "fontWeight": "400"}],
+                    "body-md": ["14px", {"lineHeight": "20px", "fontWeight": "400"}],
+                    "headline-md": ["18px", {"lineHeight": "24px", "fontWeight": "600"}]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+        body {
+            background-color: #F5F7FA;
+            font-family: 'Work Sans', sans-serif;
+            overflow: hidden;
+        }
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+            vertical-align: middle;
+            font-size: 18px;
+        }
+        /* High density table custom scroll */
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 4px;
+            height: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #E2E8F0;
+            border-radius: 10px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #CBD5E1;
+        }
+    </style>
+</head>
+<body class="text-on-surface">
+<!-- TopNavBar -->
+<header class="fixed top-0 left-0 w-full z-50 flex items-center justify-between px-gutter h-header-height bg-surface-container-lowest border-b border-outline-variant">
+<div class="flex items-center gap-4">
+<span class="font-headline-md text-headline-md font-bold text-primary">QuantTerminal Pro</span>
+<div class="hidden md:flex ml-8 items-center bg-surface-container h-8 px-3 rounded border border-outline-variant">
+<span class="material-symbols-outlined text-on-surface-variant mr-2">search</span>
+<input class="bg-transparent border-none focus:ring-0 text-body-sm font-body-sm w-64 placeholder-on-surface-variant" placeholder="Search Fund Symbol/Name..." type="text"/>
+</div>
+</div>
+<div class="flex items-center gap-2">
+<button class="p-2 hover:bg-surface-container-high transition-colors rounded cursor-pointer">
+<span class="material-symbols-outlined text-on-secondary-container">schedule</span>
+</button>
+<button class="p-2 hover:bg-surface-container-high transition-colors rounded cursor-pointer">
+<span class="material-symbols-outlined text-on-secondary-container">autorenew</span>
+</button>
+<button class="p-2 hover:bg-surface-container-high transition-colors rounded cursor-pointer">
+<span class="material-symbols-outlined text-on-secondary-container">notifications</span>
+</button>
+<button class="p-2 hover:bg-surface-container-high transition-colors rounded cursor-pointer">
+<span class="material-symbols-outlined text-on-secondary-container">settings</span>
+</button>
+<div class="w-8 h-8 rounded-full bg-secondary-container flex items-center justify-center ml-2 border border-outline-variant">
+<span class="text-xs font-bold text-primary">JD</span>
+</div>
+</div>
+</header>
+<!-- SideNavBar -->
+<aside class="fixed left-0 top-[48px] w-[240px] h-[calc(100vh-48px)] flex flex-col py-4 border-r border-outline-variant bg-surface-container-low">
+<nav class="flex-1 space-y-1">
+<a class="flex items-center px-4 py-2 text-on-surface-variant hover:bg-surface-container-high transition-colors group" href="#">
+<span class="material-symbols-outlined mr-3">dashboard</span>
+<span class="font-label-caps text-label-caps">Dashboard</span>
+</a>
+<a class="flex items-center px-4 py-2 text-on-surface-variant hover:bg-surface-container-high transition-colors group" href="#">
+<span class="material-symbols-outlined mr-3">analytics</span>
+<span class="font-label-caps text-label-caps">Index Analysis</span>
+</a>
+<a class="flex items-center px-4 py-2 bg-secondary-container text-primary font-bold border-r-2 border-primary group" href="#">
+<span class="material-symbols-outlined mr-3">account_balance</span>
+<span class="font-label-caps text-label-caps">LOF Funds</span>
+</a>
+<a class="flex items-center px-4 py-2 text-on-surface-variant hover:bg-surface-container-high transition-colors group" href="#">
+<span class="material-symbols-outlined mr-3">lock</span>
+<span class="font-label-caps text-label-caps">Closed Funds</span>
+</a>
+<a class="flex items-center px-4 py-2 text-on-surface-variant hover:bg-surface-container-high transition-colors group" href="#">
+<span class="material-symbols-outlined mr-3">currency_exchange</span>
+<span class="font-label-caps text-label-caps">Convertible Bonds</span>
+</a>
+<a class="flex items-center px-4 py-2 text-on-surface-variant hover:bg-surface-container-high transition-colors group" href="#">
+<span class="material-symbols-outlined mr-3">star</span>
+<span class="font-label-caps text-label-caps">Portfolio Watchlist</span>
+</a>
+<a class="flex items-center px-4 py-2 text-on-surface-variant hover:bg-surface-container-high transition-colors group" href="#">
+<span class="material-symbols-outlined mr-3">history</span>
+<span class="font-label-caps text-label-caps">Alert History</span>
+</a>
+</nav>
+<div class="px-4 py-4 mt-auto border-t border-outline-variant">
+<div class="flex items-center gap-3">
+<div class="flex flex-col">
+<span class="font-label-caps text-label-caps text-primary">PRO ACCOUNT</span>
+<span class="font-body-sm text-body-sm text-on-surface-variant">Market Connectivity: Live</span>
+</div>
+</div>
+</div>
+</aside>
+<!-- Main Content -->
+<main class="ml-[240px] mt-[48px] h-[calc(100vh-48px)] p-gutter overflow-hidden flex flex-col gap-gutter">
+<!-- Top Filter Bar -->
+<div class="bg-surface-container-lowest border border-outline-variant p-2 flex items-center justify-between shadow-sm">
+<div class="flex items-center gap-4">
+<div class="flex items-center gap-2">
+<span class="font-label-caps text-label-caps text-on-surface-variant">FUND TYPE:</span>
+<select class="bg-surface-container-low border border-outline-variant text-body-sm font-body-sm px-2 py-1 focus:ring-1 focus:ring-primary outline-none">
+<option>All LOF Funds</option>
+<option>Equity LOF</option>
+<option>QDII LOF</option>
+<option>Bond LOF</option>
+</select>
+</div>
+<div class="flex items-center gap-2">
+<span class="font-label-caps text-label-caps text-on-surface-variant">SORT BY:</span>
+<div class="flex bg-surface-container-low border border-outline-variant p-0.5 rounded">
+<button class="px-3 py-1 bg-white text-primary font-bold shadow-sm rounded text-body-sm">Max Premium</button>
+<button class="px-3 py-1 text-on-surface-variant hover:bg-surface-container-high text-body-sm">Max Discount</button>
+</div>
+</div>
+<div class="h-6 w-[1px] bg-outline-variant"></div>
+<div class="flex items-center gap-2">
+<label class="flex items-center gap-2 cursor-pointer">
+<input checked="" class="rounded border-outline-variant text-primary focus:ring-primary" type="checkbox"/>
+<span class="text-body-sm font-body-sm">Exclude Suspended</span>
+</label>
+</div>
+</div>
+<div class="flex items-center gap-3">
+<span class="text-body-sm font-data-tabular text-on-surface-variant">Last Update: <span class="text-primary font-bold">14:22:05</span></span>
+<button class="flex items-center gap-1 bg-primary text-on-primary px-3 py-1 font-label-caps text-label-caps rounded hover:opacity-90 active:opacity-80 transition-opacity">
+<span class="material-symbols-outlined" style="font-size: 14px;">download</span>
+                    EXPORT CSV
+                </button>
+</div>
+</div>
+<!-- Main Data Table Area -->
+<div class="flex-1 bg-surface-container-lowest border border-outline-variant flex flex-col overflow-hidden shadow-sm">
+<div class="overflow-x-auto custom-scrollbar flex-1">
+<table class="w-full text-left border-collapse table-fixed">
+<thead class="sticky top-0 z-10">
+<tr class="bg-surface-container-low h-row-height-dense border-b border-outline-variant">
+<th class="w-12 px-3 font-label-caps text-label-caps text-on-surface-variant">#</th>
+<th class="w-48 px-3 font-label-caps text-label-caps text-on-surface-variant">Fund Name / Symbol</th>
+<th class="w-24 px-3 font-label-caps text-label-caps text-on-surface-variant text-right">Price</th>
+<th class="w-32 px-3 font-label-caps text-label-caps text-on-surface-variant text-right">IOPV (Est)</th>
+<th class="w-32 px-3 font-label-caps text-label-caps text-on-surface-variant text-right">Rate %</th>
+<th class="w-32 px-3 font-label-caps text-label-caps text-on-surface-variant text-right">1Y %tile</th>
+<th class="w-32 px-3 font-label-caps text-label-caps text-on-surface-variant text-right">Turnover</th>
+<th class="w-32 px-3 font-label-caps text-label-caps text-on-surface-variant text-right">Sub Threshold</th>
+<th class="w-32 px-3 font-label-caps text-label-caps text-on-surface-variant text-right">Est. Profit</th>
+<th class="w-40 px-3 font-label-caps text-label-caps text-on-surface-variant">Status / Tags</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-outline-variant">
+<!-- Row 1: High Premium Case -->
+<tr class="h-row-height-standard hover:bg-surface-container-low transition-colors">
+<td class="px-3 font-data-tabular text-body-sm text-on-surface-variant">01</td>
+<td class="px-3">
+<div class="flex flex-col">
+<span class="font-body-md text-body-md font-bold text-on-surface truncate">E-Fund Crude Oil (QDII)</span>
+<span class="font-data-tabular text-body-sm text-on-surface-variant">161129.SZ</span>
+</div>
+</td>
+<td class="px-3 text-right font-data-tabular text-body-md">1.244</td>
+<td class="px-3 text-right font-data-tabular text-body-md">1.185</td>
+<td class="px-3 text-right font-data-tabular text-body-md font-bold text-risk-orange">+4.98%</td>
+<td class="px-3 text-right">
+<div class="w-full bg-surface-container h-1 rounded-full relative">
+<div class="absolute top-0 right-0 h-full bg-risk-orange w-[98%] rounded-full"></div>
+</div>
+<span class="font-data-tabular text-[10px] text-on-surface-variant">98.2%</span>
+</td>
+<td class="px-3 text-right font-data-tabular text-body-sm text-on-surface-variant">12.5M</td>
+<td class="px-3 text-right font-data-tabular text-body-sm">10k / Day</td>
+<td class="px-3 text-right font-data-tabular text-body-md text-risk-orange font-bold">¥498.00</td>
+<td class="px-3">
+<div class="flex flex-wrap gap-1">
+<span class="px-1.5 py-0.5 bg-orange-50 text-risk-orange border border-risk-orange/20 rounded-sm font-label-caps text-[9px] font-bold">HIGH PREMIUM</span>
+<span class="px-1.5 py-0.5 bg-surface-container-high text-on-surface-variant border border-outline-variant rounded-sm font-label-caps text-[9px]">QDII</span>
+</div>
+</td>
+</tr>
+<!-- Row 2: Discount Case -->
+<tr class="h-row-height-standard hover:bg-surface-container-low transition-colors">
+<td class="px-3 font-data-tabular text-body-sm text-on-surface-variant">02</td>
+<td class="px-3">
+<div class="flex flex-col">
+<span class="font-body-md text-body-md font-bold text-on-surface truncate">China-AMC CSI 300 LOF</span>
+<span class="font-data-tabular text-body-sm text-on-surface-variant">160311.SH</span>
+</div>
+</td>
+<td class="px-3 text-right font-data-tabular text-body-md">3.412</td>
+<td class="px-3 text-right font-data-tabular text-body-md">3.485</td>
+<td class="px-3 text-right font-data-tabular text-body-md font-bold text-opportunity-blue">-2.10%</td>
+<td class="px-3 text-right">
+<div class="w-full bg-surface-container h-1 rounded-full relative">
+<div class="absolute top-0 left-0 h-full bg-opportunity-blue w-[12%] rounded-full"></div>
+</div>
+<span class="font-data-tabular text-[10px] text-on-surface-variant">12.4%</span>
+</td>
+<td class="px-3 text-right font-data-tabular text-body-sm text-on-surface-variant">8.2M</td>
+<td class="px-3 text-right font-data-tabular text-body-sm">No Limit</td>
+<td class="px-3 text-right font-data-tabular text-body-md text-opportunity-blue font-bold">¥210.00</td>
+<td class="px-3">
+<div class="flex flex-wrap gap-1">
+<span class="px-1.5 py-0.5 bg-blue-50 text-opportunity-blue border border-opportunity-blue/20 rounded-sm font-label-caps text-[9px] font-bold">HIGH DISCOUNT</span>
+<span class="px-1.5 py-0.5 bg-surface-container-high text-on-surface-variant border border-outline-variant rounded-sm font-label-caps text-[9px]">T+0</span>
+</div>
+</td>
+</tr>
+<!-- Row 3: Moderate Premium -->
+<tr class="h-row-height-standard hover:bg-surface-container-low transition-colors">
+<td class="px-3 font-data-tabular text-body-sm text-on-surface-variant">03</td>
+<td class="px-3">
+<div class="flex flex-col">
+<span class="font-body-md text-body-md font-bold text-on-surface truncate">Southern Bio-Medicine</span>
+<span class="font-data-tabular text-body-sm text-on-surface-variant">160133.SZ</span>
+</div>
+</td>
+<td class="px-3 text-right font-data-tabular text-body-md">0.884</td>
+<td class="px-3 text-right font-data-tabular text-body-md">0.868</td>
+<td class="px-3 text-right font-data-tabular text-body-md text-risk-orange">+1.82%</td>
+<td class="px-3 text-right">
+<div class="w-full bg-surface-container h-1 rounded-full relative">
+<div class="absolute top-0 left-0 h-full bg-risk-orange w-[82%] rounded-full" style="left: 10%;"></div>
+</div>
+<span class="font-data-tabular text-[10px] text-on-surface-variant">82.1%</span>
+</td>
+<td class="px-3 text-right font-data-tabular text-body-sm text-on-surface-variant">4.1M</td>
+<td class="px-3 text-right font-data-tabular text-body-sm">500k / Day</td>
+<td class="px-3 text-right font-data-tabular text-body-md text-risk-orange font-bold">¥182.00</td>
+<td class="px-3">
+<div class="flex flex-wrap gap-1">
+<span class="px-1.5 py-0.5 bg-surface-container-high text-on-surface-variant border border-outline-variant rounded-sm font-label-caps text-[9px]">Equity</span>
+</div>
+</td>
+</tr>
+<!-- Duplicate for density visualization -->
+<tr class="h-row-height-standard hover:bg-surface-container-low transition-colors">
+<td class="px-3 font-data-tabular text-body-sm text-on-surface-variant">04</td>
+<td class="px-3">
+<div class="flex flex-col">
+<span class="font-body-md text-body-md font-bold text-on-surface truncate">Fullgoal Nasdaq 100</span>
+<span class="font-data-tabular text-body-sm text-on-surface-variant">161023.SZ</span>
+</div>
+</td>
+<td class="px-3 text-right font-data-tabular text-body-md">1.542</td>
+<td class="px-3 text-right font-data-tabular text-body-md">1.520</td>
+<td class="px-3 text-right font-data-tabular text-body-md text-risk-orange">+1.45%</td>
+<td class="px-3 text-right">
+<div class="w-full bg-surface-container h-1 rounded-full relative">
+<div class="absolute top-0 right-0 h-full bg-risk-orange w-[74%] rounded-full"></div>
+</div>
+<span class="font-data-tabular text-[10px] text-on-surface-variant">74.5%</span>
+</td>
+<td class="px-3 text-right font-data-tabular text-body-sm text-on-surface-variant">25.3M</td>
+<td class="px-3 text-right font-data-tabular text-body-sm">Limited</td>
+<td class="px-3 text-right font-data-tabular text-body-md text-risk-orange font-bold">¥145.00</td>
+<td class="px-3">
+<div class="flex flex-wrap gap-1">
+<span class="px-1.5 py-0.5 bg-surface-container-high text-on-surface-variant border border-outline-variant rounded-sm font-label-caps text-[9px]">QDII</span>
+</div>
+</td>
+</tr>
+<tr class="h-row-height-standard hover:bg-surface-container-low transition-colors">
+<td class="px-3 font-data-tabular text-body-sm text-on-surface-variant">05</td>
+<td class="px-3">
+<div class="flex flex-col">
+<span class="font-body-md text-body-md font-bold text-on-surface truncate">Harvest Overseas China</span>
+<span class="font-data-tabular text-body-sm text-on-surface-variant">160717.SZ</span>
+</div>
+</td>
+<td class="px-3 text-right font-data-tabular text-body-md">0.954</td>
+<td class="px-3 text-right font-data-tabular text-body-md">0.971</td>
+<td class="px-3 text-right font-data-tabular text-body-md text-opportunity-blue">-1.75%</td>
+<td class="px-3 text-right">
+<div class="w-full bg-surface-container h-1 rounded-full relative">
+<div class="absolute top-0 left-0 h-full bg-opportunity-blue w-[21%] rounded-full"></div>
+</div>
+<span class="font-data-tabular text-[10px] text-on-surface-variant">21.8%</span>
+</td>
+<td class="px-3 text-right font-data-tabular text-body-sm text-on-surface-variant">1.2M</td>
+<td class="px-3 text-right font-data-tabular text-body-sm">No Limit</td>
+<td class="px-3 text-right font-data-tabular text-body-md text-opportunity-blue font-bold">¥175.00</td>
+<td class="px-3">
+<div class="flex flex-wrap gap-1">
+<span class="px-1.5 py-0.5 bg-blue-50 text-opportunity-blue border border-opportunity-blue/20 rounded-sm font-label-caps text-[9px] font-bold">HIGH DISCOUNT</span>
+</div>
+</td>
+</tr>
+<!-- Fill more rows for density -->
+<tr class="h-row-height-standard hover:bg-surface-container-low transition-colors">
+<td class="px-3 font-data-tabular text-body-sm text-on-surface-variant">06</td>
+<td class="px-3">
+<div class="flex flex-col">
+<span class="font-body-md text-body-md font-bold text-on-surface truncate">GF Tech Innovation</span>
+<span class="font-data-tabular text-body-sm text-on-surface-variant">162703.SZ</span>
+</div>
+</td>
+<td class="px-3 text-right font-data-tabular text-body-md">2.115</td>
+<td class="px-3 text-right font-data-tabular text-body-md">2.110</td>
+<td class="px-3 text-right font-data-tabular text-body-md text-risk-orange">+0.24%</td>
+<td class="px-3 text-right">
+<div class="w-full bg-surface-container h-1 rounded-full relative">
+<div class="absolute top-0 left-0 h-full bg-gray-400 w-[55%] rounded-full"></div>
+</div>
+<span class="font-data-tabular text-[10px] text-on-surface-variant">55.0%</span>
+</td>
+<td class="px-3 text-right font-data-tabular text-body-sm text-on-surface-variant">5.7M</td>
+<td class="px-3 text-right font-data-tabular text-body-sm">1M / Day</td>
+<td class="px-3 text-right font-data-tabular text-body-md text-risk-orange font-bold">¥24.00</td>
+<td class="px-3">
+<div class="flex flex-wrap gap-1">
+<span class="px-1.5 py-0.5 bg-surface-container-high text-on-surface-variant border border-outline-variant rounded-sm font-label-caps text-[9px]">Equity</span>
+</div>
+</td>
+</tr>
+<tr class="h-row-height-standard hover:bg-surface-container-low transition-colors">
+<td class="px-3 font-data-tabular text-body-sm text-on-surface-variant">07</td>
+<td class="px-3">
+<div class="flex flex-col">
+<span class="font-body-md text-body-md font-bold text-on-surface truncate">ICBC Reit Infrastructure</span>
+<span class="font-data-tabular text-body-sm text-on-surface-variant">164801.SZ</span>
+</div>
+</td>
+<td class="px-3 text-right font-data-tabular text-body-md">0.742</td>
+<td class="px-3 text-right font-data-tabular text-body-md">0.739</td>
+<td class="px-3 text-right font-data-tabular text-body-md text-risk-orange">+0.41%</td>
+<td class="px-3 text-right">
+<div class="w-full bg-surface-container h-1 rounded-full relative">
+<div class="absolute top-0 left-0 h-full bg-gray-400 w-[62%] rounded-full"></div>
+</div>
+<span class="font-data-tabular text-[10px] text-on-surface-variant">62.3%</span>
+</td>
+<td class="px-3 text-right font-data-tabular text-body-sm text-on-surface-variant">0.8M</td>
+<td class="px-3 text-right font-data-tabular text-body-sm">No Limit</td>
+<td class="px-3 text-right font-data-tabular text-body-md text-risk-orange font-bold">¥41.00</td>
+<td class="px-3">
+<div class="flex flex-wrap gap-1">
+<span class="px-1.5 py-0.5 bg-surface-container-high text-on-surface-variant border border-outline-variant rounded-sm font-label-caps text-[9px]">Bond</span>
+</div>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- Bottom Table Metadata -->
+<div class="h-8 bg-surface-container-low flex items-center justify-between px-3 border-t border-outline-variant">
+<div class="flex items-center gap-4">
+<span class="font-label-caps text-[10px] text-on-surface-variant">TOTAL RECORDS: 124</span>
+<span class="font-label-caps text-[10px] text-on-surface-variant">SHOWING: 1-50</span>
+</div>
+<div class="flex items-center gap-2">
+<button class="p-1 hover:bg-surface-container-high rounded cursor-pointer">
+<span class="material-symbols-outlined" style="font-size: 16px;">chevron_left</span>
+</button>
+<span class="font-data-tabular text-[10px] font-bold">PAGE 1 / 3</span>
+<button class="p-1 hover:bg-surface-container-high rounded cursor-pointer">
+<span class="material-symbols-outlined" style="font-size: 16px;">chevron_right</span>
+</button>
+</div>
+</div>
+</div>
+<!-- Secondary Information Panel (Bento Style) -->
+<div class="h-[180px] grid grid-cols-12 gap-gutter">
+<!-- Arbitrage Stats -->
+<div class="col-span-3 bg-surface-container-lowest border border-outline-variant p-3 flex flex-col justify-between">
+<div>
+<span class="font-label-caps text-label-caps text-on-surface-variant">MARKET SENTIMENT</span>
+<div class="mt-2 flex items-end gap-2">
+<span class="font-display-lg text-display-lg text-risk-orange">+12.4%</span>
+<span class="text-body-sm font-body-sm text-on-surface-variant mb-1">Avg. Top 5 Prem</span>
+</div>
+</div>
+<div class="flex gap-2 mt-2">
+<div class="flex-1 h-1 bg-risk-orange/20 rounded-full overflow-hidden">
+<div class="h-full bg-risk-orange w-3/4"></div>
+</div>
+</div>
+<span class="font-body-sm text-body-sm text-on-surface-variant mt-1 italic">Highest premium pressure in 30 days.</span>
+</div>
+<!-- Opportunity Map (Placeholders) -->
+<div class="col-span-5 bg-surface-container-lowest border border-outline-variant p-3">
+<span class="font-label-caps text-label-caps text-on-surface-variant">VOLUME VS. ARBITRAGE SPREAD</span>
+<div class="mt-2 h-24 w-full flex items-end gap-1">
+<div class="flex-1 bg-risk-orange/40 h-[60%] border-t-2 border-risk-orange"></div>
+<div class="flex-1 bg-risk-orange/40 h-[45%] border-t-2 border-risk-orange"></div>
+<div class="flex-1 bg-risk-orange/40 h-[80%] border-t-2 border-risk-orange"></div>
+<div class="flex-1 bg-opportunity-blue/40 h-[30%] border-t-2 border-opportunity-blue"></div>
+<div class="flex-1 bg-opportunity-blue/40 h-[20%] border-t-2 border-opportunity-blue"></div>
+<div class="flex-1 bg-risk-orange/40 h-[90%] border-t-2 border-risk-orange"></div>
+<div class="flex-1 bg-risk-orange/40 h-[50%] border-t-2 border-risk-orange"></div>
+<div class="flex-1 bg-opportunity-blue/40 h-[40%] border-t-2 border-opportunity-blue"></div>
+</div>
+<div class="flex justify-between mt-1 px-1">
+<span class="font-label-caps text-[9px] text-on-surface-variant">HIGH VOLUME</span>
+<span class="font-label-caps text-[9px] text-on-surface-variant">LOW VOLUME</span>
+</div>
+</div>
+<!-- System Alerts -->
+<div class="col-span-4 bg-surface-container-lowest border border-outline-variant p-3 overflow-hidden">
+<span class="font-label-caps text-label-caps text-on-surface-variant">REAL-TIME SIGNALS</span>
+<div class="mt-2 space-y-2">
+<div class="flex items-center gap-2">
+<div class="w-1.5 h-1.5 rounded-full bg-risk-orange animate-pulse"></div>
+<span class="font-body-sm text-body-sm truncate">161129.SZ Premium exceeded 5% threshold.</span>
+</div>
+<div class="flex items-center gap-2">
+<div class="w-1.5 h-1.5 rounded-full bg-opportunity-blue"></div>
+<span class="font-body-sm text-body-sm truncate">160311.SH New arbitrage entry detected.</span>
+</div>
+<div class="flex items-center gap-2">
+<div class="w-1.5 h-1.5 rounded-full bg-on-surface-variant/30"></div>
+<span class="font-body-sm text-body-sm truncate">QDII Quota update: E-Fund remains limited.</span>
+</div>
+</div>
+</div>
+</div>
+</main>
+<script>
+        // Micro-interaction for table rows
+        document.querySelectorAll('tr').forEach(row => {
+            row.addEventListener('click', () => {
+                // Focus styling for selected row
+                document.querySelectorAll('tr').forEach(r => r.classList.remove('bg-secondary-container/30', 'border-primary/20'));
+                if (row.querySelector('td')) {
+                    row.classList.add('bg-secondary-container/30');
+                }
+            });
+        });
+    </script>
+</body></html>

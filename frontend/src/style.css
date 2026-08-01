@@ -1,0 +1,334 @@
+/* ============================================================
+   QuantTerminal Pro — Global Styles
+   ============================================================ */
+
+:root {
+  /* Background colors */
+  --bg-page: #f5f7fa;
+  --bg-card: #ffffff;
+  --bg-header: #ffffff;
+  --bg-sidebar: #f2f3fa;
+  --bg-hover: #f2f3fa;
+  --bg-active: #dde2f3;
+  --bg-subtle: #ebf0f5;
+  --bg-overlay: #f8f9ff;
+
+  /* Text colors */
+  --text-primary: #181c21;
+  --text-secondary: #414751;
+  --text-muted: #717782;
+  --text-placeholder: #c1c6d7;
+  --text-brand: #005ea1;
+
+  /* Border colors */
+  --border-default: #e2e8f0;
+  --border-hover: #c1c6d7;
+  --border-subtle: rgba(226, 232, 240, 0.3);
+
+  /* Accent colors (consistent across themes) */
+  --color-primary: #005ea1;
+  --color-primary-hover: #2178c3;
+  --color-primary-pressed: #004880;
+  --color-success: #16a34a;
+  --color-warning: #f97316;
+  --color-danger: #ba1a1a;
+
+  /* Tag backgrounds */
+  --tag-blue-bg: #d2e4ff;
+  --tag-blue-text: #005ea1;
+  --tag-red-bg: #ffdad6;
+  --tag-red-text: #ba1a1a;
+  --tag-gray-bg: #e0e2e9;
+  --tag-gray-text: #717782;
+  --tag-green-bg: #dcfce7;
+  --tag-green-text: #166534;
+  --tag-orange-bg: #fff7ed;
+  --tag-orange-text: #f97316;
+
+  /* Scrollbar */
+  --scrollbar-thumb: #c1c6d7;
+  --scrollbar-thumb-hover: #9ca3af;
+}
+
+/* Dark theme overrides */
+.dark {
+  --bg-page: #0f1419;
+  --bg-card: #1a1f26;
+  --bg-header: #1a1f26;
+  --bg-sidebar: #141920;
+  --bg-hover: #252b35;
+  --bg-active: #2a3140;
+  --bg-subtle: #1f2530;
+  --bg-overlay: #1e242e;
+
+  --text-primary: #e4e7ec;
+  --text-secondary: #b4bac4;
+  --text-muted: #8b919e;
+  --text-placeholder: #5a6070;
+  --text-brand: #4a9eda;
+
+  --border-default: #2a3140;
+  --border-hover: #3a4250;
+  --border-subtle: rgba(42, 49, 64, 0.5);
+
+  --color-primary: #4a9eda;
+  --color-primary-hover: #6ab0ec;
+  --color-primary-pressed: #3a8eca;
+  --color-success: #4ade80;
+  --color-warning: #fb923c;
+  --color-danger: #f87171;
+
+  --tag-blue-bg: rgba(74, 158, 218, 0.18);
+  --tag-blue-text: #6ab0ec;
+  --tag-red-bg: rgba(248, 113, 113, 0.18);
+  --tag-red-text: #f87171;
+  --tag-gray-bg: rgba(139, 145, 158, 0.18);
+  --tag-gray-text: #b4bac4;
+  --tag-green-bg: rgba(74, 222, 128, 0.18);
+  --tag-green-text: #4ade80;
+  --tag-orange-bg: rgba(251, 146, 60, 0.18);
+  --tag-orange-text: #fb923c;
+
+  --scrollbar-thumb: #3a4250;
+  --scrollbar-thumb-hover: #4a5260;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: 'Work Sans', system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: var(--bg-page);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+#app {
+  width: 100%;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* Naive UI overrides for compact financial theme */
+.n-data-table-th {
+  background: var(--bg-subtle) !important;
+  font-family: 'Work Sans', sans-serif !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.05em !important;
+  color: var(--text-muted) !important;
+}
+
+.n-data-table-td {
+  font-family: 'JetBrains Mono', monospace !important;
+  font-size: 13px !important;
+  color: var(--text-primary) !important;
+}
+
+.n-data-table-tr {
+  height: 40px !important;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.n-data-table-tr:hover {
+  background: var(--bg-hover) !important;
+}
+
+/* Selection colors */
+::selection {
+  background: rgba(0, 94, 161, 0.15);
+  color: inherit;
+}
+
+/* ============================================================
+   Shared utility classes (used across all pages)
+   ============================================================ */
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+.stat-grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
+.stat-grid.cols-5 { grid-template-columns: 2fr 1fr 1fr 1fr 1fr; }
+.stat-grid.wide-first { grid-template-columns: 2fr 1fr 1fr; }
+
+/* Responsive grids — collapse to fewer columns on smaller screens */
+@media (max-width: 1280px) {
+  .stat-grid { grid-template-columns: repeat(2, 1fr); }
+  .stat-grid.cols-5 { grid-template-columns: 2fr 1fr 1fr; }
+  .stat-grid.wide-first { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 768px) {
+  .stat-grid,
+  .stat-grid.cols-3,
+  .stat-grid.cols-5,
+  .stat-grid.wide-first {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Text colors */
+.text-red { color: var(--color-danger); }
+.text-green { color: var(--color-success); }
+.text-blue { color: var(--color-primary); }
+.text-orange { color: var(--color-warning); }
+
+/* Alignment & font */
+.mono { font-family: 'JetBrains Mono', monospace; }
+.right { text-align: right; }
+.center { text-align: center; }
+
+/* ============================================================
+   Shared component styles (TabBar, PercentileIndicator, etc.)
+   These use CSS variables so they adapt to dark mode automatically.
+   ============================================================ */
+
+/* TabBar */
+.tab-bar {
+  display: flex;
+  gap: 2px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  padding: 4px;
+}
+.tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: 'Work Sans', sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  transition: all 0.15s;
+}
+.tab-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.tab-btn.active {
+  background: var(--color-primary);
+  color: white;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+}
+
+/* PercentileIndicator */
+.perc-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.perc-track {
+  width: 80px;
+  height: 4px;
+  background: var(--border-default);
+  border-radius: 2px;
+  position: relative;
+}
+.perc-needle {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 10px;
+  background: var(--color-primary);
+  border-radius: 1px;
+  transition: left 0.3s ease;
+}
+.perc-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* CategoryTag */
+.cat-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 2px;
+  font-family: 'Work Sans', sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+}
+.cat-tag.undervalued,
+.cat-tag.opportunity {
+  background: var(--tag-blue-bg);
+  color: var(--tag-blue-text);
+}
+.cat-tag.normal {
+  background: var(--tag-gray-bg);
+  color: var(--tag-gray-text);
+}
+.cat-tag.overvalued {
+  background: var(--tag-red-bg);
+  color: var(--tag-red-text);
+}
+
+/* IconButton */
+.icon-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-default);
+  background: var(--bg-card);
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-muted);
+  transition: all 0.15s;
+}
+.icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.icon-btn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+/* Tab buttons (shared .tab-btn) */
+.tab-btn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+
+/* Pagination/filter buttons */
+.filter-apply:focus-visible,
+.page-btn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
