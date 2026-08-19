@@ -4,11 +4,28 @@ Ported from frontend composables/useMockData.ts.
 Used as fallback when database tables are empty.
 """
 
+from datetime import datetime
+
+# ============================================================
+# Mock Data Marker
+# ============================================================
+
+MOCK_DATE = datetime.now().strftime("%Y-%m-%d")
+MOCK_TIME = datetime.now().strftime("%H:%M:%S")
+
+# 在 mock 数据中添加标记，方便前端识别
+MOCK_MARKER = {
+    "_isMock": True,
+    "_mockTime": f"{MOCK_DATE} {MOCK_TIME}",
+    "_dataSource": "MOCK(模拟数据)",
+}
+
 # ============================================================
 # Macro Data
 # ============================================================
 
 MOCK_MACRO_DATA = {
+    **MOCK_MARKER,
     "erp": 4.82,
     "erp_percentile_3y": 82,
     "erp_percentile_5y": 76,
@@ -16,12 +33,108 @@ MOCK_MACRO_DATA = {
     "dr007": 1.85,
     "gc001": 1.92,
     "indices": [
-        {"name": "CSI 300", "level": 3654.21, "change_pct": 0.42, "pe": 11.4, "pb": 1.22, "pe_percentile": 12.4, "pb_percentile": 8.1, "category": "undervalued", "change_3m_pct": 2.1, "win_rate": 62.4},
-        {"name": "SSE 50", "level": 2412.56, "change_pct": -0.15, "pe": 10.2, "pb": 1.15, "pe_percentile": 35.6, "pb_percentile": 42.2, "category": "normal", "change_3m_pct": -1.4, "win_rate": 54.1},
-        {"name": "CSI 500", "level": 5280.12, "change_pct": 1.05, "pe": 18.6, "pb": 1.68, "pe_percentile": 5.2, "pb_percentile": 11.8, "category": "opportunity", "change_3m_pct": 4.2, "win_rate": 68.5},
-        {"name": "CSI 1000", "level": 5892.45, "change_pct": 2.11, "pe": 22.3, "pb": 1.92, "pe_percentile": 18.9, "pb_percentile": 22.4, "category": "undervalued", "change_3m_pct": 1.1, "win_rate": 51.2},
-        {"name": "ChiNext", "level": 1894.10, "change_pct": -0.88, "pe": 38.5, "pb": 3.45, "pe_percentile": 82.1, "pb_percentile": 78.5, "category": "overvalued", "change_3m_pct": -6.4, "win_rate": 38.9},
-        {"name": "SSE Composite", "level": 3124.50, "change_pct": 0.12, "pe": 13.1, "pb": 1.35, "pe_percentile": 48.2, "pb_percentile": 45.1, "category": "normal", "change_3m_pct": 0.0, "win_rate": 50.0},
+        # A股指数
+        {"name": "沪深300", "code": "000300", "level": 3654.21, "change_pct": 0.42, "pe": 11.4, "pb": 1.22, "pe_percentile": 12.4, "pb_percentile": 8.1, "category": "undervalued", "change_3m_pct": 2.1, "win_rate": 62.4, "market": "a_share"},
+        {"name": "中证500", "code": "000905", "level": 5280.12, "change_pct": 1.05, "pe": 18.6, "pb": 1.68, "pe_percentile": 5.2, "pb_percentile": 11.8, "category": "opportunity", "change_3m_pct": 4.2, "win_rate": 68.5, "market": "a_share"},
+        {"name": "中证1000", "code": "000852", "level": 5892.45, "change_pct": 2.11, "pe": 22.3, "pb": 1.92, "pe_percentile": 18.9, "pb_percentile": 22.4, "category": "undervalued", "change_3m_pct": 1.1, "win_rate": 51.2, "market": "a_share"},
+        {"name": "创业板指", "code": "399006", "level": 1894.10, "change_pct": -0.88, "pe": 38.5, "pb": 3.45, "pe_percentile": 82.1, "pb_percentile": 78.5, "category": "overvalued", "change_3m_pct": -6.4, "win_rate": 38.9, "market": "a_share"},
+        {"name": "科创50", "code": "000688", "level": 985.32, "change_pct": 2.99, "pe": 65.2, "pb": 4.85, "pe_percentile": 45.2, "pb_percentile": 38.6, "category": "normal", "change_3m_pct": 8.5, "win_rate": 55.2, "market": "a_share"},
+        {"name": "上证50", "code": "000016", "level": 2412.56, "change_pct": -0.15, "pe": 10.2, "pb": 1.15, "pe_percentile": 35.6, "pb_percentile": 42.2, "category": "normal", "change_3m_pct": -1.4, "win_rate": 54.1, "market": "a_share"},
+        {"name": "中证A500", "code": "000510", "level": 4568.23, "change_pct": 1.45, "pe": 13.8, "pb": 1.42, "pe_percentile": 22.5, "pb_percentile": 18.3, "category": "undervalued", "change_3m_pct": 3.2, "win_rate": 58.6, "market": "a_share"},
+        {"name": "北证50", "code": "899050", "level": 1256.38, "change_pct": 3.77, "pe": 28.5, "pb": 2.95, "pe_percentile": 55.2, "pb_percentile": 48.6, "category": "normal", "change_3m_pct": 12.5, "win_rate": 52.3, "market": "a_share"},
+        # 港股指数
+        {"name": "恒生指数", "code": "HSI", "level": 18562.35, "change_pct": 1.25, "pe": 9.8, "pb": 0.95, "pe_percentile": 28.5, "pb_percentile": 15.2, "category": "undervalued", "change_3m_pct": 5.8, "win_rate": 61.2, "market": "hk"},
+        {"name": "恒生科技", "code": "HSTECH", "level": 4256.18, "change_pct": 2.15, "pe": 22.5, "pb": 2.35, "pe_percentile": 35.8, "pb_percentile": 28.6, "category": "normal", "change_3m_pct": 8.2, "win_rate": 56.8, "market": "hk"},
+        {"name": "国企指数", "code": "HSCEI", "level": 6523.45, "change_pct": 0.95, "pe": 8.5, "pb": 0.85, "pe_percentile": 22.3, "pb_percentile": 12.5, "category": "undervalued", "change_3m_pct": 4.5, "win_rate": 63.5, "market": "hk"},
+        {"name": "恒生港股通", "code": "HSHKI", "level": 3256.78, "change_pct": 1.05, "pe": 10.2, "pb": 1.05, "pe_percentile": 32.5, "pb_percentile": 22.8, "category": "normal", "change_3m_pct": 3.8, "win_rate": 58.2, "market": "hk"},
+        # 美股指数
+        {"name": "标普500", "code": "SPX", "level": 5825.35, "change_pct": 0.65, "pe": 25.8, "pb": 4.25, "pe_percentile": 85.2, "pb_percentile": 88.5, "category": "overvalued", "change_3m_pct": 4.2, "win_rate": 42.5, "market": "us"},
+        {"name": "纳斯达克100", "code": "NDX", "level": 20562.18, "change_pct": 1.15, "pe": 32.5, "pb": 5.85, "pe_percentile": 92.5, "pb_percentile": 95.2, "category": "overvalued", "change_3m_pct": 6.8, "win_rate": 38.2, "market": "us"},
+        {"name": "道琼斯", "code": "DJI", "level": 42568.45, "change_pct": 0.35, "pe": 22.5, "pb": 6.25, "pe_percentile": 78.5, "pb_percentile": 82.3, "category": "overvalued", "change_3m_pct": 2.5, "win_rate": 45.8, "market": "us"},
+        {"name": "罗素2000", "code": "RUT", "level": 2256.78, "change_pct": 0.85, "pe": 28.5, "pb": 2.15, "pe_percentile": 65.2, "pb_percentile": 58.6, "category": "normal", "change_3m_pct": 3.2, "win_rate": 52.5, "market": "us"},
+    ],
+    # 市场概况
+    "marketOverview": {
+        "date": "2026-08-05",
+        "status": "开盘中",
+        "indices": [
+            {"name": "上证指数", "code": "000001", "price": 3870.10, "change": 47.82, "changePct": 1.25},
+            {"name": "深证成指", "code": "399001", "price": 14113.60, "change": 227.89, "changePct": 1.64},
+            {"name": "创业板指", "code": "399006", "price": 3532.66, "change": 43.69, "changePct": 1.25},
+            {"name": "沪深300", "code": "000300", "price": 4125.35, "change": 58.42, "changePct": 1.44},
+            {"name": "中证500", "code": "000905", "price": 5892.18, "change": 92.35, "changePct": 1.59},
+            {"name": "中证1000", "code": "000852", "price": 6234.56, "change": 128.45, "changePct": 2.10},
+            {"name": "中证A500", "code": "000510", "price": 4568.23, "change": 65.32, "changePct": 1.45},
+            {"name": "上证50", "code": "000016", "price": 2856.42, "change": 32.15, "changePct": 1.14},
+            {"name": "科创50", "code": "000688", "price": 985.32, "change": 28.56, "changePct": 2.99},
+            {"name": "科创100", "code": "000698", "price": 1125.68, "change": 35.42, "changePct": 3.25},
+            {"name": "科创综指", "code": "000699", "price": 2856.78, "change": 68.92, "changePct": 2.47},
+            {"name": "深证100", "code": "399330", "price": 5623.45, "change": 78.23, "changePct": 1.41},
+            {"name": "北证50", "code": "899050", "price": 1256.38, "change": 45.62, "changePct": 3.77},
+        ],
+        "upCount": 3070,
+        "downCount": 2323,
+        "flatCount": 117,
+        "totalVolume": 23990,
+        "volumeChange": 4341,
+    },
+    # 板块涨幅
+    "boardSectors": [
+        {"rank": 1, "name": "电子化学品", "code": "BK1152", "price": 2428.78, "change": 163.08, "changePct": 7.18, "upCount": 28, "downCount": 0, "leadingStock": "中巨芯-U", "leadingStockChange": 20.01, "type": "concept"},
+        {"rank": 2, "name": "贵金属", "code": "BK0732", "price": 2371.65, "change": 170.74, "changePct": 7.11, "upCount": 13, "downCount": 0, "leadingStock": "盛达资源", "leadingStockChange": 10.00, "type": "industry"},
+        {"rank": 3, "name": "MLCC概念", "code": "BK0890", "price": 4919.82, "change": 296.55, "changePct": 6.94, "upCount": 33, "downCount": 0, "leadingStock": "博杰股份", "leadingStockChange": 10.00, "type": "concept"},
+        {"rank": 4, "name": "中芯国际概念", "code": "BK0935", "price": 2551.09, "change": 152.69, "changePct": 6.30, "upCount": 65, "downCount": 1, "leadingStock": "江化微", "leadingStockChange": 10.02, "type": "concept"},
+        {"rank": 5, "name": "国家大基金", "code": "BK0935", "price": 2551.09, "change": 152.69, "changePct": 6.23, "upCount": 45, "downCount": 2, "leadingStock": "中巨芯-U", "leadingStockChange": 20.01, "type": "concept"},
+        {"rank": 6, "name": "存储芯片", "code": "BK0890", "price": 4919.82, "change": 296.55, "changePct": 5.93, "upCount": 30, "downCount": 1, "leadingStock": "博杰股份", "leadingStockChange": 10.00, "type": "concept"},
+    ],
+    # 资金流向
+    "fundFlows": {
+        "date": "2026-08-05",
+        "mainInflow": 501.03,
+        "mainInflowPct": 2.15,
+        "superLargeInflow": 312.45,
+        "superLargeInflowPct": 1.35,
+        "largeInflow": 188.58,
+        "largeInflowPct": 0.80,
+        "mediumInflow": -125.32,
+        "mediumInflowPct": -0.53,
+        "smallInflow": -375.71,
+        "smallInflowPct": -1.62,
+        "industryFlows": [
+            {"name": "半导体", "inflow": 85.32, "inflowPct": 8.52, "changePct": 5.23},
+            {"name": "电子化学品", "inflow": 42.18, "inflowPct": 12.45, "changePct": 7.18},
+            {"name": "贵金属", "inflow": 38.95, "inflowPct": 9.87, "changePct": 7.11},
+            {"name": "计算机设备", "inflow": 28.46, "inflowPct": 4.56, "changePct": 3.21},
+            {"name": "通信设备", "inflow": 22.13, "inflowPct": 3.89, "changePct": 2.85},
+        ],
+    },
+    # 涨跌停统计
+    "ztStats": {
+        "date": "2026-08-05",
+        "ztCount": 98,
+        "dtCount": 2,
+        "prevZTPerformance": {
+            "avgChange": 5.14,
+            "topPerformer": "汉鑫科技",
+            "topPerformerChange": 26.85,
+        },
+        "ztList": [
+            {"code": "000593", "name": "德龙汇能", "price": 22.52, "changePct": 10.01, "turnover": 8.5, "marketCap": 85.2, "firstZtTime": "09:35:24", "lastZtTime": "09:35:24", "炸板次数": 1, "连板数": 4, "industry": "燃气"},
+            {"code": "002214", "name": "大立科技", "price": 14.85, "changePct": 10.00, "turnover": 12.3, "marketCap": 65.8, "firstZtTime": "09:25:00", "lastZtTime": "09:25:00", "炸板次数": 0, "连板数": 1, "industry": "军工电子"},
+            {"code": "002348", "name": "高乐股份", "price": 12.12, "changePct": 9.98, "turnover": 15.6, "marketCap": 45.2, "firstZtTime": "09:30:00", "lastZtTime": "13:00:09", "炸板次数": 10, "连板数": 2, "industry": "文娱用品"},
+        ],
+        "dtList": [
+            {"code": "600363", "name": "联创光电", "price": 24.64, "changePct": -10.01, "turnover": 22.8, "marketCap": 125.6, "continuousDt": 1, "industry": "消费电子"},
+        ],
+    },
+    # 基金涨跌排行
+    "fundRanking": [
+        {"rank": 1, "code": "513100", "name": "纳斯达克ETF", "type": "ETF", "nav": 1.856, "changePct": 3.25, "change": 0.058, "volume": 21500, "premiumPct": 2.15},
+        {"rank": 2, "code": "513050", "name": "中概互联ETF", "type": "ETF", "nav": 1.025, "changePct": 2.89, "change": 0.029, "volume": 48600, "premiumPct": 1.85},
+        {"rank": 3, "code": "159941", "name": "纳指100ETF", "type": "ETF", "nav": 1.245, "changePct": 2.56, "change": 0.031, "volume": 12500, "premiumPct": 1.42},
+        {"rank": 4, "code": "160706", "name": "嘉实沪深300LOF", "type": "LOF", "nav": 1.245, "changePct": 1.38, "change": 0.017, "volume": 8500, "premiumPct": 0.85},
+        {"rank": 5, "code": "164906", "name": "交银中证海外", "type": "QDII", "nav": 0.985, "changePct": 1.25, "change": 0.012, "volume": 3200, "premiumPct": -0.35},
+        {"rank": 6, "code": "007994", "name": "华夏移动互联", "type": "场外基金", "nav": 2.156, "changePct": 1.18, "change": 0.025, "volume": None, "premiumPct": None},
     ],
 }
 
@@ -53,6 +166,11 @@ MOCK_FUNDS = [
     {"name": "GF Dynamic Select Growth", "code": "162701", "type": "closed", "price": 0.818, "iopv": 1.0, "premium_pct": -18.2, "premium_percentile": 74, "net_arbitrage_yield": 12.5, "remaining_term": "1.4 Years", "annualized": 12.5, "est_ytm": 9.8, "maturity": "2025-08-12", "volume": 280000, "nav": 1.0, "credit_rating": "AA+", "is_lof_convertible": True, "underlying_type": "成长股"},
     {"name": "E-Fund Blue Chip Strategic", "code": "161132", "type": "closed", "price": 0.909, "iopv": 1.0, "premium_pct": -9.1, "premium_percentile": 45, "net_arbitrage_yield": 5.2, "remaining_term": "312 Days", "annualized": 5.2, "est_ytm": 6.4, "maturity": "2025-02-15", "volume": 195000, "nav": 1.0, "credit_rating": "AA", "is_lof_convertible": False, "underlying_type": "蓝筹股"},
     {"name": "Huatai-PB Dividend Focus", "code": "501301", "type": "closed", "price": 0.785, "iopv": 1.0, "premium_pct": -21.5, "premium_percentile": 88, "net_arbitrage_yield": 10.2, "remaining_term": "2.1 Years", "annualized": 10.2, "est_ytm": 11.1, "maturity": "2026-04-30", "volume": 420000, "nav": 1.0, "credit_rating": "AAA", "is_lof_convertible": True, "underlying_type": "红利股"},
+    # ---- ETF 样本（供 EtfFunds 页面展示；后端 get_funds 合同目前不返回 grid/momentum 等字段，此处补齐 EtfFund 形状） ----
+    {"name": "纳斯达克ETF", "code": "513100", "type": "etf", "category": "cross_border", "sub_category": "QDII·美股", "price": 1.898, "iopv": 1.856, "premium_pct": 2.15, "premium_percentile": 78, "net_arbitrage_yield": 1.82, "volume": 21500000, "subscribe_limit": "限购 1000 元", "daily_volatility": 1.8, "holding_days": 2, "is_suspended": False, "grid_low": 1.80, "grid_high": 2.05, "grid_step": 3, "grid_yield_est": 18.5, "momentum_score": 82, "pe": 38.5, "pe_percentile": 65, "val_category": "overvalued", "dividend_rate": 0.8},
+    {"name": "中概互联ETF", "code": "513050", "type": "etf", "category": "cross_border", "sub_category": "QDII·中概", "price": 1.045, "iopv": 1.025, "premium_pct": 1.85, "premium_percentile": 65, "net_arbitrage_yield": 1.45, "volume": 48600000, "subscribe_limit": "限购 500 元", "daily_volatility": 2.1, "holding_days": 2, "is_suspended": False, "grid_low": 0.98, "grid_high": 1.12, "grid_step": 3, "grid_yield_est": 15.2, "momentum_score": 71, "pe": 22.3, "pe_percentile": 48, "val_category": "normal", "dividend_rate": 1.1},
+    {"name": "沪深300ETF", "code": "510300", "type": "etf", "category": "broad", "sub_category": "宽基·沪深300", "price": 3.952, "iopv": 3.948, "premium_pct": 0.10, "premium_percentile": 40, "net_arbitrage_yield": 0.05, "volume": 125000000, "daily_volatility": 1.1, "holding_days": 1, "is_suspended": False, "grid_low": 3.75, "grid_high": 4.15, "grid_step": 2, "grid_yield_est": 12.0, "momentum_score": 58, "pe": 11.4, "pe_percentile": 30, "val_category": "undervalued", "dividend_rate": 2.6},
+    {"name": "半导体ETF", "code": "512760", "type": "etf", "category": "industry", "sub_category": "行业·芯片", "price": 1.126, "iopv": 1.118, "premium_pct": 0.72, "premium_percentile": 55, "net_arbitrage_yield": 0.35, "volume": 68000000, "daily_volatility": 2.5, "holding_days": 1, "is_suspended": False, "grid_low": 1.02, "grid_high": 1.24, "grid_step": 4, "grid_yield_est": 22.4, "momentum_score": 76, "pe": 55.2, "pe_percentile": 72, "val_category": "overvalued", "dividend_rate": 0.6},
 ]
 
 # ============================================================
@@ -94,24 +212,27 @@ MOCK_REITS = [
 # ============================================================
 
 MOCK_STRATEGIES = [
-    {"id": "1", "name": "双低可转债轮动策略", "target_asset": "cb", "active": True,
+    {"id": "1", "name": "双低可转债轮动策略", "target_asset": "cb", "active": True, "ai_tracking": True,
      "rules": [
-         {"id": "r1", "field": "价格", "operator": "<", "value": "120", "logic": "AND"},
-         {"id": "r2", "field": "转股溢价率", "operator": "<", "value": "20", "logic": "AND"},
-         {"id": "r3", "field": "信用评级", "operator": "属于", "value": "AA, AA+, AAA", "logic": "AND"},
+         {"id": "r1", "field": "price", "operator": "<", "value": "120", "logic": "AND"},
+         {"id": "r2", "field": "premium_pct", "operator": "<", "value": "20", "logic": "AND"},
+         {"id": "r3", "field": "rating", "operator": "属于", "value": "AA,AA+,AAA", "logic": "AND"},
      ],
+     "sort_by": "double_low_score", "sort_order": "asc", "limit_count": 10,
      "createdAt": "2026-06-01"},
-    {"id": "2", "name": "QDII 溢价套利策略", "target_asset": "lof", "active": True,
+    {"id": "2", "name": "QDII 溢价套利策略", "target_asset": "qdii", "active": True, "ai_tracking": True,
      "rules": [
-         {"id": "r4", "field": "实时折溢价率", "operator": ">", "value": "3", "logic": "AND"},
-         {"id": "r5", "field": "净套利收益率", "operator": ">", "value": "1.5", "logic": "AND"},
+         {"id": "r4", "field": "premium_pct", "operator": ">", "value": "3", "logic": "AND"},
+         {"id": "r5", "field": "net_arbitrage_yield", "operator": ">", "value": "1.5", "logic": "AND"},
      ],
+     "sort_by": "net_arbitrage_yield", "sort_order": "desc", "limit_count": 10,
      "createdAt": "2026-06-10"},
-    {"id": "3", "name": "高分红REITs筛选", "target_asset": "reit", "active": False,
+    {"id": "3", "name": "高分红REITs筛选", "target_asset": "reit", "active": False, "ai_tracking": False,
      "rules": [
-         {"id": "r6", "field": "分红率", "operator": ">", "value": "5", "logic": "AND"},
-         {"id": "r7", "field": "出租率", "operator": ">", "value": "85", "logic": "AND"},
+         {"id": "r6", "field": "dividend_rate", "operator": ">", "value": "5", "logic": "AND"},
+         {"id": "r7", "field": "occupancy_rate", "operator": ">", "value": "85", "logic": "AND"},
      ],
+     "sort_by": "dividend_rate", "sort_order": "desc", "limit_count": 5,
      "createdAt": "2026-07-01"},
 ]
 

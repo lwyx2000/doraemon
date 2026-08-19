@@ -23,11 +23,11 @@ defineProps<{
 </template>
 
 <style scoped>
-.data-panel { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 8px; overflow: hidden; }
-.panel-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border-default); gap: 12px; }
+.data-panel { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 8px; overflow: hidden; box-shadow: var(--shadow-card); }
+.panel-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--border-default); gap: 12px; }
 .panel-header-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.panel-title { font-family: 'Work Sans', sans-serif; font-size: 14px; font-weight: 700; color: var(--text-primary); margin: 0; }
-.panel-meta { font-size: 11px; color: var(--text-muted); }
-.panel-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.panel-title { font-family: 'Work Sans', sans-serif; font-size: 15px; font-weight: 700; color: var(--text-primary); margin: 0; }
+.panel-meta { font-size: 12px; color: var(--text-muted); }
+.panel-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px 8px; min-width: 0; }
 .panel-body { padding: 0; }
 </style>

@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, computed, h, reactive } from 'vue'
+defineOptions({ name: 'PortfolioWatchlist' })
+import { ref, computed, h, reactive, onMounted } from 'vue'
 import { NButton, NIcon, NDataTable, NModal, NInput, NSelect, useMessage } from 'naive-ui'
 import { Add, Download, TrendingUpOutline, FilterOutline } from '@vicons/ionicons5'
-import { mockFunds } from '../composables/useMockData'
-import { useAsyncMock } from '../composables/useApi'
+import { useAsyncData } from '../composables/useApi'
+import { api } from '../utils/api'
 import type { FundItem } from '../types'
 import { exportToCSV } from '../utils/export'
 import PageHeader from '../components/PageHeader.vue'
@@ -18,7 +19,8 @@ import { getFieldTip } from '../composables/helpContent'
 
 const message = useMessage()
 const { titleWithHelp } = useFieldHelp()
-const { data: funds, loading, error, refresh: refetch } = useAsyncMock(mockFunds)
+const { data: funds, loading, error, refresh: refetch } = useAsyncData<FundItem[]>(() => api.getFunds())
+onMounted(refetch)
 const activeTab = ref<string>('index')
 
 // 添加标的弹窗
@@ -142,15 +144,6 @@ const columns = computed(() => [
   },
 ])
 
-const summaryStats = {
-  totalPnl: 1.24,
-  pnlToday: 2.4,
-  volatility: 14.2,
-  beta: 0.85,
-  maxDrawdown: -8.4,
-  avgDiscount: 12.5,
-}
-
 // ============================================================
 // ECharts options — replace static SVG donut + sparkline
 // ============================================================
@@ -229,13 +222,14 @@ const convergenceChartOption = computed(() => ({
   <LoadingState
     :loading="loading"
     :error="error"
+    skeleton
     :min-height="520"
     text="正在加载投资组合数据..."
     @retry="refetch"
   >
     <div v-if="funds" class="watchlist-page">
     <!-- Header -->
-    <PageHeader title="投资组合看板" :subtitle="`监控 ${mockFunds.length} 个高置信度资产，覆盖4个资产类别`" help-key="portfolioWatchlist">
+    <PageHeader title="投资组合看板" :subtitle="`监控 ${funds?.length ?? 0} 个高置信度资产，覆盖4个资产类别 · 盯住折溢价机会，跟踪组合盈亏、折价收敛趋势与相关性风险，支持添加标的与导出 CSV`" help-key="portfolioWatchlist">
       <template #actions>
         <n-button size="small" @click="openAddModal">
           <template #icon><n-icon :component="Add" /></template>
@@ -394,18 +388,19 @@ const convergenceChartOption = computed(() => ({
 </style>
 
 <style scoped>
-.watchlist-page { display: flex; flex-direction: column; gap: 12px; }
+.watchlist-page { display: flex; flex-direction: column; gap: 14px; }
 
 /* Kept: allocation card (complex SVG donut + legend) and 总盈亏 card (trend indicator) */
 .bento-card {
-  background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 8px; padding: 16px;
+  background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 10px; padding: 18px;
   display: flex; flex-direction: column; gap: 8px;
+  box-shadow: var(--shadow-card);
 }
 
-.bento-title { font-family: 'Work Sans', sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-muted); margin: 0; }
-.bento-label { font-family: 'Work Sans', sans-serif; font-size: 10px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-muted); }
+.bento-title { font-family: 'Work Sans', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-muted); margin: 0; }
+.bento-label { font-family: 'Work Sans', sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-muted); }
 .bento-value { font-family: 'JetBrains Mono', monospace; font-size: 22px; font-weight: 600; color: var(--text-primary); }
-.bento-trend { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--color-success); }
+.bento-trend { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--color-success); }
 .bento-trend .n-icon { font-size: 16px; }
 
 .progress-bar { height: 6px; background: var(--border-default); border-radius: 3px; overflow: hidden; margin-top: auto; }
@@ -416,19 +411,19 @@ const convergenceChartOption = computed(() => ({
 .donut-container { display: flex; justify-content: center; align-items: center; position: relative; height: 140px; }
 .donut-center { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; pointer-events: none; }
 .donut-total { display: block; font-family: 'JetBrains Mono', monospace; font-size: 22px; font-weight: 700; color: var(--text-primary); line-height: 1; }
-.donut-label { font-size: 10px; color: var(--text-muted); font-weight: 700; letter-spacing: 0.05em; }
+.donut-label { font-size: 11px; color: var(--text-muted); font-weight: 700; letter-spacing: 0.05em; }
 
 .allocation-legend { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; border-top: 1px solid var(--border-default); padding-top: 10px; }
-.legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); }
+.legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
 .legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 
-.panel-info { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-muted); }
+.panel-info { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
 .panel-info .n-icon { font-size: 18px; cursor: pointer; }
 
 /* Bottom Grid */
-.bottom-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; height: 200px; }
-.risk-panel { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 8px; padding: 16px; display: flex; flex-direction: column; }
-.risk-panel h4 { font-family: 'Work Sans', sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-muted); margin: 0 0 12px; }
+.bottom-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; height: 200px; }
+.risk-panel { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 10px; padding: 18px; display: flex; flex-direction: column; box-shadow: var(--shadow-card); }
+.risk-panel h4 { font-family: 'Work Sans', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-muted); margin: 0 0 12px; }
 
 .corr-grid { display: grid; grid-template-columns: 28px repeat(4, 1fr); gap: 2px; flex: 1; align-content: start; }
 .corr-label-sm { font-size: 9px; font-weight: 700; color: var(--text-muted); display: flex; align-items: center; justify-content: center; }

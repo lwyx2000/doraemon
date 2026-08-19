@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, h, computed, onUnmounted } from 'vue'
+defineOptions({ name: 'AiDecisionHub' })
+import { ref, h, computed, onMounted, onUnmounted } from 'vue'
 import { NButton, NSwitch, NInput, NInputNumber, NSelect, NDrawer, NDrawerContent, NDataTable, useMessage, NIcon } from 'naive-ui'
 import {
   BulbOutline,
@@ -15,12 +16,47 @@ import {
   ShareOutline,
 } from '@vicons/ionicons5'
 import type { AiReport, AiConfig } from '../types'
+import { api, ApiError } from '../utils/api'
 import PageHeader from '../components/PageHeader.vue'
 import TabBar from '../components/TabBar.vue'
 import GlossaryPanel from '../components/GlossaryPanel.vue'
+import LoadingState from '../components/LoadingState.vue'
 import { useFieldHelp } from '../composables/useFieldHelp'
 
 const { titleWithHelp } = useFieldHelp()
+
+// 加载：从后端拉取 AI 报告与配置（mock 模式下返回种子数据）
+const loading = ref(true)
+const error = ref<string | null>(null)
+const reports = ref<AiReport[]>([])
+const EMPTY_REPORT: AiReport = { date: '', macroAssessment: '', strategyMatches: [], arbitrageAlerts: [], createdAt: '' }
+const latestReport = computed<AiReport>(() => reports.value[0] ?? EMPTY_REPORT)
+const previousReports = computed(() =>
+  reports.value.slice(1).map(r => ({
+    date: r.date,
+    summary: r.macroAssessment.slice(0, 40) + (r.macroAssessment.length > 40 ? '...' : ''),
+    matches: r.strategyMatches.reduce((s, m) => s + m.items.length, 0),
+  })),
+)
+
+async function loadData() {
+  loading.value = true
+  error.value = null
+  try {
+    // 并行加载报告和配置；getAiReports 后端会自动生成首份报告
+    const [rawReports, cfg] = await Promise.all([
+      api.getAiReports(),
+      api.getAiConfig().catch(() => null),
+    ])
+    reports.value = rawReports.items
+    if (cfg) aiConfig.value = cfg
+  } catch (e) {
+    error.value = e instanceof ApiError ? e.message : String(e)
+  } finally {
+    loading.value = false
+  }
+}
+onMounted(loadData)
 
 const arbColumns = [
   { title: '标的', key: 'name', width: 120,
@@ -43,51 +79,17 @@ const arbColumns = [
 
 const message = useMessage()
 
-// AI Configuration
+// AI Configuration — 从后端加载，默认空配置
 const aiConfig = ref<AiConfig>({
   provider: 'deepseek',
-  apiKey: 'sk-xxxxxxxxxxxxxxxx',
+  apiKey: '',
   endpoint: 'https://api.deepseek.com/v1',
   temperature: 0.3,
   cronExpression: '0 0 9 * * 1-5',
-  enabled: true,
+  enabled: false,
 })
 
-// Mock AI Report (latest)
-const latestReport = ref<AiReport>({
-  date: '2026-07-22',
-  macroAssessment: '当前宏观环境呈现出典型的"弱复苏、低估值"特征。ERP处于近3年82%分位，表明权益资产的性价比较高。DR007维持在1.85%的低位，流动性充裕。市场热度指标仅35%，处于偏低区域。综合判断，当前是逐步增加权益配置的较好时机，建议关注沪深300和中证500的低估值机会。',
-  strategyMatches: [
-    {
-      strategyName: '双低可转债轮动策略',
-      items: [
-        { name: 'Zhenghong CB 2 (113001)', reason: '双低得分 135.2，价格 124.52，溢价率 10.78%，信用评级 AAA' },
-        { name: 'SolarEnergy CB (113004)', reason: '双低得分 112.4，价格 112.30，溢价率 6.54%，信用评级 AAA' },
-      ],
-    },
-    {
-      strategyName: 'QDII 溢价套利策略',
-      items: [
-        { name: 'Harvest Nasdaq QDII (160213)', reason: '溢价率 6.25%，净套利收益 1.82%，存在套利空间' },
-        { name: 'Penghua Nasdaq QDII (501306)', reason: '溢价率 5.12%，净套利收益 1.45%，关注 QDII 额度限制' },
-      ],
-    },
-  ],
-  arbitrageAlerts: [
-    { name: '161129.SZ', premium: 6.25, netYield: 1.82, assessment: '溢价率偏高，套利空间存在但需注意QDII额度限制和汇率风险' },
-    { name: '501306.SH', premium: 5.12, netYield: 1.45, assessment: '适度溢价，建议分批参与套利' },
-    { name: '160311.SH', premium: -2.10, netYield: 0.85, assessment: '折价状态，长期配置价值凸显' },
-  ],
-  createdAt: '2026-07-22 09:00:00',
-})
-
-// Previous reports
-const previousReports = ref([
-  { date: '2026-07-21', summary: '市场继续缩量调整，创业板估值偏高，建议控制成长仓位', matches: 4 },
-  { date: '2026-07-20', summary: '沪深300估值处于历史低位，中证500出现机会信号', matches: 5 },
-  { date: '2026-07-19', summary: '流动性维持宽松，REITs配置价值提升', matches: 3 },
-  { date: '2026-07-18', summary: 'QDII溢价套利空间扩大，关注纳指相关LOF', matches: 6 },
-])
+// latestReport / previousReports 已改为由 reports 派生的 computed（见上方）
 
 const activeTab = ref<'report' | 'config' | 'history'>('report')
 
@@ -163,48 +165,59 @@ function stopStreaming() {
 
 onUnmounted(() => stopStreaming())
 
-function generateReport() {
+async function generateReport() {
   if (isStreaming.value) {
     stopStreaming()
     return
   }
-  // 模拟流式输出: 逐字渲染 macroAssessment
-  const fullText = latestReport.value.macroAssessment
-  streamingText.value = ''
-  isStreaming.value = true
-  let idx = 0
-  const chunkSize = 3 // 每次输出 3 个字符
   message.loading('AI 正在分析市场数据...', { duration: 1500 })
-  streamTimer = setInterval(() => {
-    if (idx >= fullText.length) {
-      stopStreaming()
-      message.success('分析报告已生成')
-      return
-    }
-    streamingText.value += fullText.slice(idx, idx + chunkSize)
-    idx += chunkSize
-  }, 30)
+  try {
+    const report = await api.generateAiReport()
+    reports.value = [report, ...reports.value]
+    const fullText = report.macroAssessment
+    streamingText.value = ''
+    isStreaming.value = true
+    let idx = 0
+    const chunkSize = 3 // 每次输出 3 个字符
+    streamTimer = setInterval(() => {
+      if (idx >= fullText.length) {
+        stopStreaming()
+        message.success('分析报告已生成')
+        return
+      }
+      streamingText.value += fullText.slice(idx, idx + chunkSize)
+      idx += chunkSize
+    }, 30)
+  } catch (e) {
+    stopStreaming()
+    message.error('生成失败：' + (e instanceof ApiError ? e.message : String(e)))
+  }
 }
 
 const displayedMacro = computed(() =>
   isStreaming.value ? streamingText.value : latestReport.value.macroAssessment,
 )
 
-function saveConfig() {
-  message.success('AI 配置已保存')
+async function saveConfig() {
+  try {
+    aiConfig.value = await api.saveAiConfig(aiConfig.value)
+    message.success('AI 配置已保存')
+  } catch (e) {
+    message.error('保存失败：' + (e instanceof ApiError ? e.message : String(e)))
+  }
 }
 
 const testing = ref(false)
 async function testConnection() {
   if (testing.value) return
   testing.value = true
-  const providerLabel = providers.find(p => p.value === aiConfig.provider)?.label ?? aiConfig.provider
-  message.loading(`正在测试 ${providerLabel} (${aiConfig.endpoint || '默认端点'}) 连接...`, { duration: 1500 })
+  const providerLabel = providers.find(p => p.value === aiConfig.value.provider)?.label ?? aiConfig.value.provider
+  message.loading(`正在测试 ${providerLabel} (${aiConfig.value.endpoint || '默认端点'}) 连接...`, { duration: 1500 })
   await new Promise(resolve => setTimeout(resolve, 1500))
   testing.value = false
-  const ok = Boolean(aiConfig.apiKey)
+  const ok = Boolean(aiConfig.value.apiKey)
   if (ok) {
-    message.success(`连接成功：${providerLabel} 响应正常，模型 ${aiConfig.model || '默认'}`)
+    message.success(`连接成功：${providerLabel} 响应正常，模型 ${aiConfig.value.model || '默认'}`)
   } else {
     message.error('连接失败：请检查 API Key 是否正确配置')
   }
@@ -218,9 +231,23 @@ const providers = [
 </script>
 
 <template>
-  <div class="ai-page">
+  <LoadingState
+    :loading="loading"
+    :error="error"
+    skeleton
+    :min-height="480"
+    text="正在加载 AI 决策数据..."
+    @retry="loadData"
+  >
+    <div class="ai-page">
     <!-- Page Header -->
-    <PageHeader title="AI决策中心" subtitle="AI 智能决策中心 — 宏观分析、策略匹配与套利机会挖掘" help-key="aiDecision">
+    <PageHeader title="AI决策中心" subtitle="根据用户选择的策略，自动跟踪这些策略并提醒交易机会" help-key="aiDecision">
+
+    <!-- 功能说明 -->
+    <div class="page-desc">
+      <n-icon :component="BulbOutline" size="16" />
+      <span>在「策略管理中心」中将策略标记为「加入AI决策」后，本页将自动跟踪这些策略，扫描市场数据并提示匹配的交易机会。点击「生成报告」可手动触发策略扫描与套利分析。</span>
+    </div>
       <template #actions>
         <n-button size="small" @click="activeTab = 'config'">
           <template #icon><n-icon :component="SettingsOutline" /></template>
@@ -238,8 +265,8 @@ const providers = [
     <!-- Status Bar -->
     <div class="status-bar">
       <div class="status-item">
-        <span class="status-dot online" />
-        <span class="status-text">AI 服务: <strong>在线</strong></span>
+        <span :class="['status-dot', aiConfig.enabled ? 'online' : 'offline']" />
+        <span class="status-text">AI 服务: <strong>{{ aiConfig.enabled ? '已启用' : '未启用' }}</strong></span>
       </div>
       <div class="status-divider" />
       <div class="status-item">
@@ -288,6 +315,9 @@ const providers = [
           </h3>
         </div>
         <div class="strategy-matches">
+          <div v-if="latestReport.strategyMatches.length === 0" class="empty-hint">
+            暂无跟踪策略。请在「策略管理中心」中点击「加入AI决策」按钮，将策略添加到AI跟踪列表。
+          </div>
           <div v-for="match in latestReport.strategyMatches" :key="match.strategyName" class="match-card">
             <div class="match-header">
               <span class="match-name">{{ match.strategyName }}</span>
@@ -433,76 +463,90 @@ const providers = [
       </n-drawer-content>
     </n-drawer>
   </div>
+  </LoadingState>
 </template>
 
 <style scoped>
-.ai-page { display: flex; flex-direction: column; gap: 12px; }
+.ai-page { display: flex; flex-direction: column; gap: 14px; }
+
+/* 功能说明栏 */
+.page-desc {
+  display: flex; align-items: flex-start; gap: 8px;
+  background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 8px;
+  padding: 10px 14px; font-size: 13px; color: var(--text-secondary); line-height: 1.6;
+  box-shadow: var(--shadow-card);
+}
+.page-desc .n-icon { color: var(--color-primary); flex-shrink: 0; margin-top: 1px; }
 
 /* Status Bar */
 .status-bar {
   display: flex; align-items: center; gap: 12px;
   background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 8px; padding: 8px 16px;
-  font-size: 12px; color: var(--text-secondary);
+  font-size: 13px; color: var(--text-secondary); box-shadow: var(--shadow-card);
 }
 .status-item { display: flex; align-items: center; gap: 6px; }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; }
 .status-dot.online { background: var(--color-success); }
+.status-dot.offline { background: var(--text-muted); }
 .status-label { color: var(--text-muted); }
-.status-value { color: var(--text-primary); font-weight: 600; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+.status-value { color: var(--text-primary); font-weight: 600; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
 .status-divider { width: 1px; height: 16px; background: var(--border-default); }
 .status-spacer { flex: 1; }
 
 /* Report View */
-.report-view { display: flex; flex-direction: column; gap: 12px; }
-.report-section { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 8px; overflow: hidden; }
+.report-view { display: flex; flex-direction: column; gap: 14px; }
+.report-section { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 10px; overflow: hidden; box-shadow: var(--shadow-card); }
 .section-header {
   display: flex; justify-content: space-between; align-items: center;
   padding: 10px 16px; border-bottom: 1px solid var(--border-default); background: var(--bg-overlay);
 }
-.section-header h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-family: 'Work Sans', sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-secondary); }
+.section-header h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-family: 'Work Sans', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-secondary); }
 .section-header .n-icon { font-size: 16px; color: var(--color-primary); }
-.section-date { font-size: 10px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; }
+.section-date { font-size: 11px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; }
 
-.macro-content { padding: 16px; }
-.macro-content p { font-size: 13px; color: var(--text-secondary); line-height: 1.8; margin: 0; }
+.macro-content { padding: 18px; }
+.macro-content p { font-size: 14px; color: var(--text-secondary); line-height: 1.8; margin: 0; }
 .stream-cursor { display: inline-block; color: var(--color-primary); font-weight: 700; animation: blink 0.8s infinite; margin-left: 2px; }
 @keyframes blink { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0; } }
 
 /* Strategy Matches */
-.strategy-matches { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 12px; }
-.match-card { border: 1px solid var(--border-default); border-radius: 8px; padding: 12px; transition: all 0.15s; }
+.strategy-matches { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 12px; }
+.match-card { border: 1px solid var(--border-default); border-radius: 10px; padding: 12px; transition: all 0.15s; }
 .match-card:hover { border-color: var(--border-hover); box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
 .match-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-.match-name { font-size: 12px; font-weight: 700; color: var(--text-primary); }
-.match-count { font-size: 10px; color: var(--text-muted); background: var(--bg-hover); padding: 1px 8px; border-radius: 4px; }
+.match-name { font-size: 13px; font-weight: 700; color: var(--text-primary); }
+.match-count { font-size: 11px; color: var(--text-muted); background: var(--bg-hover); padding: 1px 8px; border-radius: 4px; }
 .match-items { display: flex; flex-direction: column; gap: 8px; }
 .match-item { display: flex; gap: 8px; align-items: flex-start; }
 .match-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--color-success); margin-top: 5px; flex-shrink: 0; }
 .match-detail { display: flex; flex-direction: column; gap: 1px; }
-.match-item-name { font-size: 12px; font-weight: 600; color: var(--color-primary); }
-.match-item-reason { font-size: 11px; color: var(--text-muted); line-height: 1.4; }
+.match-item-name { font-size: 13px; font-weight: 600; color: var(--color-primary); }
+.match-item-reason { font-size: 12px; color: var(--text-muted); line-height: 1.4; }
+
+/* 空状态提示 */
+.empty-hint { padding: 16px; text-align: center; font-size: 13px; color: var(--text-muted); }
 
 /* Config View */
-.config-view { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 8px; padding: 24px; }
-.config-section h3 { font-family: 'Work Sans', sans-serif; font-size: 14px; font-weight: 600; color: var(--text-primary); margin: 0 0 16px; }
+.config-view { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 10px; padding: 24px; box-shadow: var(--shadow-card); }
+.config-section h3 { font-family: 'Work Sans', sans-serif; font-size: 15px; font-weight: 600; color: var(--text-primary); margin: 0 0 16px; }
 .config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .config-field { display: flex; flex-direction: column; gap: 6px; }
 .config-field.span-2 { grid-column: span 2; }
-.config-field label { font-family: 'Work Sans', sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-muted); }
-.config-hint { font-size: 10px; color: var(--text-placeholder); }
+.config-field label { font-family: 'Work Sans', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-muted); }
+.config-hint { font-size: 11px; color: var(--text-placeholder); }
 .config-actions { display: flex; gap: 8px; margin-top: 24px; justify-content: flex-end; }
 
 /* History View */
-.history-view { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 8px; overflow: hidden; }
+.history-view { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 10px; overflow: hidden; box-shadow: var(--shadow-card); }
 .history-list { display: flex; flex-direction: column; }
 .history-card { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--border-default); cursor: pointer; transition: background 0.15s; }
 .history-card:last-child { border-bottom: none; }
 .history-card:hover { background: var(--bg-overlay); }
 .history-left { display: flex; flex-direction: column; gap: 2px; }
-.history-date { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 700; color: var(--text-primary); }
-.history-summary { font-size: 12px; color: var(--text-muted); }
+.history-date { font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 700; color: var(--text-primary); }
+.history-summary { font-size: 13px; color: var(--text-muted); }
 .history-right { display: flex; align-items: center; gap: 8px; }
-.history-count { font-size: 11px; color: var(--tag-blue-text); font-weight: 600; background: var(--tag-blue-bg); padding: 2px 8px; border-radius: 4px; }
+.history-count { font-size: 12px; color: var(--tag-blue-text); font-weight: 600; background: var(--tag-blue-bg); padding: 2px 8px; border-radius: 4px; }
 .history-chevron { color: var(--text-placeholder); }
 
 /* 报告操作 */
@@ -511,22 +555,22 @@ const providers = [
 /* 报告详情抽屉 */
 .drawer-report { display: flex; flex-direction: column; gap: 20px; }
 .drawer-section { display: flex; flex-direction: column; gap: 8px; }
-.drawer-section-title { display: flex; align-items: center; gap: 6px; font-family: 'Work Sans', sans-serif; font-size: 13px; font-weight: 700; color: var(--color-primary); margin: 0; }
-.drawer-text { font-size: 13px; line-height: 1.7; color: var(--text-secondary); margin: 0; }
+.drawer-section-title { display: flex; align-items: center; gap: 6px; font-family: 'Work Sans', sans-serif; font-size: 14px; font-weight: 700; color: var(--color-primary); margin: 0; }
+.drawer-text { font-size: 14px; line-height: 1.7; color: var(--text-secondary); margin: 0; }
 .drawer-match { padding: 10px 12px; background: var(--bg-overlay); border-radius: 6px; border-left: 3px solid var(--color-primary); }
-.drawer-match-name { font-size: 12px; font-weight: 700; color: var(--text-primary); margin-bottom: 6px; }
+.drawer-match-name { font-size: 13px; font-weight: 700; color: var(--text-primary); margin-bottom: 6px; }
 .drawer-match-item { display: flex; flex-direction: column; gap: 2px; padding: 4px 0; }
-.drawer-item-name { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; color: var(--text-primary); }
-.drawer-item-reason { font-size: 11px; color: var(--text-secondary); }
+.drawer-item-name { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.drawer-item-reason { font-size: 12px; color: var(--text-secondary); }
 .drawer-alert { padding: 10px 12px; border: 1px solid var(--border-default); border-radius: 6px; }
 .drawer-alert-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
-.drawer-alert-name { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700; color: var(--text-primary); }
-.drawer-alert-values { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--color-primary); font-weight: 600; }
-.drawer-meta { font-size: 11px; color: var(--text-placeholder); font-family: 'JetBrains Mono', monospace; padding-top: 8px; border-top: 1px solid var(--bg-subtle); }
+.drawer-alert-name { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 700; color: var(--text-primary); }
+.drawer-alert-values { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--color-primary); font-weight: 600; }
+.drawer-meta { font-size: 12px; color: var(--text-placeholder); font-family: 'JetBrains Mono', monospace; padding-top: 8px; border-top: 1px solid var(--bg-subtle); }
 
 .drawer-summary { display: flex; flex-direction: column; gap: 12px; }
 .drawer-summary-date { font-family: 'JetBrains Mono', monospace; font-size: 16px; font-weight: 700; color: var(--text-primary); }
-.drawer-summary-meta { font-size: 12px; color: var(--tag-blue-text); font-weight: 600; background: var(--tag-blue-bg); padding: 4px 10px; border-radius: 4px; align-self: flex-start; }
+.drawer-summary-meta { font-size: 13px; color: var(--tag-blue-text); font-weight: 600; background: var(--tag-blue-bg); padding: 4px 10px; border-radius: 4px; align-self: flex-start; }
 
 /* Responsive: collapse multi-column grids on smaller screens */
 @media (max-width: 768px) {

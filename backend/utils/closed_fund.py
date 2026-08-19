@@ -98,6 +98,7 @@ def analyze_closed_fund(fund: dict[str, Any]) -> dict[str, Any]:
     score = _calc_score(conv["convergence_yield"], conv["certainty"], liq["level"], credit["level"])
 
     return {
+        **fund,  # 保留原始基金字段（name/code/price/remaining_term 等），供前端表格直接展示
         "code": fund.get("code", ""),
         "liquidity": liq["level"],
         "liquidity_label": liq["label"],

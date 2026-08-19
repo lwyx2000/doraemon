@@ -158,7 +158,7 @@ function analyzeConvergence(fund: FundItem): {
  * 评级 AA+ / AA → 关注
  * 评级 AA- 以下 / 无评级 → 风险
  */
-function analyzeCredit(rating?: string, underlyingType?: string): {
+function analyzeCredit(rating?: string): {
   level: CreditRiskLevel
   label: string
 } {
@@ -214,7 +214,7 @@ export function analyzeClosedFund(fund: FundItem): ClosedFundAnalysis {
   const { certainty: convergence, label: convergenceLabel, isLofConvertible, remainingDays, convergenceYield } =
     analyzeConvergence(fund)
   const { level: creditRisk, label: creditLabel } =
-    analyzeCredit(fund.credit_rating, fund.underlying_type)
+    analyzeCredit(fund.credit_rating)
 
   const warnings: string[] = []
 

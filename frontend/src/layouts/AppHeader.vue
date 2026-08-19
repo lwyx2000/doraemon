@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, h } from 'vue'
 import { useRouter } from 'vue-router'
-import { NInput, NButton, NIcon, NBadge, NAvatar, useMessage } from 'naive-ui'
+import { NInput, NButton, NIcon, NBadge, NAvatar, NDropdown, useMessage } from 'naive-ui'
 import {
   Search,
   TimeOutline,
@@ -11,9 +11,13 @@ import {
   SunnyOutline,
   MoonOutline,
   MenuOutline,
+  PersonOutline,
+  LogOutOutline,
 } from '@vicons/ionicons5'
 import { useDarkMode } from '../composables/useDarkMode'
 import { useSidebar } from '../composables/useSidebar'
+import { useTabs } from '../composables/useTabs'
+import { useAuth } from '../composables/useAuth'
 
 const router = useRouter()
 const message = useMessage()
@@ -21,6 +25,29 @@ const searchQuery = ref('')
 const refreshing = ref(false)
 const { isDark, toggle: toggleDarkMode } = useDarkMode()
 const { toggleMobile } = useSidebar()
+const { openTab } = useTabs()
+const { username, isLoggedIn, userInitial, logout } = useAuth()
+
+const userMenuOptions = [
+  { label: '个人中心', key: 'profile', icon: () => h(PersonOutline) },
+  { label: '退出登录', key: 'logout', icon: () => h(LogOutOutline) },
+]
+
+function handleUserMenu(key: string) {
+  if (key === 'profile') {
+    openTab('/profile')
+    router.push('/profile')
+  } else if (key === 'logout') {
+    logout()
+    message.success('已退出登录')
+    router.push('/login')
+  }
+}
+
+function navigateTo(path: string) {
+  openTab(path)
+  router.push(path)
+}
 
 function handleSearch() {
   if (searchQuery.value.trim()) {
@@ -61,27 +88,34 @@ function refreshAll() {
       </div>
     </div>
     <div class="header-right">
-      <n-button text class="header-btn" @click="router.push('/strategy-center')" aria-label="定时任务">
+      <n-button text class="header-btn" @click="navigateTo('/strategy-center')" aria-label="定时任务">
         <n-icon :component="TimeOutline" size="20" />
       </n-button>
       <n-button text class="header-btn" :loading="refreshing" @click="refreshAll" aria-label="刷新数据">
         <n-icon :component="SyncOutline" size="20" />
       </n-button>
       <n-badge :value="3" :max="99" dot>
-        <n-button text class="header-btn" @click="router.push('/alert-center')" aria-label="预警中心">
+        <n-button text class="header-btn" @click="navigateTo('/alert-center')" aria-label="预警中心">
           <n-icon :component="NotificationsOutline" size="20" />
         </n-button>
       </n-badge>
-      <n-button text class="header-btn" @click="message.info('系统设置 (开发中)')" aria-label="系统设置">
+      <n-button text class="header-btn" @click="navigateTo('/system-settings')" aria-label="系统设置">
         <n-icon :component="SettingsOutline" size="20" />
       </n-button>
       <n-button text class="header-btn" @click="toggleDarkMode" :aria-label="isDark ? '切换到浅色模式' : '切换到深色模式'">
         <n-icon :component="isDark ? SunnyOutline : MoonOutline" size="20" />
       </n-button>
       <div class="header-divider" />
-      <n-avatar round size="small" style="background: #2178c3; color: white; font-weight: 700; font-size: 12px;">
-        JD
-      </n-avatar>
+      <n-dropdown v-if="isLoggedIn" :options="userMenuOptions" @select="handleUserMenu">
+        <div class="user-trigger" aria-label="用户菜单">
+          <n-avatar round size="small" style="background: #2178c3; color: white; font-weight: 700; font-size: 12px;">
+            {{ userInitial }}
+          </n-avatar>
+        </div>
+      </n-dropdown>
+      <n-button v-else text class="header-btn login-link" @click="router.push('/login')">
+        登录
+      </n-button>
     </div>
   </header>
 </template>
@@ -92,14 +126,15 @@ function refreshAll() {
   top: 0;
   left: 0;
   right: 0;
-  height: 48px;
+  height: 52px;
   z-index: 100;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 16px;
+  padding: 0 20px;
   background: var(--bg-header);
   border-bottom: 1px solid var(--border-default);
+  box-shadow: var(--shadow-header);
 }
 
 .header-left {
@@ -123,7 +158,7 @@ function refreshAll() {
 
 .brand-title {
   font-family: 'Work Sans', sans-serif;
-  font-size: 18px;
+  font-size: 19px;
   font-weight: 700;
   line-height: 24px;
   color: var(--text-brand);
@@ -142,7 +177,7 @@ function refreshAll() {
 }
 
 .search-box :deep(.n-input .n-input__input-el) {
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .search-icon {
@@ -172,6 +207,24 @@ function refreshAll() {
   height: 24px;
   background: var(--border-default);
   margin: 0 8px;
+}
+
+.user-trigger {
+  cursor: pointer;
+  display: inline-flex;
+  border-radius: 50%;
+  transition: box-shadow 0.15s;
+}
+.user-trigger:hover {
+  box-shadow: 0 0 0 2px var(--color-primary);
+}
+.login-link {
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 13px;
+}
+.login-link:hover {
+  color: var(--color-primary);
 }
 
 /* Tablet: shrink search box */

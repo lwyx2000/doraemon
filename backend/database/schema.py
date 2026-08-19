@@ -32,6 +32,7 @@ SEQUENCES = [
     "CREATE SEQUENCE IF NOT EXISTS seq_base_macro_daily START 1",
     "CREATE SEQUENCE IF NOT EXISTS seq_biz_alert_events START 1",
     "CREATE SEQUENCE IF NOT EXISTS seq_biz_ai_configs START 1",
+    "CREATE SEQUENCE IF NOT EXISTS seq_base_sw_sector_daily START 1",
 ]
 
 # ============================================================
@@ -283,6 +284,24 @@ TABLES = [
     )
     """,
 
+    # 15.5 申万一级行业每日快照 — 存储每日行业涨跌幅/PE/PB/股息率，用于历史走势和相对强度
+    """
+    CREATE TABLE IF NOT EXISTS base_sw_sector_daily (
+        pk_sw_sector_daily  BIGINT DEFAULT nextval('seq_base_sw_sector_daily') PRIMARY KEY,
+        sector_code         VARCHAR(20) NOT NULL,
+        sector_name         VARCHAR(50) NOT NULL,
+        trade_date          DATE NOT NULL,
+        price               DECIMAL(12,4),
+        prev_close          DECIMAL(12,4),
+        change_pct          DECIMAL(6,2),
+        pe                  DECIMAL(8,2),
+        ttm_pe              DECIMAL(8,2),
+        pb                  DECIMAL(8,2),
+        dividend_yield      DECIMAL(5,2),
+        count               SMALLINT
+    )
+    """,
+
     # ================================================
     # Business Tables (biz_)
     # ================================================
@@ -335,15 +354,87 @@ TABLES = [
     )
     """,
 
-    # 20. 筛选策略
+    # 19.1 多券商统一持仓（持仓分析页）—— 实际由 holdings_service 首次使用时懒创建，此处仅作文档化
+    """
+    CREATE TABLE IF NOT EXISTS biz_holdings (
+        id               VARCHAR PRIMARY KEY,
+        user_id          VARCHAR NOT NULL,
+        code             VARCHAR(20) NOT NULL,
+        name             VARCHAR(100) NOT NULL,
+        type             VARCHAR(20) NOT NULL,
+        broker           VARCHAR(50) DEFAULT '',
+        account          VARCHAR(50) DEFAULT '',
+        quantity         DOUBLE NOT NULL,
+        cost_price       DOUBLE NOT NULL,
+            manual_price     DOUBLE,
+            stop_loss_pct    DOUBLE,
+            take_profit_pct  DOUBLE,
+            open_date        VARCHAR(10),
+            currency         VARCHAR(8) DEFAULT 'CNY',
+            created_at       VARCHAR,
+            updated_at       VARCHAR,
+            fair_value       DOUBLE,
+            grid_lower       DOUBLE,
+            grid_upper       DOUBLE,
+            grid_step        DOUBLE
+        )
+        """,
+
+    # 19.2 券商列表（持仓页筛选/导入选用）—— 实际由 broker_account_service 首次使用时懒创建，此处仅作文档化
+    # 2026-08 重构：此表仅存券商名称，账户名拆到 biz_account_names 独立表
+    """
+    CREATE TABLE IF NOT EXISTS biz_broker_accounts (
+        id               VARCHAR PRIMARY KEY,
+        user_id          VARCHAR NOT NULL,
+        broker           VARCHAR(50) NOT NULL,
+        account          VARCHAR(50) DEFAULT '',
+        created_at       VARCHAR,
+        updated_at       VARCHAR
+    )
+    """,
+
+    # 19.2b 账户名列表（独立表，持仓页编辑时选用）—— 由 account_name_service 懒创建
+    """
+    CREATE TABLE IF NOT EXISTS biz_account_names (
+        id               VARCHAR PRIMARY KEY,
+        user_id          VARCHAR NOT NULL,
+        name             VARCHAR(50) NOT NULL,
+        created_at       VARCHAR,
+        updated_at       VARCHAR
+    )
+    """,
+
+    # 19.3 持仓每日快照（历史盈亏曲线）
+    """
+    CREATE TABLE IF NOT EXISTS biz_holding_snapshots (
+        id                 VARCHAR PRIMARY KEY,
+        user_id            VARCHAR NOT NULL,
+        snap_date          VARCHAR(10) NOT NULL,
+        total_market_value DOUBLE,
+        total_cost         DOUBLE,
+        total_pnl          DOUBLE,
+        total_pnl_pct      DOUBLE,
+        daily_pnl          DOUBLE,
+        holding_count      INTEGER,
+        priced_count       INTEGER,
+        created_at         VARCHAR
+    )
+    """,
+
+    # 20. 筛选策略（自定义策略 CRUD）—— 由 strategy_service 懒创建，此处仅作文档化
     """
     CREATE TABLE IF NOT EXISTS biz_strategies (
-        pk_strategies    UUID DEFAULT uuid() PRIMARY KEY,
-        fk_users         UUID NOT NULL,
-        name             VARCHAR(50) NOT NULL,
-        target_asset     VARCHAR(10) NOT NULL,
-        active           BOOLEAN DEFAULT TRUE,
-        created_at       DATE DEFAULT CURRENT_DATE
+        id            VARCHAR PRIMARY KEY,
+        user_id       VARCHAR NOT NULL,
+        name          VARCHAR(50) NOT NULL,
+        target_asset  VARCHAR(10) NOT NULL,
+        rules         JSON,
+        sort_by       VARCHAR(50),
+        sort_order    VARCHAR(4) DEFAULT 'asc',
+        limit_count   INTEGER,
+        active        BOOLEAN DEFAULT TRUE,
+        ai_tracking   BOOLEAN DEFAULT FALSE,
+        created_at    TIMESTAMP DEFAULT now()
     )
     """,
 
@@ -442,6 +533,7 @@ INDEXES = [
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_sdq_stock_date ON base_stock_daily_quotes(fk_stocks, trade_date)",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_rdq_reit_date ON base_reit_daily_quotes(fk_reits, trade_date)",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_md_indicator_date ON base_macro_daily(fk_macro_indicators, trade_date)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_sw_sector_code_date ON base_sw_sector_daily(sector_code, trade_date)",
 
     # --- 核心查询索引 (按标的 + 日期范围查询) ---
 
@@ -453,12 +545,13 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_sdq_stock_date ON base_stock_daily_quotes(fk_stocks, trade_date DESC)",
     "CREATE INDEX IF NOT EXISTS idx_rdq_reit_date ON base_reit_daily_quotes(fk_reits, trade_date DESC)",
     "CREATE INDEX IF NOT EXISTS idx_md_indicator_date ON base_macro_daily(fk_macro_indicators, trade_date DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_sw_sector_date ON base_sw_sector_daily(trade_date DESC, change_pct DESC)",
 
     # --- 用户数据索引 ---
 
     "CREATE INDEX IF NOT EXISTS idx_fav_users ON biz_favorites(fk_users)",
     "CREATE INDEX IF NOT EXISTS idx_pi_portfolios ON biz_portfolio_items(fk_portfolios)",
-    "CREATE INDEX IF NOT EXISTS idx_strat_users ON biz_strategies(fk_users)",
+    "CREATE INDEX IF NOT EXISTS idx_strat_users ON biz_strategies(user_id)",
     "CREATE INDEX IF NOT EXISTS idx_ar_users ON biz_alert_rules(fk_users)",
     "CREATE INDEX IF NOT EXISTS idx_ae_rule_time ON biz_alert_events(fk_alert_rules, triggered_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_air_users_date ON biz_ai_reports(fk_users, report_date DESC)",
@@ -479,6 +572,9 @@ INDEXES = [
 # ============================================================
 
 DROP_TABLES = [
+    "DROP TABLE IF EXISTS biz_account_names",
+    "DROP TABLE IF EXISTS biz_holding_snapshots",
+    "DROP TABLE IF EXISTS biz_holdings",
     "DROP TABLE IF EXISTS biz_ai_configs",
     "DROP TABLE IF EXISTS biz_ai_reports",
     "DROP TABLE IF EXISTS biz_alert_events",
@@ -489,6 +585,7 @@ DROP_TABLES = [
     "DROP TABLE IF EXISTS biz_portfolios",
     "DROP TABLE IF EXISTS biz_favorites",
     "DROP TABLE IF EXISTS biz_users",
+    "DROP TABLE IF EXISTS base_sw_sector_daily",
     "DROP TABLE IF EXISTS base_macro_daily",
     "DROP TABLE IF EXISTS base_macro_indicators",
     "DROP TABLE IF EXISTS base_reit_daily_quotes",
@@ -524,4 +621,5 @@ DROP_SEQUENCES = [
     "DROP SEQUENCE IF EXISTS seq_base_macro_daily",
     "DROP SEQUENCE IF EXISTS seq_biz_alert_events",
     "DROP SEQUENCE IF EXISTS seq_biz_ai_configs",
+    "DROP SEQUENCE IF EXISTS seq_base_sw_sector_daily",
 ]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 
-from models import ApiResponse, PaginatedData, AlertRule, AlertRuleCreate, AlertRuleUpdate, AlertEvent
+from models import ApiResponse, PaginatedData, AlertRule, AlertRuleCreate, AlertRuleUpdate, AlertEvent, AlertScanResult
 from services.alert_service import (
     get_alert_rules,
     create_alert_rule,
@@ -13,6 +13,7 @@ from services.alert_service import (
     get_alert_events,
     mark_event_read,
 )
+from services.alert_engine import run_alert_scan
 from core.deps import get_current_user
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])
@@ -36,7 +37,16 @@ async def create_alert_rule_endpoint(body: AlertRuleCreate, user_id: str = Depen
 
 @router.put("/rules/{rule_id}", response_model=ApiResponse[AlertRule])
 async def update_alert_rule_endpoint(rule_id: str, body: AlertRuleUpdate, user_id: str = Depends(get_current_user)):
-    data = update_alert_rule(user_id, rule_id, body.name, body.active)
+    data = update_alert_rule(
+        user_id, rule_id,
+        name=body.name,
+        active=body.active,
+        type=body.type,
+        target=body.target,
+        condition=body.condition,
+        value=body.value,
+        channels=body.channels,
+    )
     if data is None:
         return ApiResponse(code=404, message="Not found", data=None)
     return ApiResponse(data=data)
@@ -72,3 +82,14 @@ async def mark_event_read_endpoint(event_id: int, user_id: str = Depends(get_cur
     if not marked:
         return ApiResponse(code=404, message="Not found", data=None)
     return ApiResponse(data={"read": True})
+
+
+# ============================================================
+# 预警扫描（手动触发）
+# ============================================================
+
+@router.post("/scan", response_model=ApiResponse[AlertScanResult])
+async def scan_alerts_endpoint(user_id: str = Depends(get_current_user)):
+    """手动触发一次预警扫描，检查所有活跃规则。"""
+    result = run_alert_scan(user_id)
+    return ApiResponse(data=result)

@@ -44,6 +44,11 @@ def get_monitor_dashboard() -> dict:
 # Cache config
 # ============================================================
 
+def get_all_cache_config() -> dict:
+    """Return the global cache configuration (not tied to a specific method)."""
+    return dict(_cache_config)
+
+
 def get_cache_config(method: str) -> dict:
     """Return the cache configuration for a given method."""
     return {**_cache_config, "method": method}

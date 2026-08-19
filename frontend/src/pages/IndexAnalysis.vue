@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, computed, watch, h, reactive } from 'vue'
-import { NButton, NIcon, NDataTable, NModal, NInput, useMessage } from 'naive-ui'
+defineOptions({ name: 'IndexAnalysis' })
+import { ref, computed, watch, h, reactive, onMounted } from 'vue'
+import { NButton, NDataTable, NModal, NInput, useMessage } from 'naive-ui'
 import { SearchOutline, ExpandOutline } from '@vicons/ionicons5'
-import { mockMacroData } from '../composables/useMockData'
-import { useAsyncMock } from '../composables/useApi'
+import { useAsyncData } from '../composables/useApi'
+import { api } from '../utils/api'
 import type { IndexValuation } from '../types'
 import PageHeader from '../components/PageHeader.vue'
 import DataPanel from '../components/DataPanel.vue'
@@ -17,9 +18,9 @@ import { useFieldHelp } from '../composables/useFieldHelp'
 
 const message = useMessage()
 const { titleWithHelp } = useFieldHelp()
-const { data: macro, loading, error, refresh: refetch } = useAsyncMock(mockMacroData)
-const indices = computed<IndexValuation[]>(() => macro.value?.indices ?? [])
+const { data: indices, loading, error, refresh: refetch } = useAsyncData<IndexValuation[]>(() => api.getIndices().then(r => r.data))
 const selectedIndex = ref<IndexValuation | null>(null)
+onMounted(refetch)
 const timeWindow = ref('3Y')
 const valMethod = ref('PE (TTM)')
 
@@ -36,7 +37,7 @@ function submitCustomIndex() {
     message.warning('请填写指数名称和代码')
     return
   }
-  if (!macro.value) return
+  if (!indices.value) indices.value = []
   const newIdx: IndexValuation = {
     name: customForm.name.trim(),
     code: customForm.code.trim(),
@@ -49,8 +50,9 @@ function submitCustomIndex() {
     category: 'opportunity',
     change_3m_pct: 0,
     win_rate: 0,
+    market: 'a_share',
   }
-  macro.value.indices.push(newIdx)
+  indices.value.push(newIdx)
   message.success(`已添加自定义指数: ${newIdx.name}`)
   showCustomIndex.value = false
 }
@@ -58,12 +60,15 @@ function submitCustomIndex() {
 // 放大查看弹窗
 const showZoomChart = ref(false)
 
+// 仅取有估值数据的指数用于 PE 分析（科创板/科创50/中证A500 等暂无估值，不在分析页展示）
+const analyzableIndices = computed(() => (indices.value ?? []).filter(i => i.hasValuation !== false))
+
 // ============================================================
 // ECharts option — PE 估值带 (replaces static SVG)
 // ============================================================
 const peBandChartOption = computed(() => {
   const idx = selectedIndex.value
-  if (!idx) return {}
+  if (!idx || idx.pe == null) return {}
   // Simulated 3-year PE history (decreasing trend toward current undervaluation)
   const labels = ['2021-05', '2021-09', '2022-01', '2022-05', '2022-09', '2023-01', '2023-05', '2023-09', '2024-01', '当前']
   const currentPe = idx.pe
@@ -140,8 +145,8 @@ const peBandChartOption = computed(() => {
 })
 
 // Auto-select first index once data loads
-watch(indices, (list) => {
-  if (list.length && !selectedIndex.value) {
+watch(analyzableIndices, (list) => {
+  if (list && list.length && !selectedIndex.value) {
     selectedIndex.value = list[0]
   }
 }, { immediate: true })
@@ -155,7 +160,7 @@ const valMethods = ['PE (TTM)', 'PB (MRQ)', 'PS', '股息率']
 
 const peAnalysis = computed(() => {
   const idx = selectedIndex.value
-  if (!idx) return { current: 0, min3y: 0, avg3y: 0, max3y: 0, percentile: 0, assessment: '请选择指数' }
+  if (!idx || idx.pe == null || idx.pe_percentile == null) return { current: 0, min3y: 0, avg3y: 0, max3y: 0, percentile: 0, assessment: '请选择指数' }
   // 基于当前 PE 和百分位推算历史区间
   // 百分位 < 50% → 当前低于中位数，历史区间上移
   const pct = idx.pe_percentile
@@ -226,7 +231,7 @@ const rowProps = (row: IndexValuation) => ({
 
 function exportCSV() {
   const headers = ['指数名称', '点位', '涨跌幅', 'PE百分位', 'PB百分位', '分类', '3月变化', '胜率']
-  const rows = indices.value.map(idx => [
+  const rows = analyzableIndices.value.map(idx => [
     idx.name, idx.level, idx.change_pct, idx.pe_percentile, idx.pb_percentile,
     idx.category, idx.change_3m_pct, idx.win_rate,
   ])
@@ -254,6 +259,7 @@ function toggleFullscreen() {
   <LoadingState
     :loading="loading"
     :error="error"
+    skeleton
     :min-height="520"
     text="正在加载指数估值数据..."
     @retry="refetch"
@@ -306,7 +312,7 @@ function toggleFullscreen() {
       <DataPanel class="table-panel" title="宽基指数全景" meta="最后更新: 2026-07-23 15:00:00">
         <n-data-table
           :columns="columns"
-          :data="indices"
+          :data="analyzableIndices"
           :row-key="(row: IndexValuation) => row.name"
           :bordered="false"
           :single-line="false"
@@ -389,7 +395,7 @@ function toggleFullscreen() {
 .analysis-page {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
   height: calc(100vh - 80px);
 }
 
@@ -413,7 +419,7 @@ function toggleFullscreen() {
 
 .filter-label {
   font-family: 'Work Sans', sans-serif;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.05em;
   color: var(--text-muted);
@@ -431,7 +437,7 @@ function toggleFullscreen() {
 .btn-opt {
   padding: 2px 12px;
   font-family: 'Work Sans', sans-serif;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.05em;
   border: none;
@@ -458,7 +464,7 @@ function toggleFullscreen() {
 /* Main Grid */
 .main-grid {
   display: flex;
-  gap: 12px;
+  gap: 14px;
   flex: 1;
   min-height: 0;
 }
@@ -520,7 +526,7 @@ function toggleFullscreen() {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 10px;
+  font-size: 11px;
   font-family: 'Work Sans', sans-serif;
   font-weight: 700;
   letter-spacing: 0.05em;
@@ -596,7 +602,7 @@ function toggleFullscreen() {
 
 .chart-tooltip .tt-value {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--color-primary);
   margin: 2px 0 0;
@@ -628,7 +634,7 @@ function toggleFullscreen() {
 
 .analysis-summary h3 {
   font-family: 'Work Sans', sans-serif;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.05em;
   color: var(--text-primary);
@@ -636,7 +642,7 @@ function toggleFullscreen() {
 }
 
 .analysis-summary p {
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text-secondary);
   line-height: 1.6;
   margin: 0;
@@ -668,7 +674,7 @@ function toggleFullscreen() {
 .ss-value {
   display: block;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
   color: var(--text-primary);
   margin-top: 2px;

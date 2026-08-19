@@ -50,6 +50,7 @@ const items = computed(() => glossaryByPage[props.pageKey] ?? [])
   border-radius: 8px;
   overflow: hidden;
   margin-bottom: 16px;
+  box-shadow: var(--shadow-card);
 }
 
 .glossary-toggle {
@@ -57,7 +58,7 @@ const items = computed(() => glossaryByPage[props.pageKey] ?? [])
   justify-content: space-between;
   align-items: center;
   width: 100%;
-  padding: 10px 16px;
+  padding: 12px 18px;
   border: none;
   background: transparent;
   cursor: pointer;
@@ -76,7 +77,7 @@ const items = computed(() => glossaryByPage[props.pageKey] ?? [])
 }
 .toggle-text {
   font-family: 'Work Sans', sans-serif;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.03em;
 }
@@ -84,13 +85,13 @@ const items = computed(() => glossaryByPage[props.pageKey] ?? [])
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  border-radius: 9px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
   background: var(--bg-hover);
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   font-family: 'JetBrains Mono', monospace;
 }
@@ -103,7 +104,7 @@ const items = computed(() => glossaryByPage[props.pageKey] ?? [])
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 8px;
-  padding: 4px 16px 14px;
+  padding: 6px 18px 16px;
   border-top: 1px solid var(--border-default);
 }
 
@@ -111,7 +112,7 @@ const items = computed(() => glossaryByPage[props.pageKey] ?? [])
   display: flex;
   align-items: baseline;
   gap: 8px;
-  padding: 6px 10px;
+  padding: 7px 12px;
   border-radius: 6px;
   background: var(--bg-hover);
   flex-wrap: wrap;
@@ -119,7 +120,7 @@ const items = computed(() => glossaryByPage[props.pageKey] ?? [])
 
 .g-abbr {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   color: var(--color-primary);
   flex-shrink: 0;
@@ -127,12 +128,12 @@ const items = computed(() => glossaryByPage[props.pageKey] ?? [])
 }
 .g-full {
   font-family: 'Work Sans', sans-serif;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-muted);
   font-style: italic;
 }
 .g-cn {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-secondary);
   line-height: 1.4;
   flex: 1;

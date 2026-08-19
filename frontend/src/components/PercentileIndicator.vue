@@ -1,6 +1,6 @@
 <script setup lang="ts">
 withDefaults(defineProps<{
-  value: number
+  value: number | null
   width?: number
 }>(), {
   width: 80,
@@ -9,9 +9,12 @@ withDefaults(defineProps<{
 
 <template>
   <div class="perc-cell">
-    <div class="perc-track" :style="{ width: width + 'px' }">
-      <div class="perc-needle" :style="{ left: value + '%' }" />
-    </div>
-    <span class="perc-label">{{ value }}%</span>
+    <template v-if="value == null">—</template>
+    <template v-else>
+      <div class="perc-track" :style="{ width: width + 'px' }">
+        <div class="perc-needle" :style="{ left: value + '%' }" />
+      </div>
+      <span class="perc-label">{{ value }}%</span>
+    </template>
   </div>
 </template>

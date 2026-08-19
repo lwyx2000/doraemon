@@ -1,12 +1,25 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useRoute } from 'vue-router'
 import { NConfigProvider, NMessageProvider, NDialogProvider, darkTheme } from 'naive-ui'
 import type { GlobalThemeOverrides } from 'naive-ui'
 import AppHeader from './AppHeader.vue'
 import AppSidebar from './AppSidebar.vue'
+import TabNav from '../components/TabNav.vue'
 import { useDarkMode } from '../composables/useDarkMode'
+import { useTabs } from '../composables/useTabs'
 
 const { isDark } = useDarkMode()
+const { tabs } = useTabs()
+const route = useRoute()
+
+// 登录/注册页全屏展示，不套用头部/侧栏/主内容布局
+const isAuthPage = computed(() => route.meta.public === true)
+
+// keep-alive 的 include 列表：按路由 name 缓存
+const cachedViews = computed(() =>
+  tabs.value.map(t => t.name).filter(Boolean)
+)
 
 const lightOverrides: GlobalThemeOverrides = {
   common: {
@@ -14,11 +27,6 @@ const lightOverrides: GlobalThemeOverrides = {
     primaryColorHover: '#2178c3',
     primaryColorPressed: '#004880',
     primaryColorSuppl: '#005ea1',
-    primaryColorOpacity1: 'rgba(0, 94, 161, 0.1)',
-    primaryColorOpacity2: 'rgba(0, 94, 161, 0.2)',
-    primaryColorOpacity3: 'rgba(0, 94, 161, 0.3)',
-    primaryColorOpacity4: 'rgba(0, 94, 161, 0.4)',
-    primaryColorOpacity5: 'rgba(0, 94, 161, 0.5)',
     infoColor: '#005ea1',
     successColor: '#16a34a',
     warningColor: '#f97316',
@@ -33,6 +41,10 @@ const lightOverrides: GlobalThemeOverrides = {
     textColorHover: '#ffffff',
     textColorPressed: '#ffffff',
     textColorFocus: '#ffffff',
+    textColorText: '#005ea1',
+    textColorTextHover: '#2178c3',
+    textColorTextPressed: '#004880',
+    textColorTextFocus: '#2178c3',
   },
   Select: {
     peers: {
@@ -70,11 +82,6 @@ const darkOverrides: GlobalThemeOverrides = {
     primaryColorHover: '#6ab0ec',
     primaryColorPressed: '#3a8eca',
     primaryColorSuppl: '#4a9eda',
-    primaryColorOpacity1: 'rgba(74, 158, 218, 0.1)',
-    primaryColorOpacity2: 'rgba(74, 158, 218, 0.2)',
-    primaryColorOpacity3: 'rgba(74, 158, 218, 0.3)',
-    primaryColorOpacity4: 'rgba(74, 158, 218, 0.4)',
-    primaryColorOpacity5: 'rgba(74, 158, 218, 0.5)',
     infoColor: '#4a9eda',
     successColor: '#4ade80',
     warningColor: '#fb923c',
@@ -97,6 +104,10 @@ const darkOverrides: GlobalThemeOverrides = {
     textColorHover: '#ffffff',
     textColorPressed: '#ffffff',
     textColorFocus: '#ffffff',
+    textColorText: '#4a9eda',
+    textColorTextHover: '#6ab0ec',
+    textColorTextPressed: '#3a8eca',
+    textColorTextFocus: '#6ab0ec',
   },
   Select: {
     peers: {
@@ -139,11 +150,21 @@ const theme = computed(() => (isDark.value ? darkTheme : null))
   <n-config-provider :theme="theme" :theme-overrides="themeOverrides">
     <n-message-provider>
       <n-dialog-provider>
-        <div class="app-layout">
+        <div v-if="isAuthPage" class="auth-layout">
+          <router-view />
+        </div>
+        <div v-else class="app-layout">
           <AppHeader />
           <AppSidebar />
           <main class="app-main">
-            <router-view />
+            <TabNav />
+            <div class="app-content">
+              <router-view v-slot="{ Component }">
+                <keep-alive :include="cachedViews">
+                  <component :is="Component" />
+                </keep-alive>
+              </router-view>
+            </div>
           </main>
         </div>
       </n-dialog-provider>
@@ -157,19 +178,34 @@ const theme = computed(() => (isDark.value ? darkTheme : null))
   background: var(--bg-page);
 }
 
+/* 登录/注册页：全屏无布局干扰 */
+.auth-layout {
+  min-height: 100vh;
+  background: var(--bg-page);
+}
+
 .app-main {
   margin-left: 240px;
-  margin-top: 48px;
-  padding: 16px;
-  height: calc(100vh - 48px);
+  margin-top: 52px;
+  height: calc(100vh - 52px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.app-content {
+  flex: 1;
   overflow-y: auto;
+  padding: 20px;
 }
 
 /* Tablet: narrower sidebar → narrower main margin */
 @media (max-width: 1024px) {
   .app-main {
     margin-left: 200px;
-    padding: 12px;
+  }
+  .app-content {
+    padding: 16px;
   }
 }
 
@@ -177,7 +213,9 @@ const theme = computed(() => (isDark.value ? darkTheme : null))
 @media (max-width: 768px) {
   .app-main {
     margin-left: 0;
-    padding: 10px;
+  }
+  .app-content {
+    padding: 12px;
   }
 }
 </style>

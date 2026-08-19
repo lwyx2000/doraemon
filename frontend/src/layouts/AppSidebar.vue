@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { watch } from 'vue'
+import { ref, onMounted, watch, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NIcon } from 'naive-ui'
 import {
@@ -16,12 +16,44 @@ import {
   Wallet,
   CloseOutline,
   ServerOutline,
+  BriefcaseOutline,
+  SettingsOutline,
+  DiamondOutline,
+  FlashOutline,
 } from '@vicons/ionicons5'
 import { useSidebar } from '../composables/useSidebar'
+import { useTabs } from '../composables/useTabs'
+import { api } from '../utils/api'
+import type { DataSourceStatus } from '../types'
 
 const route = useRoute()
 const router = useRouter()
 const { mobileOpen, closeMobile } = useSidebar()
+const { openTab } = useTabs()
+
+// 数据源连接状态（侧栏底部标识）
+const dataSourceStatus = ref<DataSourceStatus | null>(null)
+async function loadDataSourceStatus() {
+  try {
+    const res = await api.getDataSourceStatus()
+    dataSourceStatus.value = res.data
+  } catch {
+    dataSourceStatus.value = null
+  }
+}
+onMounted(loadDataSourceStatus)
+
+// 集思录登录/可用态展示
+const jisiluLoggedIn = computed(() => dataSourceStatus.value?.jisiluLoggedIn ?? false)
+const jisiluLabel = computed(() => {
+  if (dataSourceStatus.value === null) return '检测中'
+  return jisiluLoggedIn.value ? '已登录' : '未登录'
+})
+const jisiluTitle = computed(() =>
+  jisiluLoggedIn.value
+    ? '集思录数据源可用（53 已配置 jisilu cookie）'
+    : '集思录数据源不可用或未配置登录 cookie'
+)
 
 interface NavItem {
   name: string
@@ -39,15 +71,20 @@ const navItems: NavItem[] = [
   { name: 'EtfFunds', path: '/etf-funds', icon: SwapHorizontalOutline, label: 'ETF基金' },
   { name: 'Reits', path: '/reits', icon: Wallet, label: '公募REITs' },
   { name: 'PortfolioWatchlist', path: '/portfolio-watchlist', icon: Star, label: '投资组合' },
+  { name: 'HoldingsAnalysis', path: '/holdings', icon: BriefcaseOutline, label: '持仓分析' },
   { name: 'StrategyCenter', path: '/strategy-center', icon: OptionsOutline, label: '策略中心' },
+  { name: 'SignalLab', path: '/signal-lab', icon: FlashOutline, label: '信号实验室' },
   { name: 'AiDecisionHub', path: '/ai-decision', icon: BulbOutline, label: 'AI决策' },
   { name: 'AlertCenter', path: '/alert-center', icon: Notifications, label: '预警中心' },
   { name: 'DataSources', path: '/data-sources', icon: ServerOutline, label: '数据来源' },
+  { name: 'PreciousMetals', path: '/precious-metals', icon: DiamondOutline, label: '贵金属' },
+  { name: 'SystemSettings', path: '/system-settings', icon: SettingsOutline, label: '系统设置' },
 ]
 
 const isActive = (path: string) => route.path === path
 
 function navigate(path: string) {
+  openTab(path)
   router.push(path)
   closeMobile()
 }
@@ -107,6 +144,10 @@ if (typeof window !== 'undefined') {
         <span class="status-dot" />
         <span class="status-text">已连接</span>
       </div>
+      <div class="market-status" :title="jisiluTitle">
+        <span :class="['status-dot', { 'status-dot-off': !jisiluLoggedIn }]" />
+        <span class="status-text">集思录 {{ jisiluLabel }}</span>
+      </div>
     </div>
   </aside>
 </template>
@@ -115,9 +156,9 @@ if (typeof window !== 'undefined') {
 .app-sidebar {
   position: fixed;
   left: 0;
-  top: 48px;
+  top: 52px;
   width: 240px;
-  height: calc(100vh - 48px);
+  height: calc(100vh - 52px);
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border-default);
   display: flex;
@@ -155,8 +196,8 @@ if (typeof window !== 'undefined') {
 .sidebar-backdrop {
   display: none;
   position: fixed;
-  inset: 48px 0 0 0;
-  background: rgba(0, 0, 0, 0.45);
+  inset: 52px 0 0 0;
+  background: rgba(0,0,0, 0.45);
   z-index: 40;
   backdrop-filter: blur(2px);
 }
@@ -188,14 +229,14 @@ if (typeof window !== 'undefined') {
 
 .brand-name {
   font-family: 'Work Sans', sans-serif;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
   color: var(--text-brand);
   line-height: 1.2;
 }
 
 .brand-subtitle {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-muted);
 }
 
@@ -211,14 +252,14 @@ if (typeof window !== 'undefined') {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 12px;
+  padding: 11px 12px;
   border-radius: 4px;
   color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.15s ease;
   text-decoration: none;
   font-family: 'Work Sans', sans-serif;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.02em;
 }
@@ -266,13 +307,18 @@ if (typeof window !== 'undefined') {
   animation: pulse 2s infinite;
 }
 
+.status-dot-off {
+  background: var(--color-danger, #ef4444);
+  animation: none;
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
 }
 
 .status-text {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   color: var(--text-primary);
 }

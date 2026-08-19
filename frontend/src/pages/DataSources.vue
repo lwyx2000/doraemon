@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, h } from 'vue'
+defineOptions({ name: 'DataSources' })
+import { ref, onMounted, computed, h } from 'vue'
 import { NDataTable, NTag, NIcon, NCollapse, NCollapseItem } from 'naive-ui'
 import {
   ServerOutline,
@@ -13,6 +14,13 @@ import PageHeader from '../components/PageHeader.vue'
 import DataPanel from '../components/DataPanel.vue'
 import StatCard from '../components/StatCard.vue'
 import GlossaryPanel from '../components/GlossaryPanel.vue'
+import LoadingState from '../components/LoadingState.vue'
+
+// 模拟加载：短暂展示骨架屏后显示内容
+const loading = ref(true)
+onMounted(() => {
+  setTimeout(() => { loading.value = false }, 700)
+})
 
 // ============================================================
 // 数据频率定义
@@ -50,19 +58,27 @@ interface DataSourceSummary {
   note: string
 }
 
-const sourceSummaries: DataSourceSummary[] = [
-  { source: '指数行情', category: '宏观/指数', frequency: 'daily', method: 'api', fields: '收盘价、开高低、成交量', note: '沪深300/中证500/科创50等宽基及行业指数日K线' },
-  { source: '指数估值', category: '宏观/指数', frequency: 'daily', method: 'api', fields: 'PE、PB、股息率、分位数', note: '需历史估值序列计算分位数（3/5/10年）' },
-  { source: '宏观指标', category: '宏观', frequency: 'daily', method: 'api', fields: 'DR007、GC001、ERP', note: '银行间流动性 + 股权风险溢价' },
-  { source: 'ETF/LOF行情', category: '基金', frequency: 'daily', method: 'api', fields: '二级市场价格、IOPV、折溢价率', note: '日K线收盘数据，IOPV盘中T+0更新' },
-  { source: '基金申赎信息', category: '基金', frequency: 'daily', method: 'api', fields: '申购限额、暂停状态、T+N天数', note: '限购信息需从基金公司公告获取' },
-  { source: '可转债行情', category: '可转债', frequency: 'daily', method: 'api', fields: '转债价格、转股价值、溢价率、到期收益率', note: '日K线收盘数据' },
+// ============================================================
+// 数据来源总览（含具体接口）
+// ============================================================
+interface DataSourceDetail extends DataSourceSummary {
+  apiEndpoint?: string
+  dataSource?: string
+}
+
+const sourceSummaries: DataSourceDetail[] = [
+  { source: '指数估值', category: '宏观/指数', frequency: 'daily', method: 'api', fields: 'PE、PB、股息率、分位数', apiEndpoint: '/api/processed_data?category=index_valuation&subtype=all', dataSource: '乐咕乐股(PE/PB历史) + 新浪(指数行情) + baostock/腾讯(K线)', note: '12个宽基指数估值，含PE/PB百分位、近3月涨跌、胜率' },
+  { source: '板块涨幅', category: '宏观/指数', frequency: 'daily', method: 'api', fields: '概念名称、涨跌幅、成交额', apiEndpoint: '/api/processed_data?category=board&subtype=concept_list', dataSource: '同花顺(_ths) 8个接口优先 → 东财(_em) 兜底', note: '概念板块涨幅排行，容灾链保障稳定性' },
+  { source: '资金流向', category: '宏观/指数', frequency: 'daily', method: 'api', fields: '主力/超大单/大单净流入及占比', apiEndpoint: '/api/processed_data?category=fund_flow&subtype=market', dataSource: 'akshare 东财为主 → efinance 个股降级', note: '市场资金流向 + 行业资金流向排名' },
+  { source: '市场统计', category: '宏观/指数', frequency: 'realtime', method: 'api', fields: '总成交额、涨跌家数、涨跌停数', apiEndpoint: '/api/processed_data?category=market_stats&subtype=overview', dataSource: '新浪A股spot（非东财），5分钟内存快照', note: '沪深两市成交额、涨跌家数、涨跌停统计' },
+  { source: '涨跌停池', category: '宏观/指数', frequency: 'realtime', method: 'api', fields: '涨停/跌停股票列表、连板数', apiEndpoint: '/api/processed_data?category=zt_pool&subtype=zt|dt', dataSource: '新浪spot自算（非东财），涨停判定基于价格限制', note: '主板10%/创业板科创板20%/ST股5%/北交所30%，2%容差' },
+  { source: 'ETF排行', category: '基金', frequency: 'daily', method: 'api', fields: '代码、名称、最新价、涨跌幅、成交额', apiEndpoint: '/api/processed_data?category=fund_rank&subtype=etf', dataSource: '新浪ETF基金 → 同花顺 fund_etf_spot_ths（非东财）', note: 'ETF涨跌排行，容灾链保障稳定性' },
+  { source: 'LOF排行', category: '基金', frequency: 'daily', method: 'api', fields: '代码、名称、最新价、涨跌幅、成交额', apiEndpoint: '/api/processed_data?category=fund_rank&subtype=lof', dataSource: '新浪ETF基金 → 同花顺 fund_etf_spot_ths（非东财）', note: 'LOF基金涨跌排行' },
+  { source: '封闭基金排行', category: '基金', frequency: 'daily', method: 'api', fields: '代码、名称、最新价、涨跌幅、成交额', apiEndpoint: '/api/processed_data?category=fund_rank&subtype=closed', dataSource: '新浪ETF基金 → 同花顺 fund_etf_spot_ths（非东财）', note: '封闭式基金涨跌排行' },
+  { source: '宏观指标', category: '宏观', frequency: 'daily', method: 'manual', fields: 'DR007、GC001、ERP', note: '银行间流动性 + 股权风险溢价（暂无稳定数据源）' },
+  { source: '可转债行情', category: '可转债', frequency: 'daily', method: 'manual', fields: '转债价格、转股价值、溢价率、到期收益率', note: '需自建数据源或第三方付费接口' },
   { source: '可转债条款', category: '可转债', frequency: 'daily', method: 'manual', fields: '强赎进度、回售进度、下修进度、转股期', note: '需跟踪公司公告，手动维护触发天数' },
-  { source: '正股行情', category: '可转债', frequency: 'daily', method: 'api', fields: '正股价格、涨跌幅、涨停状态', note: '转股套利需判断正股是否涨停' },
-  { source: '波动率数据', category: '可转债', frequency: 'daily', method: 'derived', fields: 'IV（隐含波动率）、HV（历史波动率）', note: 'IV从BS模型反推，HV从正股日K线20日窗口计算' },
-  { source: '封闭基金数据', category: '基金', frequency: 'daily', method: 'api', fields: '价格、NAV、折价率、到期日、成交量', note: 'NAV为日频披露，价格日K线收盘' },
-  { source: '封闭基金底层', category: '基金', frequency: 'monthly', method: 'manual', fields: '信用评级、底层资产类型、是否转LOF', note: '季报/半年报披露，手动维护' },
-  { source: 'REITs行情', category: 'REITs', frequency: 'daily', method: 'api', fields: '市场价格、成交量', note: '日K线收盘数据' },
+  { source: 'REITs行情', category: 'REITs', frequency: 'daily', method: 'manual', fields: '市场价格、成交量', note: '暂无稳定数据源' },
   { source: 'REITs基本面', category: 'REITs', frequency: 'monthly', method: 'manual', fields: 'NAV、DSCR、出租率趋势、杠杆率', note: '季报/半年报披露，出租率需手动跟踪' },
 ]
 
@@ -142,24 +158,38 @@ const sourceColumns = [
   {
     title: '数据来源',
     key: 'source',
-    render: (row: DataSourceSummary) => h('span', { class: 'ds-name' }, row.source),
+    render: (row: DataSourceDetail) => h('span', { class: 'ds-name' }, row.source),
   },
   {
     title: '类别',
     key: 'category',
-    render: (row: DataSourceSummary) => h('span', { class: 'ds-cat' }, row.category),
+    render: (row: DataSourceDetail) => h('span', { class: 'ds-cat' }, row.category),
+  },
+  {
+    title: 'API接口',
+    key: 'apiEndpoint',
+    render: (row: DataSourceDetail) => row.apiEndpoint 
+      ? h('code', { class: 'ds-api' }, row.apiEndpoint)
+      : h('span', { class: 'ds-no-api' }, '-'),
+  },
+  {
+    title: '数据源',
+    key: 'dataSource',
+    render: (row: DataSourceDetail) => row.dataSource
+      ? h('span', { class: 'ds-source' }, row.dataSource)
+      : h('span', { class: 'ds-no-api' }, '-'),
   },
   {
     title: '字段',
     key: 'fields',
-    render: (row: DataSourceSummary) => h('span', { class: 'ds-fields' }, row.fields),
+    render: (row: DataSourceDetail) => h('span', { class: 'ds-fields' }, row.fields),
   },
   {
     title: '频率',
     key: 'frequency',
     align: 'center' as const,
     width: 80,
-    render: (row: DataSourceSummary) => h(NTag, {
+    render: (row: DataSourceDetail) => h(NTag, {
       size: 'small',
       bordered: false,
       style: { background: freqConfig[row.frequency].bg, color: freqConfig[row.frequency].color },
@@ -170,7 +200,7 @@ const sourceColumns = [
     key: 'method',
     align: 'center' as const,
     width: 100,
-    render: (row: DataSourceSummary) => h(NTag, {
+    render: (row: DataSourceDetail) => h(NTag, {
       size: 'small',
       bordered: false,
       style: { background: methodConfig[row.method].bg, color: methodConfig[row.method].color },
@@ -179,7 +209,7 @@ const sourceColumns = [
   {
     title: '说明',
     key: 'note',
-    render: (row: DataSourceSummary) => h('span', { class: 'ds-note' }, row.note),
+    render: (row: DataSourceDetail) => h('span', { class: 'ds-note' }, row.note),
   },
 ]
 
@@ -251,7 +281,13 @@ function getPageReqs(pageName: string) {
 </script>
 
 <template>
-  <div class="ds-page">
+  <LoadingState
+    :loading="loading"
+    skeleton
+    :min-height="480"
+    text="正在加载数据来源说明..."
+  >
+    <div class="ds-page">
     <PageHeader title="数据来源说明" subtitle="各页面数据需求明细 — 研究数据频率：日K线级别" helpKey="dataSources" />
 
     <GlossaryPanel page-key="dataSources" />
@@ -377,6 +413,7 @@ function getPageReqs(pageName: string) {
       </n-collapse>
     </div>
   </div>
+  </LoadingState>
 </template>
 
 <style>
@@ -429,20 +466,20 @@ function getPageReqs(pageName: string) {
 .ds-page {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
 /* 概览卡片 */
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  gap: 12px;
+  gap: 14px;
 }
 .stat-card-custom {
   background: var(--bg-card);
   border: 1px solid var(--border-default);
-  border-radius: 8px;
-  padding: 16px;
+  border-radius: 10px;
+  padding: 18px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -450,7 +487,7 @@ function getPageReqs(pageName: string) {
 }
 .stat-label {
   font-family: 'Work Sans', sans-serif;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.05em;
   color: var(--text-muted);
@@ -464,7 +501,7 @@ function getPageReqs(pageName: string) {
   line-height: 1.2;
 }
 .stat-sub {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
@@ -487,13 +524,13 @@ function getPageReqs(pageName: string) {
 }
 .freq-content h4 {
   font-family: 'Work Sans', sans-serif;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--text-primary);
   margin: 0 0 4px;
 }
 .freq-content p {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-secondary);
   line-height: 1.6;
   margin: 0;
@@ -503,8 +540,8 @@ function getPageReqs(pageName: string) {
 .grouped-section {
   background: var(--bg-card);
   border: 1px solid var(--border-default);
-  border-radius: 8px;
-  padding: 16px;
+  border-radius: 10px;
+  padding: 18px;
   box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
 .section-title {
@@ -512,7 +549,7 @@ function getPageReqs(pageName: string) {
   align-items: center;
   gap: 8px;
   font-family: 'Work Sans', sans-serif;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
   color: var(--text-primary);
   margin: 0 0 12px;
@@ -540,7 +577,7 @@ function getPageReqs(pageName: string) {
 }
 .req-category {
   font-family: 'Work Sans', sans-serif;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--text-primary);
 }
@@ -552,7 +589,7 @@ function getPageReqs(pageName: string) {
   display: flex;
   align-items: flex-start;
   gap: 6px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-secondary);
   line-height: 1.5;
   margin-bottom: 6px;
@@ -563,9 +600,30 @@ function getPageReqs(pageName: string) {
   margin-top: 2px;
 }
 .req-purpose {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   padding-left: 20px;
+}
+
+/* API接口样式 */
+.ds-api {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  background: var(--bg-hover);
+  padding: 4px 8px;
+  border-radius: 4px;
+  color: var(--color-primary);
+  word-break: break-all;
+}
+.ds-source {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+.ds-no-api {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 /* Responsive */

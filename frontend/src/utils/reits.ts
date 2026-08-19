@@ -220,8 +220,8 @@ export function analyzeReits(reit: ReitItem): ReitsAnalysis {
   }
 
   const score = calcReitsScore(
-    reit.dividend_rate,
-    reit.irr,
+    reit.dividend_rate ?? 0,
+    reit.irr ?? 0,
     navLevel,
     sustainability,
     liquidity,

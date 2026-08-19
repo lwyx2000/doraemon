@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, h } from 'vue'
+defineOptions({ name: 'LofFunds' })
+import { ref, computed, h, onMounted } from 'vue'
 import { NDataTable, NButton, NIcon, useMessage } from 'naive-ui'
 import {
   TrendingUp,
@@ -10,11 +11,10 @@ import {
   ChevronForwardOutline,
   PulseOutline,
 } from '@vicons/ionicons5'
-import { mockFunds } from '../composables/useMockData'
-import { useAsyncMock } from '../composables/useApi'
+import { api, useAsyncData } from '../composables/useApi'
 import type { FundItem } from '../types'
 import { exportToCSV } from '../utils/export'
-import { analyzeArbitrage, analyzeArbitrageBatch, FEASIBILITY_ORDER } from '../utils/arbitrage'
+import { analyzeArbitrageBatch, FEASIBILITY_ORDER } from '../utils/arbitrage'
 import type { ArbitrageAnalysis } from '../utils/arbitrage'
 import PageHeader from '../components/PageHeader.vue'
 import DataPanel from '../components/DataPanel.vue'
@@ -27,7 +27,7 @@ import { getFieldTip } from '../composables/helpContent'
 
 const message = useMessage()
 const { titleWithHelp } = useFieldHelp()
-const { data: funds, loading, error, refresh: refetch } = useAsyncMock(mockFunds)
+const { data: funds, loading, error, execute: refetch } = useAsyncData(() => api.getFunds('lof'))
 const activeTab = ref<string>('lof')
 const selectedCode = ref<string | null>(null)
 const scanning = ref(false)
@@ -63,6 +63,11 @@ function exportFunds() {
   exportToCSV(`lof_funds_${activeTab.value}_${new Date().toISOString().slice(0, 10)}`, headers, rows)
   message.success(`已导出 ${rows.length} 条基金数据`)
 }
+
+// 页面加载时获取数据
+onMounted(() => {
+  refetch()
+})
 
 const filteredFunds = computed(() => {
   if (!funds.value) return []
@@ -302,6 +307,7 @@ const columns = computed(() => {
   <LoadingState
     :loading="loading"
     :error="error"
+    skeleton
     :min-height="520"
     text="正在加载LOF基金数据..."
     @retry="refetch"
@@ -515,7 +521,7 @@ const columns = computed(() => {
 .lof-page {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
 .table-footer {
@@ -530,7 +536,7 @@ const columns = computed(() => {
 
 .footer-info {
   font-family: 'Work Sans', sans-serif;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.05em;
   color: var(--text-muted);
@@ -561,7 +567,7 @@ const columns = computed(() => {
 
 .page-current {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   color: var(--text-muted);
 }
@@ -569,19 +575,19 @@ const columns = computed(() => {
 .bottom-bento {
   display: grid;
   grid-template-columns: 3fr 5fr 4fr;
-  gap: 12px;
+  gap: 14px;
   height: 160px;
 }
 
 .bento-card {
   background: var(--bg-card);
   border: 1px solid var(--border-default);
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  box-shadow: var(--shadow-card);
   transition: box-shadow 0.2s;
 }
 
@@ -591,7 +597,7 @@ const columns = computed(() => {
 
 .bento-label {
   font-family: 'Work Sans', sans-serif;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.05em;
   color: var(--text-muted);
@@ -611,7 +617,7 @@ const columns = computed(() => {
 }
 
 .sentiment-sub {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
@@ -630,7 +636,7 @@ const columns = computed(() => {
 }
 
 .sentiment-note {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   font-style: italic;
 }
@@ -686,7 +692,7 @@ const columns = computed(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .signal-dot {
@@ -729,7 +735,7 @@ const columns = computed(() => {
   background: var(--bg-card);
   border: 1px solid var(--border-default);
   border-radius: 8px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-secondary);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
   transition: box-shadow 0.2s;

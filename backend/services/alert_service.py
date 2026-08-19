@@ -84,14 +84,37 @@ def create_alert_rule(
     return rule
 
 
-def update_alert_rule(user_id: str, rule_id: str, name: str | None, active: bool | None) -> dict | None:
-    """Update an alert rule; return updated rule or None."""
+def update_alert_rule(
+    user_id: str,
+    rule_id: str,
+    name: str | None = None,
+    active: bool | None = None,
+    type: str | None = None,
+    target: str | None = None,
+    condition: str | None = None,
+    value: float | None = None,
+    channels: list[str] | None = None,
+) -> dict | None:
+    """Update an alert rule; supports updating all fields.
+
+    Only non-None fields are updated.
+    """
     for r in _mock_rules:
         if r["id"] == rule_id:
             if name is not None:
                 r["name"] = name
             if active is not None:
                 r["active"] = active
+            if type is not None:
+                r["type"] = type
+            if target is not None:
+                r["target"] = target
+            if condition is not None:
+                r["condition"] = condition
+            if value is not None:
+                r["value"] = value
+            if channels is not None:
+                r["channels"] = channels
             return r
     return None
 

@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { h, ref, reactive, computed } from 'vue'
+defineOptions({ name: 'ClosedFunds' })
+import { h, ref, reactive, computed, onMounted } from 'vue'
 import { NButton, NDataTable, NIcon, NModal, NInput, NTag, useMessage } from 'naive-ui'
 import { TrendingUpOutline, TimerOutline, WarningOutline } from '@vicons/ionicons5'
-import { mockFunds } from '../composables/useMockData'
-import { useAsyncMock } from '../composables/useApi'
+import { api, useAsyncData } from '../composables/useApi'
 import type { FundItem } from '../types'
 import { exportToCSV } from '../utils/export'
 import { analyzeClosedFundBatch, parseRemainingDays } from '../utils/closedFund'
@@ -17,12 +17,17 @@ import { useFieldHelp } from '../composables/useFieldHelp'
 
 const message = useMessage()
 const { titleWithHelp } = useFieldHelp()
-const { data: funds, loading, error, refresh: refetch } = useAsyncMock(mockFunds.filter(f => f.type === 'closed'))
+const { data: funds, loading, error, execute: refetch } = useAsyncData(() => api.getClosedFundAnalysis())
 
 // 三维度分析映射 (code → ClosedFundAnalysis)
 const analysisMap = computed(() => {
   if (!funds.value) return new Map<string, ClosedFundAnalysis>()
   return analyzeClosedFundBatch(funds.value)
+})
+
+// 页面加载时获取数据
+onMounted(() => {
+  refetch()
 })
 
 // 按综合评分降序排序
@@ -189,6 +194,17 @@ const columns = [
     },
   },
   {
+    title: '净值',
+    key: 'nav',
+    align: 'right' as const,
+    render: (row: FundItem) => row.nav != null
+      ? h('div', {}, [
+          h('span', { style: { fontFamily: 'JetBrains Mono, monospace' } }, row.nav!.toFixed(4)),
+          h('span', { class: 'sub-info' }, row.nav_date ?? ''),
+        ])
+      : '',
+  },
+  {
     title: '年化收益',
     key: 'annualized',
     align: 'right' as const,
@@ -319,6 +335,7 @@ const columns = [
   <LoadingState
     :loading="loading"
     :error="error"
+    skeleton
     :min-height="520"
     text="正在加载封闭基金数据..."
     @retry="refetch"
@@ -578,23 +595,24 @@ const columns = [
 .closed-page {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
 /* Kept: overview card (complex SVG ring + legend) */
 .dash-card {
   background: var(--bg-card);
   border: 1px solid var(--border-default);
-  border-radius: 8px;
-  padding: 16px;
+  border-radius: 10px;
+  padding: 18px;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  box-shadow: var(--shadow-card);
 }
 
 .dash-title {
   font-family: 'Work Sans', sans-serif;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.05em;
   color: var(--text-muted);
@@ -604,7 +622,7 @@ const columns = [
 /* Kept: 总盈亏 card has a trend indicator (custom content, not converted to StatCard) */
 .dash-label {
   font-family: 'Work Sans', sans-serif;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -622,7 +640,7 @@ const columns = [
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--color-success);
 }
 
@@ -664,14 +682,14 @@ const columns = [
 .ring-total {
   display: block;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 28px;
+  font-size: 30px;
   font-weight: 700;
   color: var(--text-primary);
   line-height: 1;
 }
 
 .ring-label {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-muted);
   font-weight: 700;
   letter-spacing: 0.05em;
@@ -689,7 +707,7 @@ const columns = [
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-secondary);
 }
 
@@ -704,22 +722,23 @@ const columns = [
 .bottom-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: 14px;
 }
 
 .bottom-panel {
   background: var(--bg-card);
   border: 1px solid var(--border-default);
-  border-radius: 8px;
-  padding: 16px;
+  border-radius: 10px;
+  padding: 18px;
   height: 200px;
   display: flex;
   flex-direction: column;
+  box-shadow: var(--shadow-card);
 }
 
 .bottom-panel h4 {
   font-family: 'Work Sans', sans-serif;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.05em;
   color: var(--text-muted);
@@ -749,7 +768,7 @@ const columns = [
   align-items: center;
   gap: 8px;
   padding: 4px 0;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-secondary);
 }
 
@@ -763,7 +782,7 @@ const columns = [
   background: var(--bg-subtle);
   color: var(--text-muted);
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   flex-shrink: 0;
 }
@@ -785,7 +804,7 @@ const columns = [
 
 .rank-score {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--color-primary);
   flex-shrink: 0;
@@ -793,7 +812,7 @@ const columns = [
 
 .rank-yield {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   flex-shrink: 0;
 }
@@ -801,7 +820,7 @@ const columns = [
 .rank-yield.primary {
   color: var(--color-success);
   font-weight: 700;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 /* Warning items */
@@ -810,7 +829,7 @@ const columns = [
   align-items: center;
   gap: 8px;
   padding: 6px 0;
-  font-size: 12px;
+  font-size: 13px;
   border-bottom: 1px solid var(--border-default);
 }
 
@@ -822,7 +841,7 @@ const columns = [
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
@@ -831,7 +850,7 @@ const columns = [
   align-items: center;
   justify-content: center;
   flex: 1;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 

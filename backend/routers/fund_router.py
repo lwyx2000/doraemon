@@ -9,7 +9,7 @@ router = APIRouter(tags=["funds"])
 
 
 @router.get("/funds", response_model=ApiResponse[list[FundItem]])
-async def funds(
+def funds(
     type: str | None = Query(default=None),
     min_premium: float | None = Query(default=None),
     feasibility: str | None = Query(default=None),
@@ -26,7 +26,7 @@ async def funds(
 
 
 @router.get("/funds/closed/analysis", response_model=ApiResponse[list[ClosedFundAnalysis]])
-async def closed_fund_analysis() -> ApiResponse[list[ClosedFundAnalysis]]:
+def closed_fund_analysis() -> ApiResponse[list[ClosedFundAnalysis]]:
     """Return closed-end fund analysis sorted by score."""
     data = get_closed_fund_analysis()
     return ApiResponse(data=data)

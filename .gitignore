@@ -1,1 +1,38 @@
 node_modules
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# DuckDB database & WAL (运行时文件，不应入库)
+*.duckdb
+*.duckdb.wal
+
+# Logs
+*.log
+backend/.uvicorn.log
+backend/_claw_backend.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Env
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+backend/test_results.txt
+backend/err.log
+backend/out.log
+
+# Diagnostic scripts (临时)
+frontend/_diag_*.py
+frontend/_verify_*.py
+frontend/public/_diag_*.html

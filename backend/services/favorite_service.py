@@ -20,8 +20,8 @@ def get_favorites(user_id: str) -> list[dict]:
 
     db = get_db()
     rows = db.fetchall(
-        "SELECT id, user_id, code, name, type, note, added_at "
-        "FROM biz_favorites WHERE user_id = ? ORDER BY added_at DESC",
+        "SELECT pk_favorites AS id, fk_users AS user_id, code, name, type, note, added_at "
+        "FROM biz_favorites WHERE fk_users = ? ORDER BY added_at DESC",
         [user_id],
     )
     return [
@@ -63,7 +63,7 @@ def add_favorite(
     db = get_db()
     db.execute(
         "INSERT INTO biz_favorites "
-        "(id, user_id, code, name, type, note, added_at) "
+        "(pk_favorites, fk_users, code, name, type, note, added_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
         [
             favorite["id"],
@@ -89,13 +89,13 @@ def delete_favorite(user_id: str, favorite_id: str) -> bool:
 
     db = get_db()
     existing = db.fetchone(
-        "SELECT id FROM biz_favorites WHERE id = ? AND user_id = ?",
+        "SELECT pk_favorites FROM biz_favorites WHERE pk_favorites = ? AND fk_users = ?",
         [favorite_id, user_id],
     )
     if existing is None:
         return False
     db.execute(
-        "DELETE FROM biz_favorites WHERE id = ? AND user_id = ?",
+        "DELETE FROM biz_favorites WHERE pk_favorites = ? AND fk_users = ?",
         [favorite_id, user_id],
     )
     return True

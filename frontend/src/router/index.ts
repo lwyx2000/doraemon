@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
+import { useAuth } from '../composables/useAuth'
 
 const routes: RouteRecordRaw[] = [
   {
@@ -48,6 +49,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '投资组合自选', icon: 'star' },
   },
   {
+    path: '/holdings',
+    name: 'HoldingsAnalysis',
+    component: () => import('../pages/HoldingsAnalysis.vue'),
+    meta: { title: '持仓分析', icon: 'briefcase' },
+  },
+  {
     path: '/reits',
     name: 'Reits',
     component: () => import('../pages/Reits.vue'),
@@ -66,6 +73,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '策略管理中心', icon: 'tune' },
   },
   {
+    path: '/signal-lab',
+    name: 'SignalLab',
+    component: () => import('../pages/SignalLab.vue'),
+    meta: { title: '信号实验室', icon: 'flash' },
+  },
+  {
     path: '/ai-decision',
     name: 'AiDecisionHub',
     component: () => import('../pages/AiDecisionHub.vue'),
@@ -77,11 +90,54 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../pages/DataSources.vue'),
     meta: { title: '数据来源', icon: 'server' },
   },
+  {
+    path: '/precious-metals',
+    name: 'PreciousMetals',
+    component: () => import('../pages/PreciousMetals.vue'),
+    meta: { title: '贵金属', icon: 'diamond' },
+  },
+  {
+    path: '/system-settings',
+    name: 'SystemSettings',
+    component: () => import('../pages/SystemSettings.vue'),
+    meta: { title: '系统设置', icon: 'settings' },
+  },
+  {
+    path: '/login',
+    name: 'Login',
+    component: () => import('../pages/Login.vue'),
+    meta: { title: '登录', public: true },
+  },
+  {
+    path: '/register',
+    name: 'Register',
+    component: () => import('../pages/Register.vue'),
+    meta: { title: '注册', public: true },
+  },
+  {
+    path: '/profile',
+    name: 'Profile',
+    component: () => import('../pages/Profile.vue'),
+    meta: { title: '个人中心', icon: 'person' },
+  },
 ]
 
 const router = createRouter({
   history: createWebHistory(),
   routes,
+})
+
+// 全局路由守卫：未登录访问非公开页面时跳转登录页，登录后回跳原页面
+router.beforeEach((to) => {
+  const { isLoggedIn } = useAuth()
+  if (!to.meta.public && !isLoggedIn.value) {
+    return { path: '/login', query: { redirect: to.fullPath } }
+  }
+  // 已登录用户访问登录/注册页时直接回首页
+  if (to.meta.public && isLoggedIn.value && (to.path === '/login' || to.path === '/register')) {
+    return { path: '/' }
+  }
+  return true
 })
 
 export default router

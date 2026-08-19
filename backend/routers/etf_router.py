@@ -9,7 +9,7 @@ router = APIRouter(tags=["etfs"])
 
 
 @router.get("/etfs", response_model=ApiResponse[list[EtfFund]])
-async def etfs(
+def etfs(
     category: str | None = Query(default=None),
     strategy: str | None = Query(default=None),
     min_premium: float | None = Query(default=None),
@@ -26,7 +26,7 @@ async def etfs(
 
 
 @router.get("/etfs/arbitrage", response_model=ApiResponse[list[EtfFund]])
-async def etf_arbitrage() -> ApiResponse[list[EtfFund]]:
+def etf_arbitrage() -> ApiResponse[list[EtfFund]]:
     """Return ETF arbitrage opportunities."""
     data = get_etf_arbitrage_opportunities()
     return ApiResponse(data=data)

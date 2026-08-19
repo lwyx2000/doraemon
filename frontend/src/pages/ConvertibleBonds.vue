@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, h } from 'vue'
+defineOptions({ name: 'ConvertibleBonds' })
+import { ref, computed, h, onMounted } from 'vue'
 import { NDataTable, NInput, NSelect, NIcon, NModal, NButton, useMessage } from 'naive-ui'
-import { DownloadOutline, FilterOutline, WarningOutline, CloseOutline } from '@vicons/ionicons5'
-import { mockConvertibleBonds } from '../composables/useMockData'
-import { useAsyncMock } from '../composables/useApi'
+import { DownloadOutline, FilterOutline, WarningOutline, SwapHorizontalOutline, StatsChartOutline, WalletOutline, ConstructOutline } from '@vicons/ionicons5'
+import type { Component } from 'vue'
+import { useAsyncData } from '../composables/useApi'
+import { api } from '../utils/api'
 import type { ConvertibleBond } from '../types'
 import { exportToCSV } from '../utils/export'
 import { analyzeConversionBatch, analyzeVolatilityBatch, CONVERSION_ORDER, VOL_SIGNAL_ORDER } from '../utils/convertibleBond'
@@ -16,7 +18,8 @@ import { useFieldHelp } from '../composables/useFieldHelp'
 
 const message = useMessage()
 const { titleWithHelp } = useFieldHelp()
-const { data: bonds, loading, error, refresh: refetch } = useAsyncMock(mockConvertibleBonds)
+const { data: bonds, loading, error, refresh: refetch } = useAsyncData<ConvertibleBond[]>(() => api.getConvertibleBonds())
+onMounted(refetch)
 
 // 转股套利可行性分析映射
 const conversionMap = computed(() => {
@@ -29,6 +32,57 @@ const volatilityMap = computed(() => {
   if (!bonds.value) return new Map<string, VolatilityAnalysis>()
   return analyzeVolatilityBatch(bonds.value)
 })
+// 策略快捷按钮
+interface StrategyDef {
+  key: string
+  label: string
+  icon: Component
+  desc: string
+  filter: (b: ConvertibleBond) => boolean
+}
+
+const strategies: StrategyDef[] = [
+  {
+    key: 'discount_arb',
+    label: '折价套利',
+    icon: SwapHorizontalOutline,
+    desc: '转股溢价率为负，存在转股折价套利空间',
+    filter: b => b.premium_pct < 0,
+  },
+  {
+    key: 'double_low',
+    label: '双低轮动',
+    icon: StatsChartOutline,
+    desc: '价格 ≤ 120 且溢价率 ≤ 30%，经典双低策略池',
+    filter: b => b.price <= 120 && b.premium_pct <= 30,
+  },
+  {
+    key: 'high_ytm',
+    label: '到期高收益',
+    icon: WalletOutline,
+    desc: '到期收益率 ≥ 2%，偏债型防守策略',
+    filter: b => b.ytm >= 2,
+  },
+  {
+    key: 'revision_play',
+    label: '下修博弈',
+    icon: ConstructOutline,
+    desc: '价格 ≤ 110、转股价值 ≤ 85 且下修进度 ≥ 50%',
+    filter: b =>
+      b.price <= 110 &&
+      b.conv_value <= 85 &&
+      (b.total_revision_days ?? 0) > 0 &&
+      (b.revision_days ?? 0) / (b.total_revision_days ?? 1) >= 0.5,
+  },
+]
+
+const activeStrategyKey = ref<string | null>(null)
+const activeStrategy = computed(() => strategies.find(s => s.key === activeStrategyKey.value) ?? null)
+
+function selectStrategy(key: string) {
+  activeStrategyKey.value = activeStrategyKey.value === key ? null : key
+}
+
 const filterPriceMin = ref('')
 const filterPriceMax = ref('')
 const filterPremiumMin = ref('')
@@ -56,6 +110,7 @@ const filteredBonds = computed(() => {
     if (filterYearsMax.value && b.remaining_years > Number(filterYearsMax.value)) return false
     if (filterDoubleLowMax.value && (b.double_low_score ?? b.price + b.premium_pct) > Number(filterDoubleLowMax.value)) return false
     if (filterZscoreMin.value && (b.altman_z_score ?? 99) < Number(filterZscoreMin.value)) return false
+    if (activeStrategyKey.value && !activeStrategy.value?.filter(b)) return false
     return true
   })
 })
@@ -73,16 +128,6 @@ function resetAdvancedFilters() {
   filterZscoreMin.value = ''
 }
 
-function resetAllFilters() {
-  filterPriceMin.value = ''
-  filterPriceMax.value = ''
-  filterPremiumMin.value = ''
-  filterPremiumMax.value = ''
-  filterRating.value = '全部评级'
-  resetAdvancedFilters()
-  message.info('已重置全部筛选条件')
-}
-
 const tagColors: Record<string, { bg: string; text: string; border: string }> = {
   double_low: { bg: '#d2e4ff', text: '#005ea1', border: 'rgba(0,94,161,0.2)' },
   undervalued: { bg: '#f2f3fa', text: '#717782', border: 'rgba(226,232,240,0.3)' },
@@ -90,12 +135,6 @@ const tagColors: Record<string, { bg: string; text: string; border: string }> = 
   stable_yield: { bg: '#d2e4ff', text: '#005ea1', border: 'rgba(0,94,161,0.2)' },
   mean_reversion: { bg: '#f2f3fa', text: '#717782', border: 'rgba(226,232,240,0.3)' },
   defensive: { bg: '#d2e4ff', text: '#005ea1', border: 'rgba(0,94,161,0.2)' },
-}
-
-const ratingColors: Record<string, { bg: string; text: string }> = {
-  AAA: { bg: '#dcfce7', text: '#166534' },
-  'AA+': { bg: '#dbeafe', text: '#1e40af' },
-  AA: { bg: '#fef9c3', text: '#854d0e' },
 }
 
 // Shared progress bar renderer for 条款触发进度
@@ -210,11 +249,19 @@ const columns = [
     title: titleWithHelp('到期收益', 'ytm'),
     key: 'ytm',
     align: 'right' as const,
-    render: (row: ConvertibleBond) => h(
-      'span',
-      { style: { color: row.ytm >= 0 ? 'var(--color-success)' : 'var(--color-danger)' } },
-      `${row.ytm >= 0 ? '+' : ''}${row.ytm}%`,
-    ),
+    render: (row: ConvertibleBond) => {
+      const children: any[] = [
+        h('span', { style: { color: row.ytm >= 0 ? 'var(--color-success)' : 'var(--color-danger)' } },
+          `${row.ytm >= 0 ? '+' : ''}${row.ytm}%`),
+      ]
+      if (row.ytm_approx) {
+        children.push(h('span', {
+          class: 'approx-badge',
+          title: '该到期收益率为本地近似估算，非集思录实时真实值',
+        }, '近似'))
+      }
+      return h('span', { class: 'ytm-cell' }, children)
+    },
   },
   {
     title: '剩余年限',
@@ -390,6 +437,7 @@ function exportBonds() {
   <LoadingState
     :loading="loading"
     :error="error"
+    skeleton
     :min-height="480"
     text="正在加载可转债数据..."
     @retry="refetch"
@@ -458,6 +506,26 @@ function exportBonds() {
           <n-icon :component="FilterOutline" size="16" />
         </button>
       </template>
+      <!-- Strategy Quick Filters -->
+      <div class="strategy-bar">
+        <span class="strategy-label">策略</span>
+        <div class="strategy-buttons">
+          <button
+            v-for="s in strategies"
+            :key="s.key"
+            class="strategy-btn"
+            :class="{ active: activeStrategyKey === s.key }"
+            :title="s.desc"
+            @click="selectStrategy(s.key)"
+          >
+            <n-icon :component="s.icon" size="14" />
+            <span>{{ s.label }}</span>
+          </button>
+        </div>
+        <div v-if="activeStrategy" class="strategy-hint">
+          {{ activeStrategy.desc }} · 匹配 {{ filteredBonds.length }} 只
+        </div>
+      </div>
       <n-data-table
         :columns="columns"
         :data="filteredBonds"
@@ -688,22 +756,41 @@ function exportBonds() {
   font-size: 9px; color: var(--color-danger); cursor: help;
   border-bottom: 1px dotted var(--color-danger);
 }
+
+/* 到期收益近似角标 (table, h()-rendered) */
+.ytm-cell { display: inline-flex; align-items: baseline; gap: 4px; justify-content: flex-end; font-family: 'JetBrains Mono', monospace; }
+.approx-badge {
+  display: inline-block; padding: 0 4px; border-radius: 2px;
+  font-size: 9px; font-weight: 700; letter-spacing: 0.02em;
+  background: var(--tag-orange-bg, #fff3e0); color: var(--tag-orange-text, #b45309);
+  font-family: 'Work Sans', sans-serif; cursor: help;
+}
 </style>
 
 <style scoped>
-.cb-page { display: flex; flex-direction: column; gap: 12px; }
+.cb-page { display: flex; flex-direction: column; gap: 14px; }
+
+/* Strategy quick filter bar */
+.strategy-bar { display: flex; align-items: center; gap: 12px; background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 10px; padding: 10px 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); flex-wrap: wrap; }
+.strategy-label { font-family: 'Work Sans', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-muted); flex-shrink: 0; }
+.strategy-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+.strategy-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border: 1px solid var(--border-default); border-radius: 6px; background: var(--bg-card); color: var(--text-secondary); font-family: 'Work Sans', sans-serif; font-size: 12px; font-weight: 700; cursor: pointer; transition: all 0.15s; }
+.strategy-btn:hover { background: var(--bg-hover); border-color: var(--color-primary); color: var(--color-primary); }
+.strategy-btn.active { background: var(--color-primary); border-color: var(--color-primary); color: var(--bg-card); }
+.strategy-btn.active:hover { opacity: 0.9; }
+.strategy-hint { font-size: 12px; color: var(--text-muted); margin-left: auto; white-space: nowrap; }
 
 /* 高级筛选弹窗 */
 .adv-filter-body { display: flex; flex-direction: column; gap: 12px; }
 .adv-field { display: flex; flex-direction: column; gap: 4px; }
-.adv-label { font-family: 'Work Sans', sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-muted); }
+.adv-label { font-family: 'Work Sans', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-muted); }
 
 /* Top Row */
-.top-row { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; }
+.top-row { display: grid; grid-template-columns: 2fr 1fr; gap: 14px; }
 
 .filter-panel {
-  background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 8px;
-  padding: 12px 16px; display: flex; gap: 16px; align-items: flex-end;
+  background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 10px;
+  padding: 12px 18px; display: flex; gap: 16px; align-items: flex-end;
   box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
 
@@ -735,16 +822,16 @@ function exportBonds() {
   flex-direction: column; 
   justify-content: flex-end;
 }
-.filter-label { font-family: 'Work Sans', sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 2px; }
+.filter-label { font-family: 'Work Sans', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 2px; }
 
 .filter-inputs { display: flex; align-items: center; gap: 6px; }
 .filter-inputs .n-input { flex: 1; }
-.filter-sep { color: var(--text-muted); font-size: 12px; flex-shrink: 0; }
+.filter-sep { color: var(--text-muted); font-size: 13px; flex-shrink: 0; }
 
 .filter-apply {
   height: 28px; padding: 0 16px; background: var(--color-primary); color: var(--bg-card);
   border: none; border-radius: 4px; font-family: 'Work Sans', sans-serif;
-  font-size: 11px; font-weight: 700; letter-spacing: 0.05em; cursor: pointer;
+  font-size: 12px; font-weight: 700; letter-spacing: 0.05em; cursor: pointer;
   transition: opacity 0.15s, box-shadow 0.15s;
   white-space: nowrap;
 }
@@ -752,7 +839,7 @@ function exportBonds() {
 .filter-apply:active { opacity: 0.8; }
 
 .market-stats {
-  background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 8px;
+  background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 10px;
   display: flex; align-items: center; gap: 0;
   box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
@@ -767,10 +854,10 @@ function exportBonds() {
   justify-content: center;
 }
 
-.mstat-label { font-family: 'Work Sans', sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-muted); }
+.mstat-label { font-family: 'Work Sans', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-muted); }
 .mstat-row { display: flex; align-items: center; gap: 8px; }
 .mstat-value { font-family: 'JetBrains Mono', monospace; font-size: 22px; font-weight: 600; color: var(--text-primary); line-height: 1.2; }
-.mstat-chg { font-size: 12px; font-weight: 700; }
+.mstat-chg { font-size: 13px; font-weight: 700; }
 .mstat-chg.pos { color: var(--color-success); }
 .mstat-chg.neg { color: var(--color-danger); }
 
@@ -779,41 +866,41 @@ function exportBonds() {
   padding: 8px 16px; border-top: 1px solid var(--border-default); background: var(--bg-card);
 }
 
-.footer-info { font-size: 12px; color: var(--text-muted); }
+.footer-info { font-size: 13px; color: var(--text-muted); }
 .footer-pages { display: flex; gap: 4px; }
 .page-btn {
   padding: 4px 12px; border: 1px solid var(--border-default); border-radius: 4px;
-  background: var(--bg-card); cursor: pointer; font-size: 12px; color: var(--text-muted); transition: all 0.15s;
+  background: var(--bg-card); cursor: pointer; font-size: 13px; color: var(--text-muted); transition: all 0.15s;
 }
 .page-btn.active { background: var(--color-primary); color: var(--bg-card); border-color: var(--color-primary); }
 .page-btn:hover:not(.active) { background: var(--bg-hover); }
 .page-btn:active:not(.active) { background: var(--bg-active); }
 
 /* Bottom Rankings */
-.bottom-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; height: 200px; }
+.bottom-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; height: 200px; }
 
-.rank-panel { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+.rank-panel { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
 
 .rank-header {
   padding: 8px 12px; border-bottom: 1px solid var(--border-default); background: var(--bg-subtle);
 }
 .rank-header.danger { background: var(--tag-red-bg); }
-.rank-header h4 { font-family: 'Work Sans', sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-brand); margin: 0; }
+.rank-header h4 { font-family: 'Work Sans', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-brand); margin: 0; }
 .rank-header.danger h4 { color: var(--color-danger); }
 
 .rank-list { flex: 1; padding: 8px 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
-.rank-item { display: flex; align-items: center; gap: 8px; font-size: 13px; transition: background 0.15s; padding: 2px 4px; border-radius: 4px; }
+.rank-item { display: flex; align-items: center; gap: 8px; font-size: 14px; transition: background 0.15s; padding: 2px 4px; border-radius: 4px; }
 .rank-item:hover { background: var(--bg-hover); }
 .rank-num { color: var(--text-muted); font-weight: 600; min-width: 20px; }
 .rank-name { flex: 1; color: var(--text-primary); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rank-score { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; color: var(--color-primary); }
+.rank-score { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600; color: var(--color-primary); }
 .warn-icon { color: var(--color-danger); }
 
-.empty-hint { font-size: 11px; color: var(--text-muted); text-align: center; padding: 12px 0; font-style: italic; }
+.empty-hint { font-size: 12px; color: var(--text-muted); text-align: center; padding: 12px 0; font-style: italic; }
 
 /* 正股风险预警 list item */
 .stock-risk-item { flex-wrap: wrap; }
-.stock-sub { font-size: 10px; color: var(--text-muted); font-weight: 400; margin-left: 2px; }
+.stock-sub { font-size: 11px; color: var(--text-muted); font-weight: 400; margin-left: 2px; }
 .risk-badges { display: flex; gap: 4px; flex-wrap: wrap; }
 .risk-badge {
   display: inline-block; padding: 1px 6px; border-radius: 2px;
@@ -832,7 +919,7 @@ function exportBonds() {
 .conv-item { flex-wrap: wrap; }
 .conv-tags { display: flex; gap: 4px; align-items: center; flex-shrink: 0; }
 .conv-yield-tag {
-  font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700;
+  font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700;
   color: var(--color-danger);
 }
 .conv-yield-tag.pos { color: var(--color-success); }
@@ -848,7 +935,7 @@ function exportBonds() {
 .vol-item { flex-wrap: wrap; }
 .vol-tags { display: flex; gap: 4px; align-items: center; flex-shrink: 0; }
 .vol-iv, .vol-hv {
-  font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600;
   color: var(--text-secondary);
 }
 .vol-signal-tag {

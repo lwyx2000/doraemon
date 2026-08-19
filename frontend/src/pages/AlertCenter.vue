@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, reactive, h, computed } from 'vue'
+defineOptions({ name: 'AlertCenter' })
+import { ref, reactive, h, computed, onMounted } from 'vue'
 import { NButton, NSwitch, NIcon, NModal, NDrawer, NDrawerContent, NInput, NInputNumber, NSelect, NCheckboxGroup, NCheckbox, NDataTable, useMessage, useDialog } from 'naive-ui'
 import {
   AddCircleOutline,
@@ -10,15 +11,11 @@ import {
   TrashOutline,
   EyeOutline,
   SearchOutline,
+  RefreshOutline,
 } from '@vicons/ionicons5'
-import {
-  mockAlertRules,
-  mockEtfFunds,
-  mockFunds,
-  mockConvertibleBonds,
-  mockReits,
-} from '../composables/useMockData'
-import { useAsyncMock } from '../composables/useApi'
+import type { ConvertibleBond, FundItem, ReitItem, AlertEvent } from '../types'
+import { useAsyncData } from '../composables/useApi'
+import { api } from '../utils/api'
 import { analyzeArbitrageBatch } from '../utils/arbitrage'
 import { analyzeConversionBatch, analyzeVolatilityBatch } from '../utils/convertibleBond'
 import { analyzeClosedFundBatch } from '../utils/closedFund'
@@ -32,8 +29,51 @@ import GlossaryPanel from '../components/GlossaryPanel.vue'
 
 const message = useMessage()
 const dialog = useDialog()
-const { data: alertRules, loading, error, refresh: refetch } = useAsyncMock(mockAlertRules)
+const { data: alertRules, loading, error, refresh: refetch } = useAsyncData<AlertRule[]>(() => api.getAlertRules())
+// 实时信号基于 53 上 AkShare 的真实数据（可转债 / 基金 / REITs），不再使用前端 mock
+const { data: bonds, execute: executeBonds } = useAsyncData<ConvertibleBond[]>(() => api.getConvertibleBonds())
+const { data: funds, execute: executeFunds } = useAsyncData<FundItem[]>(() => api.getFunds())
+const { data: reits, execute: executeReits } = useAsyncData<ReitItem[]>(() => api.getReits())
+onMounted(() => {
+  refetch()
+  executeBonds()
+  executeFunds()
+  executeReits()
+  loadAlertEvents()
+})
 
+// ---- 预警历史（从后端 /alerts/events 加载，不再写死）----
+const alertEvents = ref<AlertEvent[]>([])
+const eventsLoading = ref(false)
+const scanning = ref(false)
+
+async function loadAlertEvents() {
+  eventsLoading.value = true
+  try {
+    const res = await api.getAlertEvents({ page: 1, page_size: 50 })
+    alertEvents.value = res.items
+  } catch {
+    alertEvents.value = []
+  } finally {
+    eventsLoading.value = false
+  }
+}
+
+async function runScan() {
+  scanning.value = true
+  try {
+    const result = await api.scanAlerts()
+    message.success(`扫描完成：检查 ${result.scanned_rules} 条规则，触发 ${result.triggered_events} 个预警`)
+    // 刷新事件列表
+    await loadAlertEvents()
+  } catch (e: any) {
+    message.error('扫描失败: ' + (e?.message || e))
+  } finally {
+    scanning.value = false
+  }
+}
+
+// 将 AlertEvent 转换为表格展示格式
 interface HistoryItem {
   id: string
   rule: string
@@ -41,6 +81,33 @@ interface HistoryItem {
   value: string
   triggered: string
   status: 'active' | 'resolved'
+  rawEvent: AlertEvent
+}
+
+const alertHistory = computed<HistoryItem[]>(() => {
+  return alertEvents.value.map(ev => ({
+    id: String(ev.id),
+    rule: getRuleName(ev.rule_id),
+    target: ev.target_name || ev.target_code || '-',
+    value: ev.actual_value != null ? String(ev.actual_value) : '-',
+    triggered: formatTime(ev.triggered_at),
+    status: ev.is_read ? 'resolved' as const : 'active' as const,
+    rawEvent: ev,
+  }))
+})
+
+function getRuleName(ruleId: string): string {
+  const rule = (alertRules.value ?? []).find(r => r.id === ruleId)
+  return rule?.name || '未知规则'
+}
+
+function formatTime(iso: string): string {
+  try {
+    const d = new Date(iso)
+    return d.toLocaleString('zh-CN', { hour12: false })
+  } catch {
+    return iso
+  }
 }
 
 interface SignalItem {
@@ -52,7 +119,7 @@ interface SignalItem {
   time: string
 }
 
-// ---- 动态信号生成：基于 mock 数据分析结果计算实时信号 ----
+// ---- 动态信号生成：基于 53 AkShare 真实数据分析结果计算实时信号 ----
 const realtimeSignals = computed<SignalItem[]>(() => {
   const signals: SignalItem[] = []
   let idx = 0
@@ -73,7 +140,7 @@ const realtimeSignals = computed<SignalItem[]>(() => {
   }
 
   // a) ETF/LOF 套利信号（排除封闭基金，封闭基金由专项分析覆盖）
-  const arbitrageFunds = [...mockEtfFunds, ...mockFunds.filter(f => f.type !== 'closed')]
+  const arbitrageFunds = (funds.value ?? []).filter(f => f.type !== 'closed')
   const arbResults = analyzeArbitrageBatch(arbitrageFunds)
   arbitrageFunds.forEach(fund => {
     const a = arbResults.get(fund.code)
@@ -103,9 +170,9 @@ const realtimeSignals = computed<SignalItem[]>(() => {
   })
 
   // b) 可转债信号（转股套利 + 波动率）
-  const convResults = analyzeConversionBatch(mockConvertibleBonds)
-  const volResults = analyzeVolatilityBatch(mockConvertibleBonds)
-  mockConvertibleBonds.forEach(bond => {
+  const convResults = analyzeConversionBatch(bonds.value ?? [])
+  const volResults = analyzeVolatilityBatch(bonds.value ?? [])
+  ;(bonds.value ?? []).forEach(bond => {
     const conv = convResults.get(bond.code)
     const vol = volResults.get(bond.code)
     if (conv) {
@@ -145,7 +212,7 @@ const realtimeSignals = computed<SignalItem[]>(() => {
   })
 
   // c) 封闭基金信号（折价收敛 / 流动性 / 信用风险）
-  const closedFunds = mockFunds.filter(f => f.type === 'closed')
+  const closedFunds = (funds.value ?? []).filter(f => f.type === 'closed')
   const closedResults = analyzeClosedFundBatch(closedFunds)
   closedFunds.forEach(fund => {
     const c = closedResults.get(fund.code)
@@ -177,8 +244,8 @@ const realtimeSignals = computed<SignalItem[]>(() => {
   })
 
   // d) REITs 信号（NAV折溢价 / 分红可持续性 / 流动性）
-  const reitsResults = analyzeReitsBatch(mockReits)
-  mockReits.forEach(reit => {
+  const reitsResults = analyzeReitsBatch(reits.value ?? [])
+  ;(reits.value ?? []).forEach(reit => {
     const r = reitsResults.get(reit.code)
     if (!r) return
     if (r.navLevel === 'premium') {
@@ -222,17 +289,6 @@ const filteredSignals = computed(() => {
   return realtimeSignals.value.filter(s => s.severity === signalFilter.value)
 })
 
-const alertHistory = ref<HistoryItem[]>([
-  { id: 'h1', rule: '溢价率异动预警', target: '161129.SZ', value: '6.25%', triggered: '2026-07-22 14:22', status: 'active' },
-  { id: 'h2', rule: '折价率收敛提醒', target: '160311.SH', value: '-2.10%', triggered: '2026-07-22 14:20', status: 'active' },
-  { id: 'h3', rule: '强赎风险监控', target: 'TechGrowth CB', value: '248.10', triggered: '2026-07-22 14:18', status: 'active' },
-  { id: 'h4', rule: '溢价率异动预警', target: '501306.SH', value: '5.12%', triggered: '2026-07-22 11:05', status: 'resolved' },
-  { id: 'h5', rule: 'YTM超阈值预警', target: 'AlphaLogic CB', value: '4.58%', triggered: '2026-07-21 09:30', status: 'resolved' },
-  { id: 'h6', rule: '套利可行性预警', target: '华夏纳指100ETF', value: '限购100元', triggered: '2026-07-22 14:25', status: 'active' },
-  { id: 'h7', rule: '转股套利陷阱', target: 'TechGrowth CB', value: '正股涨停', triggered: '2026-07-22 14:18', status: 'active' },
-  { id: 'h8', rule: '波动率异常', target: 'TechGrowth CB', value: 'IV=55.8%', triggered: '2026-07-21 13:45', status: 'resolved' },
-])
-
 // ---- 预警规则创建弹窗 (PRD 页七) ----
 const showRuleModal = ref(false)
 const ruleForm = reactive<{ name: string; type: AlertRule['type']; target: string; condition: AlertRule['condition']; value: number | null; channels: AlertRule['channels'] }>({
@@ -269,22 +325,20 @@ function openRuleModal() {
   showRuleModal.value = true
 }
 
-function saveRule() {
+async function saveRule() {
   if (!ruleForm.name.trim()) { message.warning('请输入规则名称'); return }
   if (!ruleForm.target.trim()) { message.warning('请输入监控标的'); return }
   if (ruleForm.value === null) { message.warning('请输入触发阈值'); return }
   if (ruleForm.channels.length === 0) { message.warning('请至少选择一个通知渠道'); return }
-  if (!alertRules.value) return
-  alertRules.value.push({
-    id: 'a' + Date.now(),
+  const created = await api.createAlertRule({
     name: ruleForm.name.trim(),
     type: ruleForm.type,
     target: ruleForm.target.trim(),
     condition: ruleForm.condition,
     value: ruleForm.value,
     channels: [...ruleForm.channels],
-    active: true,
   })
+  alertRules.value?.push(created)
   message.success(`已创建: ${ruleForm.name}`)
   showRuleModal.value = false
 }
@@ -298,18 +352,16 @@ const ruleTemplates: RuleTemplate[] = [
   { name: '转债价格破 120', type: 'price', target: '', condition: 'below', value: 120, channels: ['popup', 'wechat'], desc: '可转债价格低于 120 触发买入提醒' },
   { name: 'YTM 高于 4%', type: 'ytm', target: '', condition: 'above', value: 4, channels: ['popup', 'email'], desc: '到期收益率高于 4% 触发配置价值提醒' },
 ]
-function importRuleTemplate(tpl: RuleTemplate) {
-  if (!alertRules.value) return
-  alertRules.value.push({
-    id: 'a' + Date.now(),
+async function importRuleTemplate(tpl: RuleTemplate) {
+  const created = await api.createAlertRule({
     name: tpl.name + ' (副本)',
     type: tpl.type,
     target: tpl.target || '全部标的',
     condition: tpl.condition,
     value: tpl.value,
     channels: [...tpl.channels],
-    active: false,
   })
+  alertRules.value?.push(created)
   message.success(`已导入模板: ${tpl.name}`)
   showRuleTemplates.value = false
 }
@@ -321,11 +373,22 @@ const detailItem = ref<HistoryItem | null>(null)
 function viewHistoryDetail(item: HistoryItem) {
   detailItem.value = item
   showDetailDrawer.value = true
+  // 标记为已读
+  if (!item.rawEvent.is_read) {
+    api.markAlertEventRead(item.rawEvent.id).then(() => {
+      loadAlertEvents()
+    }).catch(() => {})
+  }
 }
 
 function toggleRule(rule: AlertRule) {
-  rule.active = !rule.active
-  message.success(`${rule.name}: ${rule.active ? '已启用' : '已禁用'}`)
+  const next = !rule.active
+  rule.active = next
+  api.updateAlertRule(rule.id, { active: next }).catch(() => {
+    rule.active = !next
+    message.error('更新状态失败')
+  })
+  message.success(`${rule.name}: ${next ? '已启用' : '已禁用'}`)
 }
 
 function deleteRule(rule: AlertRule) {
@@ -334,28 +397,23 @@ function deleteRule(rule: AlertRule) {
     content: `确定删除「${rule.name}」吗？`,
     positiveText: '删除',
     negativeText: '取消',
-    onPositiveClick: () => {
-      if (!alertRules.value) return
-      const idx = alertRules.value.findIndex(r => r.id === rule.id)
-      if (idx > -1) {
-        alertRules.value.splice(idx, 1)
+    onPositiveClick: async () => {
+      const idx = alertRules.value?.findIndex(r => r.id === rule.id)
+      if (idx !== undefined && idx > -1) alertRules.value!.splice(idx, 1)
+      try {
+        await api.deleteAlertRule(rule.id)
         message.success(`已删除: ${rule.name}`)
+      } catch {
+        message.error(`删除失败: ${rule.name}`)
       }
     },
   })
 }
 
 function clearAllResolved() {
-  dialog.warning({
-    title: '清除已解决通知',
-    content: '确定清除所有已解决的历史通知吗？',
-    positiveText: '清除',
-    negativeText: '取消',
-    onPositiveClick: () => {
-      alertHistory.value = alertHistory.value.filter(h => h.status !== 'resolved')
-      message.success('已清除所有已解决通知')
-    },
-  })
+  // 将所有已读事件标记为已解决（前端过滤显示）
+  alertEvents.value = alertEvents.value.filter(ev => ev.is_read === false)
+  message.success('已清除所有已解决通知')
 }
 
 const severityConfig = {
@@ -407,7 +465,15 @@ const historyFilter = ref<'all' | 'today' | 'week'>('all')
 
 const filteredHistory = computed(() => {
   if (historyFilter.value === 'all') return alertHistory.value
-  // Stub: in real impl, filter by date
+  if (historyFilter.value === 'today') {
+    const today = new Date().toDateString()
+    return alertHistory.value.filter(h => new Date(h.rawEvent.triggered_at).toDateString() === today)
+  }
+  if (historyFilter.value === 'week') {
+    const now = new Date()
+    const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+    return alertHistory.value.filter(h => new Date(h.rawEvent.triggered_at) >= weekAgo)
+  }
   return alertHistory.value
 })
 </script>
@@ -416,6 +482,7 @@ const filteredHistory = computed(() => {
   <LoadingState
     :loading="loading"
     :error="error"
+    skeleton
     :min-height="520"
     text="正在加载预警数据..."
     @retry="refetch"
@@ -424,7 +491,11 @@ const filteredHistory = computed(() => {
     <!-- Page Header -->
     <PageHeader title="预警与信号中心" subtitle="实时预警监控与规则管理 — 跟踪折溢价异动、强赎风险和套利机会" helpKey="alertCenter">
       <template #actions>
-        <n-button size="small" @click="clearAllResolved">清除全部</n-button>
+        <n-button size="small" :loading="scanning" @click="runScan">
+          <template #icon><n-icon :component="RefreshOutline" /></template>
+          扫描
+        </n-button>
+        <n-button size="small" @click="clearAllResolved">清除已解决</n-button>
         <n-button size="small" type="primary" @click="openRuleModal">
           <template #icon>
             <n-icon :component="AddCircleOutline" />
@@ -441,14 +512,8 @@ const filteredHistory = computed(() => {
       <StatCard label="中危信号" :value="mediumSignalCount" sub="风险提示" color="#c47a00" />
       <StatCard label="套利机会" :value="lowSignalCount" sub="低优先级机会" color="#005ea1" tip="综合可行性判定：可行=资金充足且敞口可控；有风险=敞口可能吞噬收益；不可行=限购或停牌导致无法执行。" />
       <StatCard label="活跃规则" :value="alertRules?.filter(r => r.active).length ?? 0" :sub="`规则总数: ${alertRules?.length ?? 0}`" color="#005ea1" />
-      <StatCard label="今日预警" :value="alertHistory.length" sub="3 条未处理" />
-      <StatCard label="通知渠道" value="3">
-        <div class="notif-channels">
-          <span class="channel-badge">弹窗</span>
-          <span class="channel-badge">钉钉</span>
-          <span class="channel-badge">微信</span>
-        </div>
-      </StatCard>
+      <StatCard label="未读预警" :value="alertEvents.filter(e => !e.is_read).length" :sub="`总事件: ${alertEvents.length}`" />
+      <StatCard label="通知渠道" :value="(alertRules ?? []).flatMap(r => r.channels).filter((v, i, a) => a.indexOf(v) === i).length" sub="已配置渠道数" />
     </div>
 
     <!-- Main Content Grid -->
@@ -649,7 +714,7 @@ const filteredHistory = computed(() => {
 </template>
 
 <style scoped>
-.alert-page { display: flex; flex-direction: column; gap: 12px; }
+.alert-page { display: flex; flex-direction: column; gap: 14px; }
 
 /* Stat grid override for 6 severity/summary cards */
 .stat-grid-signals { grid-template-columns: repeat(6, 1fr); }
@@ -658,10 +723,10 @@ const filteredHistory = computed(() => {
 
 /* Summary extras */
 .notif-channels { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
-.channel-badge { padding: 2px 8px; background: var(--tag-gray-bg); color: var(--tag-gray-text); border-radius: 4px; font-size: 10px; font-weight: 600; }
+.channel-badge { padding: 2px 8px; background: var(--tag-gray-bg); color: var(--tag-gray-text); border-radius: 4px; font-size: 11px; font-weight: 600; }
 
 /* Main Grid */
-.main-grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 12px; height: 420px; }
+.main-grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 14px; height: 420px; }
 
 /* Signal Panel */
 .signal-panel { display: flex; flex-direction: column; }
@@ -670,7 +735,7 @@ const filteredHistory = computed(() => {
 
 /* Signal severity filters */
 .signal-filters { display: flex; align-items: center; gap: 6px; padding: 8px 12px 4px; border-bottom: 1px solid var(--border-default); }
-.signal-filter-btn { padding: 2px 10px; border: 1px solid var(--border-default); border-radius: 4px; background: var(--bg-card); cursor: pointer; font-size: 10px; font-weight: 700; color: var(--text-muted); transition: all 0.15s; }
+.signal-filter-btn { padding: 2px 10px; border: 1px solid var(--border-default); border-radius: 4px; background: var(--bg-card); cursor: pointer; font-size: 11px; font-weight: 700; color: var(--text-muted); transition: all 0.15s; }
 .signal-filter-btn.active { background: var(--color-primary); color: white; border-color: var(--color-primary); }
 .signal-filter-btn:hover:not(.active) { background: var(--bg-hover); }
 
@@ -687,9 +752,9 @@ const filteredHistory = computed(() => {
 
 .signal-content { flex: 1; min-width: 0; }
 .signal-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-.signal-title { font-weight: 600; font-size: 13px; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.signal-time { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text-muted); white-space: nowrap; }
-.signal-desc { display: block; font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.signal-title { font-weight: 600; font-size: 14px; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.signal-time { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+.signal-desc { display: block; font-size: 13px; color: var(--text-muted); margin-top: 2px; }
 .signal-tags { display: flex; gap: 4px; margin-top: 6px; }
 .signal-type-tag { padding: 1px 6px; border-radius: 2px; font-size: 9px; font-weight: 700; }
 .severity-tag { padding: 1px 6px; border-radius: 2px; font-size: 9px; font-weight: 700; }
@@ -700,7 +765,7 @@ const filteredHistory = computed(() => {
 .live-badge {
   display: flex; align-items: center; gap: 4px; padding: 2px 8px;
   background: var(--tag-red-bg); color: var(--tag-red-text); border-radius: 4px;
-  font-size: 10px; font-weight: 700; letter-spacing: 0.05em;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.05em;
 }
 .live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--color-danger); animation: pulse 1.5s infinite; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
@@ -715,10 +780,10 @@ const filteredHistory = computed(() => {
 
 .rule-main { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
 .rule-info { flex: 1; min-width: 0; }
-.rule-name { font-weight: 600; font-size: 12px; color: var(--text-primary); display: block; }
+.rule-name { font-weight: 600; font-size: 13px; color: var(--text-primary); display: block; }
 .rule-meta { display: flex; gap: 8px; margin-top: 4px; }
-.rule-target { font-size: 10px; color: var(--text-muted); background: var(--bg-hover); padding: 1px 6px; border-radius: 2px; }
-.rule-condition { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--color-primary); font-weight: 700; }
+.rule-target { font-size: 11px; color: var(--text-muted); background: var(--bg-hover); padding: 1px 6px; border-radius: 2px; }
+.rule-condition { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--color-primary); font-weight: 700; }
 
 .rule-controls { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .rule-delete { display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: none; background: transparent; border-radius: 4px; cursor: pointer; color: var(--text-placeholder); transition: all 0.15s; }
@@ -730,20 +795,20 @@ const filteredHistory = computed(() => {
 .add-rule-bar {
   display: flex; align-items: center; gap: 8px; padding: 12px 16px;
   border-top: 1px dashed var(--border-default); cursor: pointer; color: var(--text-muted);
-  font-size: 12px; font-weight: 600; transition: all 0.15s;
+  font-size: 13px; font-weight: 600; transition: all 0.15s;
 }
 .add-rule-bar:hover { background: var(--bg-overlay); color: var(--color-primary); }
 
 .history-filters { display: flex; align-items: center; gap: 8px; }
-.filter-btn { padding: 2px 10px; border: 1px solid var(--border-default); border-radius: 4px; background: var(--bg-card); cursor: pointer; font-size: 10px; font-weight: 700; color: var(--text-muted); transition: all 0.15s; }
+.filter-btn { padding: 2px 10px; border: 1px solid var(--border-default); border-radius: 4px; background: var(--bg-card); cursor: pointer; font-size: 11px; font-weight: 700; color: var(--text-muted); transition: all 0.15s; }
 .filter-btn.active { background: var(--color-primary); color: white; border-color: var(--color-primary); }
 .filter-btn:hover:not(.active) { background: var(--bg-hover); }
 .filter-search-icon { color: var(--text-muted); cursor: pointer; }
 
 .rule-cell { font-weight: 600; color: var(--text-primary); }
-.target-cell { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text-secondary); }
+.target-cell { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--text-secondary); }
 
-.status-badge { display: inline-block; padding: 2px 8px; border-radius: 2px; font-size: 10px; font-weight: 700; }
+.status-badge { display: inline-block; padding: 2px 8px; border-radius: 2px; font-size: 11px; font-weight: 700; }
 .status-badge.active { background: var(--tag-red-bg); color: var(--tag-red-text); }
 .status-badge.resolved { background: var(--tag-green-bg); color: var(--tag-green-text); }
 
@@ -754,15 +819,15 @@ const filteredHistory = computed(() => {
 .rule-builder-body { display: flex; flex-direction: column; gap: 14px; }
 .rule-builder-field { display: flex; flex-direction: column; gap: 6px; flex: 1; }
 .rule-builder-row { display: flex; gap: 12px; }
-.rule-builder-label { font-family: 'Work Sans', sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-secondary); }
+.rule-builder-label { font-family: 'Work Sans', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-secondary); }
 
 /* 详情抽屉 */
 .detail-body { display: flex; flex-direction: column; gap: 16px; }
 .detail-row { display: flex; flex-direction: column; gap: 4px; }
-.detail-label { font-family: 'Work Sans', sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-muted); }
-.detail-value { font-size: 14px; color: var(--text-primary); }
+.detail-label { font-family: 'Work Sans', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-muted); }
+.detail-value { font-size: 15px; color: var(--text-primary); }
 .detail-value-highlight { color: var(--color-primary); font-weight: 600; }
-.detail-status { display: inline-block; padding: 2px 10px; border-radius: 2px; font-size: 11px; font-weight: 700; }
+.detail-status { display: inline-block; padding: 2px 10px; border-radius: 2px; font-size: 12px; font-weight: 700; }
 .detail-status.active { background: var(--tag-red-bg); color: var(--tag-red-text); }
 .detail-status.resolved { background: var(--tag-green-bg); color: var(--tag-green-text); }
 

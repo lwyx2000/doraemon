@@ -9,7 +9,7 @@ router = APIRouter(tags=["reits"])
 
 
 @router.get("/reits", response_model=ApiResponse[list[ReitItem]])
-async def list_reits(
+def list_reits(
     asset_type: str | None = Query(
         None, description="Asset type, e.g. 产业园, 仓储物流, 水务, 高速公路"
     ),

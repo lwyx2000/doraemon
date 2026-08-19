@@ -1,7 +1,7 @@
 """AI service — report generation and configuration.
 
-Generates mock AI reports by analysing current market data and arbitrage
-opportunities.  All state is held in-memory.
+基于真实行情数据生成 AI 报告：宏观判断取自真实 ERP（失败则如实说明数据缺失），
+套利告警取自真实 ETF 数据（取数失败时为空，不使用 mock）。报告状态为内存态。
 """
 
 from __future__ import annotations
@@ -9,14 +9,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from mock_data import (
-    MOCK_MACRO_DATA,
-    MOCK_FUNDS,
-    MOCK_ETF_FUNDS,
-    MOCK_CONVERTIBLE_BONDS,
-)
 from utils.arbitrage import analyze_arbitrage
 from services.strategy_service import get_strategies, execute_strategy
+from services.market_service import get_macro_indicators_with_meta
+from services.etf_service import get_etfs
 
 # ============================================================
 # In-memory state
@@ -71,9 +67,15 @@ def generate_ai_report(user_id: str) -> dict:
       * strategy_matches   — items matching each active strategy's rules
       * arbitrage_alerts   — high-premium ETFs with feasibility assessment
     """
-    # ---- Macro assessment based on ERP -------------------------------
-    erp = MOCK_MACRO_DATA.get("erp", 0)
-    if erp > 4:
+    # ---- Macro assessment based on ERP (真实数据) ------------------
+    macro_data, macro_meta = get_macro_indicators_with_meta()
+    erp = (macro_data or {}).get("erp")
+    if erp is None:
+        macro_assessment = (
+            "当前股权风险溢价(ERP)数据暂不可用（取数失败），"
+            "无法给出基于 ERP 的估值判断，请稍后重试或检查数据源。"
+        )
+    elif erp > 4:
         macro_assessment = (
             f"当前股权风险溢价(ERP)为 {erp}%，处于历史较高水平，"
             f"市场整体估值偏低，具备中长期配置价值。"
@@ -90,11 +92,11 @@ def generate_ai_report(user_id: str) -> dict:
             f"市场估值偏高，建议谨慎操作，注意控制仓位风险。"
         )
 
-    # ---- Strategy matches -------------------------------------------
+    # ---- Strategy matches (只跟踪 ai_tracking=True 的策略) -----------
     strategy_matches: list[dict[str, Any]] = []
     strategies = get_strategies(user_id)
     for s in strategies:
-        if not s.get("active"):
+        if not s.get("active") or not s.get("ai_tracking"):
             continue
         items = execute_strategy(user_id, s["id"], None)
         strategy_matches.append({
@@ -102,9 +104,13 @@ def generate_ai_report(user_id: str) -> dict:
             "items": items[:5],
         })
 
-    # ---- Arbitrage alerts (high-premium ETFs) -----------------------
+    # ---- Arbitrage alerts (high-premium ETFs, 真实数据) ------------
     arbitrage_alerts: list[dict[str, Any]] = []
-    for etf in MOCK_ETF_FUNDS:
+    try:
+        etfs = get_etfs()
+    except Exception:
+        etfs = []
+    for etf in etfs:
         premium = etf.get("premium_pct", 0)
         if premium > _PREMIUM_ALERT_THRESHOLD:
             analysis = analyze_arbitrage(etf)

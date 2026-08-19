@@ -92,8 +92,8 @@ def analyze_reits(reit: dict[str, Any]) -> dict[str, Any]:
         warnings.append(f"出租率下降{abs(reit.get('occupancy_trend', 0))}%")
 
     score = _calc_score(
-        reit.get("dividend_rate", 0),
-        reit.get("irr", 0),
+        reit.get("dividend_rate") or 0,
+        reit.get("irr") or 0,
         nav["level"],
         sustain["level"],
         liq["level"],

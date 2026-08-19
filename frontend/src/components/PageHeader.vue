@@ -86,10 +86,10 @@ const helpData = computed(() => {
 </template>
 
 <style scoped>
-.page-header { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; }
+.page-header { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; margin-bottom: 4px; }
 .header-left { min-width: 0; }
-.page-title { font-family: 'Work Sans', sans-serif; font-size: 24px; font-weight: 600; letter-spacing: -0.02em; color: var(--text-primary); margin: 0; }
-.page-subtitle { font-size: 12px; color: var(--text-muted); margin: 2px 0 0; }
+.page-title { font-family: 'Work Sans', sans-serif; font-size: 26px; font-weight: 600; letter-spacing: -0.02em; color: var(--text-primary); margin: 0; }
+.page-subtitle { font-size: 13px; color: var(--text-muted); margin: 4px 0 0; }
 .header-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
 
 .help-modal-body { display: flex; flex-direction: column; gap: 20px; padding: 4px 0; }
@@ -97,18 +97,18 @@ const helpData = computed(() => {
 .help-section { display: flex; flex-direction: column; gap: 8px; }
 .help-section-title {
   display: flex; align-items: center; gap: 6px;
-  font-family: 'Work Sans', sans-serif; font-size: 13px; font-weight: 700;
+  font-family: 'Work Sans', sans-serif; font-size: 14px; font-weight: 700;
   color: var(--text-primary);
 }
 .help-section-text {
-  font-size: 13px; line-height: 1.6; color: var(--text-secondary); margin: 0;
+  font-size: 14px; line-height: 1.6; color: var(--text-secondary); margin: 0;
 }
 .help-strategy-list {
   margin: 0; padding-left: 0; list-style: none;
   display: flex; flex-direction: column; gap: 6px;
 }
 .help-strategy-list li {
-  font-size: 13px; line-height: 1.5; color: var(--text-secondary);
+  font-size: 14px; line-height: 1.5; color: var(--text-secondary);
   padding-left: 16px; position: relative;
 }
 .help-strategy-list li::before {

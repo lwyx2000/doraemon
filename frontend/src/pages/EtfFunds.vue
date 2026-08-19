@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, h } from 'vue'
+defineOptions({ name: 'EtfFunds' })
+import { ref, computed, h, onMounted } from 'vue'
 import { NDataTable, NButton, NIcon, NTag, useMessage } from 'naive-ui'
 import {
   SwapHorizontalOutline,
@@ -10,11 +11,11 @@ import {
   RefreshOutline,
   WarningOutline,
 } from '@vicons/ionicons5'
-import { mockEtfFunds } from '../composables/useMockData'
-import { useAsyncMock } from '../composables/useApi'
+import { api } from '../composables/useApi'
+import { useAsyncData } from '../composables/useApi'
 import type { EtfFund } from '../types'
 import { exportToCSV } from '../utils/export'
-import { analyzeArbitrage, analyzeArbitrageBatch, FEASIBILITY_ORDER } from '../utils/arbitrage'
+import { analyzeArbitrageBatch, FEASIBILITY_ORDER } from '../utils/arbitrage'
 import type { ArbitrageAnalysis } from '../utils/arbitrage'
 import PageHeader from '../components/PageHeader.vue'
 import DataPanel from '../components/DataPanel.vue'
@@ -27,7 +28,9 @@ import { useFieldHelp } from '../composables/useFieldHelp'
 
 const message = useMessage()
 const { titleWithHelp } = useFieldHelp()
-const { data: etfs, loading, error, refresh: refetch } = useAsyncMock(mockEtfFunds)
+const { data: etfs, loading, error, execute: refetch } = useAsyncData<EtfFund[]>(
+  () => api.getFunds('etf') as unknown as Promise<EtfFund[]>,
+)
 const activeTab = ref<string>('arbitrage')
 const scanning = ref(false)
 
@@ -335,6 +338,11 @@ function formatVol(v: number): string {
   return v.toString()
 }
 
+// 页面加载时获取数据
+onMounted(() => {
+  refetch()
+})
+
 function scan() {
   scanning.value = true
   message.loading('正在扫描 ETF 套利机会...', { duration: 1500 })
@@ -383,6 +391,7 @@ function exportEtf() {
   <LoadingState
     :loading="loading"
     :error="error"
+    skeleton
     :min-height="520"
     text="正在加载 ETF 基金数据..."
     @retry="refetch"
@@ -572,12 +581,12 @@ function exportEtf() {
 </style>
 
 <style scoped>
-.etf-page { display: flex; flex-direction: column; gap: 12px; }
+.etf-page { display: flex; flex-direction: column; gap: 14px; }
 
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
+  gap: 14px;
 }
 @media (max-width: 768px) {
   .stat-grid { grid-template-columns: repeat(2, 1fr); }
@@ -587,8 +596,8 @@ function exportEtf() {
   background: var(--bg-card);
   border: 1px solid var(--border-default);
   border-left: 3px solid var(--color-primary);
-  border-radius: 8px;
-  padding: 12px 16px;
+  border-radius: 10px;
+  padding: 12px 18px;
 }
 .note-header {
   display: flex;
@@ -600,13 +609,13 @@ function exportEtf() {
 .note-header h4 {
   margin: 0;
   font-family: 'Work Sans', sans-serif;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.02em;
 }
 .strategy-note p {
   margin: 0;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.6;
   color: var(--text-secondary);
 }
@@ -616,8 +625,8 @@ function exportEtf() {
   background: var(--bg-card);
   border: 1px solid var(--border-default);
   border-left: 3px solid var(--color-danger);
-  border-radius: 8px;
-  padding: 12px 16px;
+  border-radius: 10px;
+  padding: 12px 18px;
 }
 .trap-header {
   display: flex;
@@ -626,7 +635,7 @@ function exportEtf() {
   margin-bottom: 8px;
   color: var(--color-danger);
   font-family: 'Work Sans', sans-serif;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.02em;
 }
@@ -639,7 +648,7 @@ function exportEtf() {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
+  font-size: 12px;
 }
 .trap-name {
   min-width: 140px;
@@ -664,7 +673,7 @@ function exportEtf() {
   font-weight: 700;
 }
 .trap-empty {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   font-style: italic;
 }

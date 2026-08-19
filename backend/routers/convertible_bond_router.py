@@ -12,7 +12,7 @@ router = APIRouter(tags=["convertible-bonds"])
 
 
 @router.get("/convertible-bonds", response_model=ApiResponse[list[ConvertibleBond]])
-async def list_convertible_bonds(
+def list_convertible_bonds(
     price_min: float | None = Query(None, description="Minimum price"),
     price_max: float | None = Query(None, description="Maximum price"),
     premium_max: float | None = Query(None, description="Maximum premium percentage"),
@@ -42,7 +42,7 @@ async def list_convertible_bonds(
 
 
 @router.get("/convertible-bonds/{code}", response_model=ApiResponse[ConvertibleBond])
-async def get_convertible_bond(code: str):
+def get_convertible_bond(code: str):
     data = get_convertible_bond_detail(code)
     if data is None:
         return ApiResponse(code=404, message="Not found", data=None)

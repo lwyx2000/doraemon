@@ -1,7 +1,10 @@
 """QuantTerminal Pro — FastAPI application entry point.
 
 Run:
-    uvicorn main:app --reload --host 0.0.0.0 --port 8000
+    uvicorn main:app --reload --host 0.0.0.0 --port 8001
+
+注意：端口 8000 已被 AkShare WebAPI (金融数据聚合服务) 占用，
+Doraemon 后端使用 8001 端口，通过 AKSHARE_API_BASE (默认 http://192.168.3.53:8000) 获取数据。
 """
 
 from contextlib import asynccontextmanager
@@ -48,7 +51,13 @@ app = FastAPI(
 # CORS — allow frontend dev server
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "*",  # 开发环境允许所有来源
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -67,23 +76,35 @@ from routers.convertible_bond_router import router as cb_router
 from routers.reits_router import router as reits_router
 from routers.favorite_router import router as favorite_router
 from routers.portfolio_router import router as portfolio_router
+from routers.holdings_router import router as holdings_router
 from routers.strategy_router import router as strategy_router
 from routers.alert_router import router as alert_router
 from routers.ai_router import router as ai_router
 from routers.monitor_router import router as monitor_router
+from routers.notification_router import router as notification_router
+from routers.broker_account_router import router as broker_account_router
+from routers.account_name_router import router as account_name_router
+from routers.signal_router import router as signal_router
+from routers.strategy_library_router import router as strategy_library_router
 
-app.include_router(auth_router, prefix=API_PREFIX)
-app.include_router(market_router, prefix=API_PREFIX)
+app.include_router(auth_router, prefix=f"{API_PREFIX}/auth")
+app.include_router(broker_account_router, prefix=API_PREFIX)
+app.include_router(account_name_router, prefix=API_PREFIX)
+app.include_router(market_router, prefix=f"{API_PREFIX}/market")
 app.include_router(fund_router, prefix=API_PREFIX)
-app.include_router(etf_router, prefix=API_PREFIX)
-app.include_router(cb_router, prefix=API_PREFIX)
-app.include_router(reits_router, prefix=API_PREFIX)
+app.include_router(etf_router, prefix=f"{API_PREFIX}/etf")
+app.include_router(cb_router, prefix=f"{API_PREFIX}/cb")
+app.include_router(reits_router, prefix=f"{API_PREFIX}/reits")
 app.include_router(favorite_router, prefix=API_PREFIX)
 app.include_router(portfolio_router, prefix=API_PREFIX)
+app.include_router(holdings_router, prefix=API_PREFIX)
 app.include_router(strategy_router, prefix=API_PREFIX)
 app.include_router(alert_router, prefix=API_PREFIX)
 app.include_router(ai_router, prefix=API_PREFIX)
-app.include_router(monitor_router, prefix=API_PREFIX)
+app.include_router(monitor_router, prefix=f"{API_PREFIX}/monitor")
+app.include_router(notification_router, prefix=API_PREFIX)
+app.include_router(signal_router, prefix=f"{API_PREFIX}/signals")
+app.include_router(strategy_library_router, prefix=f"{API_PREFIX}/strategy-library")
 
 
 # ============================================================
@@ -108,4 +129,4 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8001, reload=True)

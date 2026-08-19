@@ -12,9 +12,12 @@ import duckdb
 from pathlib import Path
 from typing import Any, Optional
 
+from core.config import DB_PATH as _CONFIGURED_DB_PATH
 
-# Default database file path: backend/database/quantterminal.duckdb
-DEFAULT_DB_PATH = Path(__file__).parent / "quantterminal.duckdb"
+
+# Default database file path: 优先使用 core.config.DB_PATH（支持 DB_PATH 环境变量覆盖），
+# 否则回退到 backend/database/quantterminal.duckdb
+DEFAULT_DB_PATH = Path(_CONFIGURED_DB_PATH)
 
 
 class Database:

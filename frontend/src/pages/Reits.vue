@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, h, computed } from 'vue'
+defineOptions({ name: 'Reits' })
+import { ref, h, computed, onMounted } from 'vue'
 import { NButton, NDataTable, NIcon, NTag, useMessage } from 'naive-ui'
 import { WarningOutline } from '@vicons/ionicons5'
-import { mockReits } from '../composables/useMockData'
-import { useAsyncMock } from '../composables/useApi'
+import { useAsyncData } from '../composables/useApi'
+import { api } from '../utils/api'
 import type { ReitItem } from '../types'
 import { exportToCSV } from '../utils/export'
 import { analyzeReitsBatch } from '../utils/reits'
@@ -17,7 +18,8 @@ import { useFieldHelp } from '../composables/useFieldHelp'
 
 const message = useMessage()
 const { titleWithHelp } = useFieldHelp()
-const { data: reits, loading, error, refresh: refetch } = useAsyncMock(mockReits)
+const { data: reits, loading, error, refresh: refetch } = useAsyncData<ReitItem[]>(() => api.getReits())
+onMounted(refetch)
 const refreshing = ref(false)
 
 // 三维度分析映射 (code → ReitsAnalysis)
@@ -34,6 +36,17 @@ const sortedReits = computed(() => {
     const sb = analysisMap.value.get(b.code)?.score ?? 0
     return sb - sa
   })
+})
+
+// 真实可得的统计（仅基于实时行情，基本面缺失时如实显示 —）
+const reitStats = computed(() => {
+  const list = reits.value ?? []
+  if (!list.length) return { count: 0, avgPrice: null as number | null, up: 0, down: 0 }
+  const prices = list.map(r => r.market_price).filter((v): v is number => typeof v === 'number')
+  const avgPrice = prices.length ? prices.reduce((a, b) => a + b, 0) / prices.length : null
+  const up = list.filter(r => (r.change_pct ?? 0) > 0).length
+  const down = list.filter(r => (r.change_pct ?? 0) < 0).length
+  return { count: list.length, avgPrice, up, down }
 })
 
 // 配置价值排名 (按评分降序, 取前5)
@@ -126,11 +139,11 @@ function exportReits() {
   const rows = reits.value.map(r => {
     const a = analysisMap.value.get(r.code)
     return [
-      r.name, r.code, r.market_price.toFixed(3), r.annual_distribution.toFixed(3),
-      r.dividend_rate, r.irr, r.occupancy_rate,
+      r.name, r.code, r.market_price.toFixed(3), (r.annual_distribution ?? 0).toFixed(3),
+      r.dividend_rate ?? '', r.irr ?? '', r.occupancy_rate ?? '',
       a?.navPremiumPct ?? '', a?.sustainabilityLabel ?? '', a?.dscr ?? '',
       a?.occupancyTrend ?? '', a?.leverageRatio ?? '', a?.volume ?? '',
-      a?.score ?? '', a?.warnings.join('; ') ?? '', r.project_name,
+      a?.score ?? '', a?.warnings.join('; ') ?? '', r.project_name ?? '',
     ]
   })
   exportToCSV(`reits_${new Date().toISOString().slice(0, 10)}`, headers, rows)
@@ -143,13 +156,14 @@ const columns = [
   { title: '市场价格', key: 'market_price', align: 'right' as const,
     render: (row: ReitItem) => `¥${row.market_price.toFixed(3)}` },
   { title: '年化分红', key: 'annual_distribution', align: 'right' as const,
-    render: (row: ReitItem) => `¥${row.annual_distribution.toFixed(3)}` },
+    render: (row: ReitItem) => row.annual_distribution != null ? `¥${row.annual_distribution.toFixed(3)}` : '—' },
   { title: '分红率', key: 'dividend_rate', align: 'right' as const,
-    render: (row: ReitItem) => h('span', { style: { color: 'var(--color-primary)', fontWeight: 700 } }, `${row.dividend_rate}%`) },
+    render: (row: ReitItem) => h('span', { style: { color: 'var(--color-primary)', fontWeight: 700 } }, row.dividend_rate != null ? `${row.dividend_rate}%` : '—') },
   { title: 'IRR', key: 'irr', align: 'right' as const,
-    render: (row: ReitItem) => `${row.irr}%` },
+    render: (row: ReitItem) => row.irr != null ? `${row.irr}%` : '—' },
   { title: titleWithHelp('出租率', 'occupancy_rate'), key: 'occupancy_rate', align: 'right' as const,
     render: (row: ReitItem) => {
+      if (row.occupancy_rate == null) return h('span', { style: { color: 'var(--text-muted)' } }, '—')
       const color = row.occupancy_rate >= 90 ? 'var(--color-success)' : 'var(--color-warning)'
       return h('span', { style: { color } }, `${row.occupancy_rate}%`)
     } },
@@ -229,6 +243,7 @@ const columns = [
   <LoadingState
     :loading="loading"
     :error="error"
+    skeleton
     :min-height="480"
     text="正在加载REITs数据..."
     @retry="refetch"
@@ -242,12 +257,12 @@ const columns = [
     </PageHeader>
     <GlossaryPanel page-key="reits" />
 
-    <!-- Summary Cards -->
+    <!-- Summary Cards (基于真实实时行情，基本面缺失时显示 —) -->
     <div class="stat-grid">
-      <StatCard label="平均分红率" value="5.54%" color="#005ea1" />
-      <StatCard label="平均出租率" value="95.3%" color="#16a34a" tip="底层资产出租率(%)。产业园/仓储类REITs的核心指标，>90%=健康，持续下降=基本面恶化。" />
-      <StatCard label="REITs总数" :value="reits?.length ?? 0" />
-      <StatCard label="平均IRR" value="6.22%" color="#864f00" />
+      <StatCard label="REITs总数" :value="reitStats.count" />
+      <StatCard label="实时均价" :value="reitStats.avgPrice != null ? reitStats.avgPrice.toFixed(3) : '—'" color="#005ea1" />
+      <StatCard label="上涨" :value="reitStats.up" color="#16a34a" />
+      <StatCard label="下跌" :value="reitStats.down" color="#dc2626" />
     </div>
 
     <!-- REITs Table -->
@@ -272,7 +287,7 @@ const columns = [
             <span class="rank-num" :class="{ top: idx < 3 }">{{ idx + 1 }}</span>
             <span class="rank-name">{{ item.name }}</span>
             <span class="rank-score">{{ item.score }}</span>
-            <span class="rank-yield">分红{{ item.dividendRate }}%</span>
+            <span class="rank-yield">分红{{ item.dividendRate != null ? item.dividendRate + '%' : '—' }}</span>
           </div>
           <div v-if="scoreRanking.length === 0" class="empty-hint">暂无数据</div>
         </div>
@@ -387,28 +402,29 @@ const columns = [
 </style>
 
 <style scoped>
-.reits-page { display: flex; flex-direction: column; gap: 12px; }
+.reits-page { display: flex; flex-direction: column; gap: 14px; }
 
 /* Bottom Panels */
 .bottom-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
+  gap: 14px;
 }
 
 .bottom-panel {
   background: var(--bg-card);
   border: 1px solid var(--border-default);
-  border-radius: 8px;
-  padding: 16px;
+  border-radius: 10px;
+  padding: 18px;
   height: 220px;
   display: flex;
   flex-direction: column;
+  box-shadow: var(--shadow-card);
 }
 
 .bottom-panel h4 {
   font-family: 'Work Sans', sans-serif;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.05em;
   color: var(--text-muted);
@@ -422,7 +438,7 @@ const columns = [
   color: var(--color-danger) !important;
 }
 
-.warning-title .n-icon { font-size: 14px; }
+.warning-title .n-icon { font-size: 15px; }
 
 .ranking-list {
   flex: 1;
@@ -437,7 +453,7 @@ const columns = [
   align-items: center;
   gap: 8px;
   padding: 4px 0;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-secondary);
 }
 
@@ -451,7 +467,7 @@ const columns = [
   background: var(--bg-subtle);
   color: var(--text-muted);
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   flex-shrink: 0;
 }
@@ -473,7 +489,7 @@ const columns = [
 
 .rank-score {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--color-primary);
   flex-shrink: 0;
@@ -481,14 +497,14 @@ const columns = [
 
 .rank-yield {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   flex-shrink: 0;
 }
 
 .rank-premium {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   flex-shrink: 0;
 }
@@ -496,7 +512,7 @@ const columns = [
 .rank-premium.green { color: var(--color-success); }
 
 .rank-margin {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   flex-shrink: 0;
 }
@@ -506,7 +522,7 @@ const columns = [
   align-items: center;
   gap: 8px;
   padding: 6px 0;
-  font-size: 12px;
+  font-size: 13px;
   border-bottom: 1px solid var(--border-default);
 }
 
@@ -518,7 +534,7 @@ const columns = [
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
@@ -527,7 +543,7 @@ const columns = [
   align-items: center;
   justify-content: center;
   flex: 1;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 

@@ -10,12 +10,12 @@ description: Call AkShare WebAPI service to fetch financial data without reading
 ## 服务地址
 
 ```
-Base URL: http://<服务器IP>:8000
+Base URL:  http://192.168.3.53:8000
 ```
 
 **使用前确认**：检查服务是否运行
 ```bash
-curl http://192.168.3.53:8000/health
+curl http://192.168.3.53:8000health
 # 预期返回: {"status": "up", "components": {"db": "ok", "redis": "ok", "worker": "isolated"}}
 ```
 
@@ -64,7 +64,7 @@ doc = response.json()["data"]
 #   ],
 #   "example_params": {"symbol": "000001", "period": "daily", "start_date": "20240101", "end_date": "20240601"},
 #   "response_fields": [{"name": "日期", "type": "str"}, {"name": "开盘", "type": "float"}, ...]
-# }
+# }/
 ```
 
 ### 3. 获取方法分类列表
@@ -955,20 +955,42 @@ response = requests.get("http://192.168.3.53:8000/api/datasource/probe/latest")
 
 ## 数据源容灾链总览
 
-| 数据类型 | 容灾链 |
-|----------|--------|
-| A股实时 | eastmoney → qq → sina → tdx → yfinance → futu → finshare |
-| A股K线 | qq → sina → eastmoney → tdx → yfinance → futu → finshare |
-| 美股实时 | easy_tdx_us → akshare_us → yfinance → futu |
-| 美股K线 | easy_tdx_us → akshare_us → yfinance → futu |
-| 港股实时 | easy_tdx_hk → akshare_hk → yfinance → futu → finshare |
-| 港股K线 | easy_tdx_hk → akshare_hk → yfinance → futu → finshare |
-| 美股列表 | easy_tdx_us → akshare_us |
-| 港股列表 | easy_tdx_hk → akshare_hk |
-| 基金 | akshare → finshare |
-| 期货 | akshare |
-| 指数成分股 | akshare |
-| 分红派息 | akshare |
+> 每个数据类型维护有序容灾链，按优先级依次尝试。支持自动降级（连续失败3次→DEGRADED，6次→UNAVAILABLE熔断）与自动恢复（熔断冷却60s后半开试探）。
+
+### 行情类容灾链
+
+| 数据类型 | 容灾链 | 说明 |
+|----------|--------|------|
+| A股实时(cn_realtime) | qq → sina → tdx → tickflow_cn → eastmoney → efinance → yfinance → futu → finshare | 9级容灾，QQ首选 |
+| A股K线(cn_kline) | qq → sina → tdx → tickflow_cn → eastmoney → efinance → baostock → yfinance → futu → finshare | 10级容灾，baostock历史兜底 |
+| A股实时(旧路由realtime) | eastmoney → qq → sina → tdx → efinance | /api/quote/realtime 使用 |
+| A股K线(旧路由kline) | qq → sina → eastmoney → tdx → efinance → baostock | /api/quote/kline 使用 |
+| 美股实时(us_realtime) | tickflow_us → easy_tdx_us → akshare_us → efinance → yfinance → futu | 6级，TickFlow首选 |
+| 美股K线(us_kline) | tickflow_us → easy_tdx_us → akshare_us → efinance → yfinance → futu | 同上 |
+| 美股列表(us_list) | easy_tdx_us → akshare_us → efinance | 3级 |
+| 港股实时(hk_realtime) | tickflow_hk → easy_tdx_hk → akshare_hk → efinance → yfinance → futu → finshare | 7级，TickFlow首选 |
+| 港股K线(hk_kline) | tickflow_hk → easy_tdx_hk → akshare_hk → efinance → yfinance → futu → finshare | 同上 |
+| 港股列表(hk_list) | easy_tdx_hk → akshare_hk → efinance | 3级 |
+| 现货指数(spot) | 腾讯 → 新浪 → 东财 | 3级，内置防屏蔽 |
+| 期货合约(futures) | tqsdk → akshare | 2级，TqSdk需配置 |
+| 全球市场(global) | yfinance | 独占 |
+
+### 加工数据类容灾链
+
+| 数据类型 | 容灾链 | 说明 |
+|----------|--------|------|
+| 板块数据(board) | 同花顺(_ths) → 东财(_em) | 同花顺8接口优先，东财兜底 |
+| 资金流向(fund_flow) | akshare东财 → efinance个股 | 个股资金流降级到efinance |
+| 市场统计(market_stats) | 新浪A股spot | 非东财，5分钟内存快照 |
+| 涨跌停池(zt_pool) | 新浪spot自算 | 非东财，连板数持久化.cache/zt_pool/ |
+| 基金排行(fund_rank) | 新浪ETF基金 → 同花顺ths | 非东财 |
+| 指数估值(index_valuation) | 乐咕乐股(PE/PB) + 新浪(行情) + baostock/腾讯(K线) | 非东财，PE/PB历史1小时TTL缓存 |
+| 问财查询(wencai) | pywencai | 独占，需配置Cookie |
+| 财务数据(financial) | tickflow_us | 独占 |
+| 除权因子(ex_factor) | tickflow_us | 独占 |
+| 基金(fund) | akshare → finshare | 2级 |
+| 指数成分股(index_cons) | akshare → pywencai | 2级 |
+| 分红派息(fhps) | akshare | 独占 |
 
 ### 智能路由机制
 
@@ -1207,6 +1229,199 @@ for line in response.iter_lines():
 | `chain` | `full_chain`, `healthy_chain`, `health_status` | 初始链信息 |
 | `attempt` | `source`, `success`, `latency_ms`, `error` | 每次数据源尝试 |
 | `complete` | `success`, `final_source`, `remaining_backups`, `total_latency_ms` | 最终结果 |
+
+---
+
+## 加工数据统一入口 — /api/processed_data
+
+板块/资金流向/市场统计/涨跌停/基金排行/指数估值/问财/财务/除权因子的统一入口。通过 `category` 参数指定数据大类，`subtype` 指定子类型。所有请求走线程池执行，30s 超时保护。
+
+**路径**: `GET /api/processed_data`
+
+### 通用参数
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| category | String | 是 | 数据大类: board / fund_flow / market_stats / zt_pool / fund_rank / index_valuation / wencai / financial / ex_factor |
+| subtype | String | 否 | 子类型（不同 category 含义不同，见下方分类详情） |
+| symbol | String | 否 | 板块/概念/行业名称，或股票代码，或指数名称 |
+| stock | String | 否 | 股票代码（资金流向 individual 用） |
+| market | String | 否 | sh/sz（资金流向 individual 用） |
+| indicator | String | 否 | 时间周期: 即时/今日/3日/5日/10日 |
+| sector_type | String | 否 | 行业资金流/概念资金流 |
+| start_date | String | 否 | 历史K线起始日期 YYYYMMDD |
+| end_date | String | 否 | 历史K线结束日期 YYYYMMDD |
+| query | String | 否 | 自然语言查询（wencai 用） |
+| query_type | String | 否 | stock/fund/hkstock（wencai 用，默认 stock） |
+| period | String | 否 | PE/PB百分位计算窗口: 1/3/5/0=全部（index_valuation 用，默认5） |
+
+### 响应结构
+
+```json
+{"code": 200, "message": "success", "data": [ ... ]}
+```
+
+### 调用示例
+
+```python
+import requests
+
+BASE = "http://192.168.3.53:8000/api/processed_data"
+
+# 1. 获取概念板块列表
+r = requests.get(BASE, params={"category": "board", "subtype": "concept_list"})
+# 返回: [{"概念名称": "人工智能", "涨跌幅": 2.5, "成交额": 1234567890}, ...]
+
+# 2. 获取个股资金流向
+r = requests.get(BASE, params={
+    "category": "fund_flow", "subtype": "individual",
+    "stock": "600519", "market": "sh"
+})
+# 返回: [{"日期": "2026-08-05", "主力净流入": 12345678, "超大单净流入": 9876543, ...}, ...]
+
+# 3. 获取市场总览（成交额+涨跌家数+涨跌停数）
+r = requests.get(BASE, params={"category": "market_stats", "subtype": "overview"})
+# 返回: {"date": "2026-08-05", "total_turnover": 1200000000000,
+#        "advance_count": 3500, "decline_count": 1500,
+#        "limit_up_count": 103, "limit_down_count": 1, ...}
+
+# 4. 获取涨停池（含连板数）
+r = requests.get(BASE, params={"category": "zt_pool", "subtype": "zt"})
+# 返回: [{"代码": "600519", "名称": "贵州茅台", "涨跌幅": 10.01,
+#        "连板数": 3, "成交额": 1234567890}, ...]
+
+# 5. 获取沪深300指数估值
+r = requests.get(BASE, params={
+    "category": "index_valuation", "subtype": "overview",
+    "symbol": "沪深300", "period": 5
+})
+# 返回: {"index_name": "沪深300", "category": "宽基", "chg_pct": 1.47,
+#        "pe": 13.61, "pe_percentile": 35.2, "pb": 1.43,
+#        "pb_percentile": 28.5, "3m_change_pct": 5.2, "win_rate": 55.6}
+
+# 6. 获取全部12个指数估值
+r = requests.get(BASE, params={"category": "index_valuation", "subtype": "all", "period": 5})
+
+# 7. 问财自然语言选股
+r = requests.get(BASE, params={
+    "category": "wencai", "query": "连续3天涨停的股票", "query_type": "stock"
+})
+
+# 8. 获取ETF涨跌排行
+r = requests.get(BASE, params={"category": "fund_rank", "subtype": "etf"})
+
+# 9. 获取昨日涨停今日表现
+r = requests.get(BASE, params={"category": "zt_pool", "subtype": "previous"})
+```
+
+### 分类详情
+
+#### category=board（板块数据）
+
+容灾链: 同花顺(_ths) 8个接口优先 → 东财(_em) 兜底
+
+| subtype | 说明 | 额外参数 |
+|---------|------|----------|
+| concept_list | 概念板块列表（名称、涨跌幅、成交额） | 无 |
+| concept_stocks | 概念板块成分股 | symbol=概念名 |
+| concept_spot | 概念板块实时行情 | symbol=概念名 |
+| concept_hist | 概念板块历史K线 | symbol=概念名, start_date, end_date |
+| industry_list | 行业板块列表 | 无 |
+| industry_stocks | 行业板块成分股 | symbol=行业名 |
+| industry_spot | 行业板块实时行情 | symbol=行业名 |
+| industry_hist | 行业板块历史K线 | symbol=行业名, start_date, end_date |
+| stock_belong_board | 查询个股所属板块 | symbol=股票代码 |
+
+#### category=fund_flow（资金流向）
+
+容灾链: akshare 东财为主 → efinance 个股降级
+
+| subtype | 说明 | 额外参数 |
+|---------|------|----------|
+| individual | 个股资金流向（主力/超大单/大单/中单/小单） | stock=代码, market=sh/sz |
+| market | 大盘资金流向（沪深两市） | 无 |
+| concept | 概念板块资金流向 | indicator=今日/3日/5日/10日 |
+| industry | 行业板块资金流向 | indicator |
+| main | 主力资金流向 | symbol=全部股票/沪深主板等 |
+| rank | 资金流向排名 | indicator |
+| sector_rank | 板块资金流排名 | indicator, sector_type=行业资金流/概念资金流 |
+| sector_summary | 板块资金流汇总 | symbol=板块名, indicator |
+| hsgt | 沪深港通资金流向 | 无 |
+| big_deal | 大单成交明细 | 无 |
+
+#### category=market_stats（市场统计）
+
+容灾链: 新浪A股spot（非东财），5分钟内存快照对比昨日同时段
+
+| subtype | 说明 | 返回字段 |
+|---------|------|----------|
+| overview | 市场总览 | date, total_turnover, sh_turnover, sz_turnover, yesterday_same_time_turnover, turnover_change_pct, advance_count, decline_count, flat_count, limit_up_count, limit_down_count |
+| limit_up | 涨停列表 | 代码, 名称, 涨跌幅, 最新价, 封单金额 |
+| limit_down | 跌停列表 | 代码, 名称, 涨跌幅, 最新价 |
+
+#### category=zt_pool（涨跌停池）
+
+容灾链: 新浪spot自算（非东财），涨停判定基于价格限制（主板10%/创业板科创板20%/ST股5%/北交所30%，2%容差），连板数持久化到 .cache/zt_pool/
+
+| subtype | 说明 | 返回字段 |
+|---------|------|----------|
+| zt | 涨停池 | 代码, 名称, 涨跌幅, 最新价, 成交额, 成交量, 涨跌停幅度, 连板数 |
+| dt | 跌停池 | 代码, 名称, 涨跌幅, 最新价, 成交额 |
+| previous | 昨日涨停今日表现 | 代码, 名称, 今日涨跌幅, 是否连板 |
+
+#### category=fund_rank（基金排行）
+
+容灾链: 新浪ETF基金 → 同花顺 fund_etf_spot_ths（非东财）
+
+| subtype | 说明 |
+|---------|------|
+| etf | ETF涨跌排行（代码、名称、最新价、涨跌幅、成交额） |
+| lof | LOF基金涨跌排行 |
+| closed | 封闭式基金涨跌排行 |
+| all | 全部基金涨跌排行 |
+
+#### category=index_valuation（指数估值）
+
+容灾链: 乐咕乐股(PE/PB历史) + 新浪(指数行情) + baostock/腾讯(K线)（非东财），PE/PB历史1小时TTL缓存
+
+| subtype | 说明 | 额外参数 |
+|---------|------|----------|
+| overview | 单指数估值总览 | symbol=指数名(必填), period=1/3/5/0 |
+| all | 全部12个指数估值批量查询 | period |
+
+**overview 返回字段**: index_name, category(宽基/策略), chg_pct(今日涨跌幅), pe(当前PE-TTM), pe_percentile(PE百分位), pb(当前PB), pb_percentile(PB百分位), 3m_change_pct(近3月涨跌幅), win_rate(近250日胜率), supported
+
+**支持指数**: 上证50/沪深300/上证380/创业板50/中证500/上证180/深证红利/深证100/中证1000/上证红利/中证100/中证800
+
+**period 参数**: 0=全部历史, 1/3/5=近N年
+
+#### category=wencai（问财查询）
+
+容灾链: pywencai 独占（需配置Cookie，可选依赖）
+
+| subtype | 说明 | 额外参数 |
+|---------|------|----------|
+| stock | A股自然语言选股 | query=查询语句, query_type=stock |
+| fund | 基金筛选 | query, query_type=fund |
+| hkstock | 港股筛选 | query, query_type=hkstock |
+
+#### category=financial（财务数据）
+
+容灾链: TickFlow 独占（可选依赖）
+
+| subtype | 说明 | 额外参数 |
+|---------|------|----------|
+| income | 利润表 | symbol=股票代码 |
+| balance | 资产负债表 | symbol |
+| cashflow | 现金流量表 | symbol |
+
+#### category=ex_factor（除权因子）
+
+容灾链: TickFlow 独占（可选依赖）
+
+| subtype | 说明 | 额外参数 |
+|---------|------|----------|
+| default | 获取除权因子 | symbol=股票代码 |
 
 ---
 

@@ -39,11 +39,12 @@ withDefaults(defineProps<{
 </template>
 
 <style scoped>
-.stat-card { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 8px; padding: 16px; display: flex; flex-direction: column; gap: 4px; }
-.stat-label-row { display: flex; align-items: center; gap: 3px; }
-.stat-label { font-family: 'Work Sans', sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-muted); }
+.stat-card { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 8px; padding: 18px; display: flex; flex-direction: column; gap: 6px; box-shadow: var(--shadow-card); transition: box-shadow 0.2s ease, border-color 0.2s ease; }
+.stat-card:hover { box-shadow: var(--shadow-card-hover); border-color: var(--border-hover); }
+.stat-label-row { display: flex; align-items: center; gap: 4px; }
+.stat-label { font-family: 'Work Sans', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 0.06em; color: var(--text-muted); text-transform: uppercase; }
 .stat-tip-icon { display: inline-flex; align-items: center; color: var(--text-muted); cursor: help; transition: color 0.15s ease; }
 .stat-tip-icon:hover { color: var(--color-primary); }
-.stat-value { font-family: 'JetBrains Mono', monospace; font-size: 28px; font-weight: 600; line-height: 1.2; }
-.stat-sub { font-size: 12px; color: var(--text-muted); }
+.stat-value { font-family: 'JetBrains Mono', monospace; font-size: 30px; font-weight: 600; line-height: 1.2; }
+.stat-sub { font-size: 13px; color: var(--text-muted); }
 </style>
