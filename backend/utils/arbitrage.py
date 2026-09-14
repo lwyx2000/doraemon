@@ -107,17 +107,17 @@ def analyze_arbitrage(fund: dict[str, Any]) -> dict[str, Any]:
 
     if capital_grade == "C":
         if capital_limit == -1:
-            traps.append("暂停申购")
+            traps.append("暂停申购，无法套利")
         else:
             traps.append(f"限购{int(capital_limit)}元，资金容量不足")
 
     if risk["risk_exposure"] > abs(net_yield_after_costs) and net_yield_after_costs > 0:
         traps.append(f"T+{holding_days}敞口{risk['risk_exposure']}% > 收益{net_yield_after_costs}%")
 
-    if is_suspended:
+    if is_suspended and capital_limit != -1:
         traps.append("停牌/暂停申购")
 
-    if volume < 500000:
+    if volume is not None and volume < 500000:
         traps.append("流动性不足")
 
     if is_suspended or capital_grade == "C":

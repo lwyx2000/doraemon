@@ -310,6 +310,11 @@ html, body {
   background: var(--tag-red-bg);
   color: var(--tag-red-text);
 }
+.cat-tag.unknown {
+  background: var(--tag-gray-bg);
+  color: var(--tag-gray-text);
+  opacity: 0.55;
+}
 
 /* IconButton */
 .icon-btn {

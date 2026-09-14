@@ -4,7 +4,7 @@ import { ref, computed, h, reactive, onMounted, onBeforeUnmount, watch } from 'v
 import { useRouter } from 'vue-router'
 import {
   NButton, NIcon, NDataTable, NModal, NInput, NInputNumber, NSelect, NTag,
-  NRadioGroup, NRadioButton, NPopover, NCheckbox, NCheckboxGroup, NSwitch, NTooltip,
+  NRadioGroup, NRadioButton, NPopover, NCheckbox, NSwitch, NTooltip,
   useMessage, useDialog,
 } from 'naive-ui'
 import { CloudUploadOutline, RefreshOutline, CameraOutline, ClipboardOutline, SettingsOutline, FilterOutline } from '@vicons/ionicons5'
@@ -232,8 +232,8 @@ async function applySuggestedStop(row: Holding) {
 }
 
 function weightOf(row: Holding): number | null {
-  if (row.market_value == null || !totalMv) return null
-  return row.market_value / totalMv * 100
+  if (row.market_value == null || !totalMv.value) return null
+  return row.market_value / totalMv.value * 100
 }
 function beRiseOf(row: Holding): number {
   if (row.price === null || row.price === 0 || row.cost_price == null) return -Infinity
@@ -345,7 +345,7 @@ const columnDefs: ColDef[] = [
       const map = {
         buy: { type: 'warning', text: '触下沿·可买' },
         sell: { type: 'success', text: '触上沿·可卖' },
-        hold: { type: 'default', text: `第${row.grid_level + 1}/${row.grid_total}格` },
+        hold: { type: 'default', text: `第${(row.grid_level ?? 0) + 1}/${row.grid_total ?? '—'}格` },
       } as const
       const m = map[row.grid_signal]
       return h(NTag, { size: 'small', type: m.type, bordered: false }, { default: () => m.text })
@@ -1048,7 +1048,7 @@ const snapshotColumns = [
       <template v-else>
         <div class="import-input-section">
           <label class="import-input-label">上传 CSV 文件（支持华泰 PC 客户端导出的持仓表，或 Excel 另存为 CSV）</label>
-          <input type="file" accept=".csv,.txt" @change="e => csvFile.value = (e.target as HTMLInputElement).files?.[0] ?? null" />
+          <input type="file" accept=".csv,.txt" @change="e => csvFile = (e.target as HTMLInputElement).files?.[0] ?? null" />
           <div style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">
             列头可包含：证券代码、证券名称、持仓数量、成本价、账户 等；未识别的代码将按 6 位代码推断为股票或场内基金。
           </div>

@@ -30,22 +30,23 @@ const dialog = useDialog()
 const library = ref<LibraryStrategy[] | null>(null)
 const loadError = ref('')
 const loading = ref(true)
-const activeTab = ref<'library' | 'tracked'>('library')
+const activeTab = ref<'library' | 'tracked' | 'mine'>('library')
 
 async function loadLibrary() {
   loading.value = true
   loadError.value = ''
   try {
     const res = await libraryApi.getLibrary()
-    library.value = Array.isArray(res) ? res : ((res as any).data ?? [])
+    const list: LibraryStrategy[] = Array.isArray(res) ? res : ((res as any).data ?? [])
+    library.value = list
     // 初始化各策略参数（默认值）
-    for (const s of library.value) {
+    for (const s of list) {
       const p: Record<string, any> = {}
       for (const def of s.params) p[def.key] = def.default
       paramState[s.id] = p
     }
     // 默认自动回测第一个轮动策略，让页面一打开就有绩效
-    if (library.value.length) runBacktest(library.value[0].id)
+    if (list.length) runBacktest(list[0].id)
   } catch (e: any) {
     loadError.value = e?.message || '策略库加载失败'
   } finally {
@@ -144,7 +145,8 @@ function fmtPct(v?: number | null, digits = 2): string {
 }
 function pctColor(v?: number | null): string {
   if (v === null || v === undefined) return '#717782'
-  return v > 0 ? '#16a34a' : v < 0 ? '#ba1a1a' : '#717782'
+  // 涨红跌绿（A股惯例：收益/涨幅为正显红，为负显绿）
+  return v > 0 ? '#ba1a1a' : v < 0 ? '#16a34a' : '#717782'
 }
 
 // 净值曲线 SVG path
@@ -366,7 +368,7 @@ const tabs = [
   { key: 'library', label: '策略库' },
   { key: 'tracked', label: '我的跟踪' },
   { key: 'mine', label: '我的策略' },
-]
+] as const
 </script>
 
 <template>
@@ -406,7 +408,7 @@ const tabs = [
         v-for="tab in tabs"
         :key="tab.key"
         :class="['tab-btn', { active: activeTab === tab.key }]"
-        @click="activeTab = tab.key as any"
+        @click="activeTab = tab.key"
       >
         {{ tab.label }}
         <span v-if="tab.key === 'tracked' && tracked?.length" class="tab-count">{{ tracked.length }}</span>
@@ -550,10 +552,10 @@ const tabs = [
                   <svg viewBox="0 0 640 150" preserveAspectRatio="none" class="nav-svg">
                     <!-- 基准 -->
                     <polyline fill="none" stroke="#9aa1b0" stroke-width="1.2" stroke-dasharray="4 3"
-                      :points="navPoints(backtests[s.id].backtest.curve.benchmark_nav, 640, 150, curveBounds(backtests[s.id].backtest).min, curveBounds(backtests[s.id].backtest).max)" />
+                      :points="navPoints(backtests[s.id].backtest.curve?.benchmark_nav ?? [], 640, 150, curveBounds(backtests[s.id].backtest).min, curveBounds(backtests[s.id].backtest).max)" />
                     <!-- 策略 -->
                     <polyline fill="none" stroke="#005ea1" stroke-width="1.8"
-                      :points="navPoints(backtests[s.id].backtest.curve.strategy_nav, 640, 150, curveBounds(backtests[s.id].backtest).min, curveBounds(backtests[s.id].backtest).max)" />
+                      :points="navPoints(backtests[s.id].backtest.curve?.strategy_nav ?? [], 640, 150, curveBounds(backtests[s.id].backtest).min, curveBounds(backtests[s.id].backtest).max)" />
                     <line x1="0" y1="150" x2="640" y2="150" stroke="#e2e8f0" stroke-width="1" />
                   </svg>
                 </div>
@@ -563,13 +565,13 @@ const tabs = [
                   <div class="holding-head">
                     <n-icon :component="PulseOutline" size="14" />
                     <b>当前持仓建议：</b>
-                    <span class="holding-action">{{ backtests[s.id].backtest.current_holding.action }}</span>
-                    <span class="holding-mom" :style="{ color: pctColor(backtests[s.id].backtest.current_holding.mom_pct) }">
-                      近20日 {{ fmtPct(backtests[s.id].backtest.current_holding.mom_pct) }}
+                    <span class="holding-action">{{ backtests[s.id].backtest.current_holding?.action }}</span>
+                    <span class="holding-mom" :style="{ color: pctColor(backtests[s.id].backtest.current_holding?.mom_pct) }">
+                      近20日 {{ fmtPct(backtests[s.id].backtest.current_holding?.mom_pct) }}
                     </span>
                   </div>
-                  <div class="mom-row" v-if="backtests[s.id].backtest.current_holding.members_mom">
-                    <span v-for="m in backtests[s.id].backtest.current_holding.members_mom" :key="m.code" class="mom-chip">
+                  <div class="mom-row" v-if="backtests[s.id].backtest.current_holding?.members_mom">
+                    <span v-for="m in backtests[s.id].backtest.current_holding?.members_mom" :key="m.code" class="mom-chip">
                       {{ m.name }} <i :style="{ color: pctColor(m.mom_pct) }">{{ fmtPct(m.mom_pct) }}</i>
                     </span>
                   </div>

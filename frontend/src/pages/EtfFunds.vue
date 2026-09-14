@@ -47,6 +47,42 @@ const arbitrageAnalysisMap = computed(() => {
   return analyzeArbitrageBatch(etfs.value)
 })
 
+// ---- 套利陷阱识别：按类型汇总 + 高危标的 Top N ----
+const trapCategories = [
+  { key: 'blocked', label: '暂停申购/停牌', match: /暂停|停牌/, tone: 'danger' },
+  { key: 'limit', label: '限购资金不足', match: /限购/, tone: 'danger' },
+  { key: 'exposure', label: 'T+N 敞口', match: /敞口/, tone: 'warning' },
+  { key: 'liquidity', label: '流动性不足', match: /流动性/, tone: 'muted' },
+] as const
+
+const trappedEtfs = computed(() =>
+  (etfs.value ?? []).filter(e => (arbitrageAnalysisMap.value.get(e.code)?.traps.length ?? 0) > 0),
+)
+
+const trapSummary = computed(() =>
+  trapCategories
+    .map(c => ({
+      ...c,
+      count: trappedEtfs.value.filter(e =>
+        (arbitrageAnalysisMap.value.get(e.code)?.traps ?? []).some(t => c.match.test(t)),
+      ).length,
+    }))
+    .filter(c => c.count > 0),
+)
+
+// 高危标的：按溢价率绝对值降序取前 10（表格里的灰行可看全部）
+const trapOffenders = computed(() =>
+  [...trappedEtfs.value]
+    .sort((a, b) => Math.abs(b.premium_pct) - Math.abs(a.premium_pct))
+    .slice(0, 10),
+)
+
+function trapTone(trap: string): string {
+  if (/暂停申购|停牌/.test(trap)) return 'tag-danger'
+  if (/敞口|限购/.test(trap)) return 'tag-warning'
+  return 'tag-muted'
+}
+
 // 统计卡片 — 套利tab使用可行性分级，其他tab保持原逻辑
 const feasibleCount = computed(() =>
   etfs.value
@@ -116,10 +152,10 @@ const displayEtfs = computed(() => {
       })
   }
   if (activeTab.value === 'grid') {
-    return etfs.value.filter(e => e.category === 'industry' || e.category === 'cross_border').sort((a, b) => b.grid_yield_est - a.grid_yield_est)
+    return etfs.value.filter(e => e.category === 'industry' || e.category === 'cross_border').sort((a, b) => (b.grid_yield_est ?? 0) - (a.grid_yield_est ?? 0))
   }
   if (activeTab.value === 'rotation') {
-    return [...etfs.value].filter(e => e.category === 'industry' || e.category === 'theme').sort((a, b) => b.momentum_score - a.momentum_score)
+    return [...etfs.value].filter(e => e.category === 'industry' || e.category === 'theme').sort((a, b) => (b.momentum_score ?? 0) - (a.momentum_score ?? 0))
   }
   // valuation
   return etfs.value.filter(e => e.category === 'broad' || e.category === 'theme').sort((a, b) => (a.pe_percentile ?? 99) - (b.pe_percentile ?? 99))
@@ -225,16 +261,18 @@ const arbitrageColumns = [
 
 const gridColumns = [
   { title: '基金名称', key: 'name', render: (row: EtfFund) => h('span', { class: 'etf-name' }, row.name) },
-  { title: '子类', key: 'sub_category', render: (row: EtfFund) => h(NTag, { size: 'small', bordered: false }, { default: () => row.sub_category }) },
-  { title: '现价', key: 'price', align: 'right' as const, render: (row: EtfFund) => row.price.toFixed(3) },
-  { title: titleWithHelp('网格下限', 'grid_low'), key: 'grid_low', align: 'right' as const, render: (row: EtfFund) => row.grid_low.toFixed(3) },
-  { title: titleWithHelp('网格上限', 'grid_high'), key: 'grid_high', align: 'right' as const, render: (row: EtfFund) => row.grid_high.toFixed(3) },
-  { title: titleWithHelp('间距', 'grid_step'), key: 'grid_step', align: 'center' as const, render: (row: EtfFund) => h('span', { class: 'grid-step' }, `${row.grid_step}%`) },
+  { title: '子类', key: 'sub_category', render: (row: EtfFund) => h(NTag, { size: 'small', bordered: false }, { default: () => row.sub_category ?? '-' }) },
+  { title: '现价', key: 'price', align: 'right' as const, render: (row: EtfFund) => (row.price ?? 0).toFixed(3) },
+  { title: titleWithHelp('网格下限', 'grid_low'), key: 'grid_low', align: 'right' as const, render: (row: EtfFund) => row.grid_low != null ? row.grid_low.toFixed(3) : '-' },
+  { title: titleWithHelp('网格上限', 'grid_high'), key: 'grid_high', align: 'right' as const, render: (row: EtfFund) => row.grid_high != null ? row.grid_high.toFixed(3) : '-' },
+  { title: titleWithHelp('间距', 'grid_step'), key: 'grid_step', align: 'center' as const, render: (row: EtfFund) => row.grid_step != null ? h('span', { class: 'grid-step' }, `${row.grid_step}%`) : '-' },
   {
     title: titleWithHelp('预估年化', 'grid_yield_est'), key: 'grid_yield_est', align: 'right' as const,
-    render: (row: EtfFund) => h('span', { style: { color: 'var(--color-primary)', fontWeight: 700 } }, `${row.grid_yield_est}%`),
+    render: (row: EtfFund) => row.grid_yield_est != null
+      ? h('span', { style: { color: 'var(--color-primary)', fontWeight: 700 } }, `${row.grid_yield_est}%`)
+      : '-',
   },
-  { title: '近一年波动', key: 'volume', align: 'right' as const, render: (row: EtfFund) => formatVol(row.volume) },
+  { title: titleWithHelp('成交量', 'volume'), key: 'volume', align: 'right' as const, render: (row: EtfFund) => formatVol(row.volume) },
   {
     title: titleWithHelp('估值', 'pe_percentile'), key: 'pe_percentile', align: 'center' as const,
     render: (row: EtfFund) => row.pe_percentile != null
@@ -251,6 +289,7 @@ const rotationColumns = [
     title: titleWithHelp('动量得分', 'momentum_score'), key: 'momentum_score', align: 'right' as const,
     render: (row: EtfFund) => {
       const score = row.momentum_score
+      if (score == null) return '-'
       const color = score >= 80 ? 'var(--color-danger)' : score >= 65 ? 'var(--color-primary)' : 'var(--text-muted)'
       return h('div', { class: 'momentum-cell' }, [
         h('span', { style: { color, fontWeight: 700 } }, `${score}`),
@@ -272,16 +311,18 @@ const valuationColumns = [
   {
     title: '估值分类', key: 'val_category', align: 'center' as const,
     render: (row: EtfFund) => {
+      // 无 ETF 级 PE 数据时显示 '-'，避免把缺失数据误标为"合理"
+      if (row.val_category == null) return '-'
       const map: Record<string, { text: string; type: 'success' | 'warning' | 'error' }> = {
         undervalued: { text: '低估', type: 'success' },
         normal: { text: '合理', type: 'warning' },
         overvalued: { text: '高估', type: 'error' },
       }
-      const item = map[row.val_category ?? 'normal']
+      const item = map[row.val_category]
       return h(NTag, { size: 'small', type: item.type, bordered: false }, { default: () => item.text })
     },
   },
-  { title: titleWithHelp('PE (TTM)', 'pe'), key: 'pe', align: 'right' as const, render: (row: EtfFund) => row.pe?.toFixed(2) ?? '-' },
+  { title: titleWithHelp('PE (TTM)', 'pe'), key: 'pe', align: 'right' as const, render: (row: EtfFund) => row.pe != null ? row.pe.toFixed(2) : '-' },
   {
     title: titleWithHelp('PE 百分位', 'pe_percentile'), key: 'pe_percentile', align: 'center' as const,
     render: (row: EtfFund) => row.pe_percentile != null ? h(PercentileIndicator, { value: row.pe_percentile }) : '-',
@@ -290,17 +331,18 @@ const valuationColumns = [
     title: '股息率', key: 'dividend_rate', align: 'right' as const,
     render: (row: EtfFund) => row.dividend_rate ? h('span', { style: { color: 'var(--color-success)' } }, `${row.dividend_rate}%`) : '-',
   },
-  { title: '现价', key: 'price', align: 'right' as const, render: (row: EtfFund) => row.price.toFixed(3) },
+  { title: '现价', key: 'price', align: 'right' as const, render: (row: EtfFund) => (row.price ?? 0).toFixed(3) },
   {
     title: '定投建议', key: 'action', align: 'center' as const,
     render: (row: EtfFund) => {
-      const cat = row.val_category ?? 'normal'
+      if (row.val_category == null) return '-'
       const map = {
         undervalued: { text: '加倍定投', type: 'success' as const },
         normal: { text: '正常定投', type: 'info' as const },
         overvalued: { text: '暂停定投', type: 'error' as const },
       }
-      return h(NTag, { size: 'small', type: map[cat].type, round: true, bordered: false }, { default: () => map[cat].text })
+      const item = map[row.val_category]
+      return h(NTag, { size: 'small', type: item.type, round: true, bordered: false }, { default: () => item.text })
     },
   },
 ]
@@ -332,8 +374,10 @@ const strategyNotes: Record<string, { title: string; desc: string }> = {
   },
 }
 
-function formatVol(v: number): string {
-  if (v >= 10000000) return `${(v / 10000000).toFixed(2)}亿`
+// volume 为成交额(元)：1亿=1e8，1万=1e4；缺失时显示 '-'（麦蕊源无此列）
+function formatVol(v: number | null): string {
+  if (v == null) return '-'
+  if (v >= 100000000) return `${(v / 100000000).toFixed(2)}亿`
   if (v >= 10000) return `${(v / 10000).toFixed(0)}万`
   return v.toString()
 }
@@ -371,15 +415,15 @@ function exportEtf() {
     const a = arbitrageAnalysisMap.value.get(e.code)
     if (activeTab.value === 'arbitrage' && a) {
       return [
-        e.name, e.code, e.premium_pct, e.premium_percentile,
+        e.name, e.code, e.premium_pct, e.premium_percentile ?? '',
         a.adjustedYieldLow, a.adjustedYieldHigh, a.capitalLabel,
         `T+${a.holdingDays}`, a.riskExposure, a.feasibilityLabel,
-        a.traps.join('; '), e.volume,
+        a.traps.join('; '), e.volume ?? '',
       ]
     }
     return [
-      e.name, e.code, e.price, e.iopv, e.premium_pct, e.premium_percentile,
-      e.net_arbitrage_yield, e.subscribe_limit ?? '', e.volume,
+      e.name, e.code, e.price, e.iopv, e.premium_pct, e.premium_percentile ?? '',
+      e.net_arbitrage_yield, e.subscribe_limit ?? '', e.volume ?? '',
     ]
   })
   exportToCSV(`etf_${activeTab.value}_${new Date().toISOString().slice(0, 10)}`, headersMap[activeTab.value], rows)
@@ -450,24 +494,40 @@ function exportEtf() {
         <div class="trap-header">
           <n-icon :component="WarningOutline" size="16" />
           <span>套利陷阱识别</span>
+          <span v-if="trappedEtfs.length" class="trap-total">共 {{ trappedEtfs.length }} 只有标记</span>
         </div>
-        <div class="trap-list">
-          <div v-for="etf in displayEtfs" :key="etf.code" class="trap-row">
-            <template v-if="arbitrageAnalysisMap.get(etf.code)?.traps.length">
-              <span class="trap-name">{{ etf.name }}</span>
-              <div class="trap-tags">
-                <span
-                  v-for="(trap, i) in arbitrageAnalysisMap.get(etf.code)?.traps"
-                  :key="i"
-                  class="trap-tag"
-                >{{ trap }}</span>
-              </div>
-            </template>
+
+        <!-- 按类型汇总 -->
+        <div v-if="trapSummary.length" class="trap-summary">
+          <span
+            v-for="c in trapSummary"
+            :key="c.key"
+            class="trap-chip"
+            :class="`trap-chip-${c.tone}`"
+          >{{ c.label }} <b>{{ c.count }}</b></span>
+        </div>
+
+        <!-- 高危标的 Top N -->
+        <div v-if="trapOffenders.length" class="trap-list">
+          <div v-for="etf in trapOffenders" :key="etf.code" class="trap-row">
+            <span class="trap-name" :title="etf.name">{{ etf.name }}</span>
+            <span class="trap-premium" :class="etf.premium_pct > 0 ? 'premium-pos' : 'premium-neg'">
+              {{ etf.premium_pct >= 0 ? '+' : '' }}{{ etf.premium_pct }}%
+            </span>
+            <div class="trap-tags">
+              <span
+                v-for="(trap, i) in arbitrageAnalysisMap.get(etf.code)?.traps"
+                :key="i"
+                class="trap-tag"
+                :class="`trap-tag-${trapTone(trap)}`"
+              >{{ trap }}</span>
+            </div>
           </div>
-          <div v-if="!displayEtfs.some(e => arbitrageAnalysisMap.get(e.code)?.traps.length)" class="trap-empty">
-            暂无陷阱标记
+          <div v-if="trappedEtfs.length > trapOffenders.length" class="trap-more">
+            还有 {{ trappedEtfs.length - trapOffenders.length }} 只，见上方表格（灰行 = 不可行）
           </div>
         </div>
+        <div v-else class="trap-empty">暂无陷阱标记</div>
       </div>
 
       <!-- 策略说明 -->
@@ -632,13 +692,42 @@ function exportEtf() {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
   color: var(--color-danger);
   font-family: 'Work Sans', sans-serif;
   font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.02em;
 }
+.trap-total {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  letter-spacing: 0;
+}
+/* 按类型汇总 chips */
+.trap-summary {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.trap-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.trap-chip b {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+}
+.trap-chip-danger { background: var(--tag-red-bg); color: var(--tag-red-text); }
+.trap-chip-warning { background: var(--tag-orange-bg); color: var(--tag-orange-text); }
+.trap-chip-muted { background: var(--tag-gray-bg); color: var(--tag-gray-text); }
 .trap-list {
   display: flex;
   flex-direction: column;
@@ -651,13 +740,22 @@ function exportEtf() {
   font-size: 12px;
 }
 .trap-name {
-  min-width: 140px;
+  min-width: 150px;
+  max-width: 220px;
   color: var(--text-primary);
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.trap-premium {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 700;
+  min-width: 52px;
+}
+.trap-premium.premium-pos { color: var(--color-danger); }
+.trap-premium.premium-neg { color: var(--color-success); }
 .trap-tags {
   display: flex;
   gap: 4px;
@@ -667,10 +765,16 @@ function exportEtf() {
   display: inline-block;
   padding: 1px 6px;
   border-radius: 2px;
-  background: var(--tag-red-bg);
-  color: var(--tag-red-text);
   font-size: 9px;
   font-weight: 700;
+}
+.trap-tag-danger { background: var(--tag-red-bg); color: var(--tag-red-text); }
+.trap-tag-warning { background: var(--tag-orange-bg); color: var(--tag-orange-text); }
+.trap-tag-muted { background: var(--tag-gray-bg); color: var(--tag-gray-text); }
+.trap-more {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding-top: 2px;
 }
 .trap-empty {
   font-size: 12px;

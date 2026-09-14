@@ -28,12 +28,12 @@ def login():
 def headers():
     return {"Authorization": f"Bearer {TOKEN}"} if TOKEN else {}
 
-def test(name, method, path, body=None, expect_status=200, auth=True):
+def test(name, method, path, body=None, expect_status=200, auth=True, timeout=15):
     url = f"{BASE}{path}"
     h = headers() if auth else {}
     h["Content-Type"] = "application/json"
     try:
-        resp = requests.request(method, url, json=body, headers=h, timeout=15)
+        resp = requests.request(method, url, json=body, headers=h, timeout=timeout)
         ok = resp.status_code == expect_status
         try:
             j = resp.json()
@@ -70,6 +70,8 @@ def main():
     test("market_status", "GET", "/market/status")
     test("market_sw_sectors", "GET", "/market/sw-sectors")
     test("market_sw_strength", "GET", "/market/sw-sectors/relative-strength")
+    # 首次调用要打到本地 akshare（约 30s），超时需放宽
+    test("market_sw_valuation", "GET", "/market/sw-sectors/valuation-history?sector_code=801010", timeout=180)
     test("market_precious_metals", "GET", "/market/precious-metals")
 
     # 2. Index Analysis (under /market/indices)

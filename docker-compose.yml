@@ -1,0 +1,30 @@
+# Doraemon QuantTerminal Pro 部署
+# 启动：docker compose up -d --build
+# 访问：http://<host>:8080
+
+services:
+  backend:
+    build: ./backend
+    container_name: doraemon_backend
+    environment:
+      - DB_PATH=/data/quantterminal.duckdb
+      - JWT_SECRET=${JWT_SECRET:-quantterminal-secret-key-change-in-production}
+      - USE_MOCK_DATA=false
+      - AKSHARE_API_BASE=${AKSHARE_API_BASE:-http://10.100.213.248:8000}
+      - WECOM_WEBHOOK_URL=${WECOM_WEBHOOK_URL:-}
+      - DINGTALK_WEBHOOK_URL=${DINGTALK_WEBHOOK_URL:-}
+    volumes:
+      - doraemon_data:/data
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: doraemon_frontend
+    ports:
+      - "9080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  doraemon_data:

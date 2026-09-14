@@ -58,7 +58,7 @@ function exportFunds() {
   const headers = ['基金名称', '代码', '类型', '价格', '预估净值', '溢价率', '百分位', '净套利收益', '成交量']
   const rows = filteredFunds.value.map(f => [
     f.name, f.code, f.type, f.price.toFixed(3), f.iopv.toFixed(3), f.premium_pct,
-    f.premium_percentile, f.net_arbitrage_yield, f.volume,
+    f.premium_percentile ?? '', f.net_arbitrage_yield, f.volume ?? '',
   ])
   exportToCSV(`lof_funds_${activeTab.value}_${new Date().toISOString().slice(0, 10)}`, headers, rows)
   message.success(`已导出 ${rows.length} 条基金数据`)
@@ -144,6 +144,8 @@ const columns = computed(() => {
       key: 'premium_percentile',
       align: 'right' as const,
       render: (row: FundItem) => {
+        // 溢价百分位需历史溢价率序列，无源时后端返回 null，显示 '-' 而非伪造数值
+        if (row.premium_percentile == null) return h('span', { class: 'mono right' }, '-')
         const bg = row.premium_percentile > 80
           ? 'var(--color-danger)'
           : row.premium_percentile > 50
@@ -193,7 +195,9 @@ const columns = computed(() => {
       title: titleWithHelp('成交量', 'volume'),
       key: 'volume',
       align: 'right' as const,
-      render: (row: FundItem) => h('span', { class: 'mono right' }, `${(row.volume / 10000).toFixed(0)}万`),
+      render: (row: FundItem) => row.volume != null
+        ? h('span', { class: 'mono right' }, `${(row.volume / 10000).toFixed(0)}万`)
+        : h('span', { class: 'mono right' }, '-'),
     },
   ]
 

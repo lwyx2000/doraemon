@@ -15,18 +15,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from services.fund_service import _processed_data_request, _pick, _safe_float
+from services.fund_service import _classify, _processed_data_request, _pick, _safe_float, _safe_int
 from utils.arbitrage import FEASIBILITY_ORDER, analyze_arbitrage
-
-
-def _classify(name: str, code: str) -> tuple[str, str]:
-    """基于名称/代码轻量分类（非虚构数据）。"""
-    n = name
-    if any(k in n for k in ("纳指", "标普", "道琼斯", "德国", "法国", "日经", "恒生", "港股", "美国", "海外", "中概", "原油", "黄金", "德国", "法国")):
-        return "cross_border", "跨境"
-    if any(k in n for k in ("沪深300", "中证500", "中证1000", "上证50", "创业板", "科创50", "科创", "中证A500", "深证", "上证")):
-        return "broad", "宽基"
-    return "industry", "行业"
 
 
 def _map_etf(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -41,6 +31,13 @@ def _map_etf(item: dict[str, Any]) -> dict[str, Any] | None:
     # IOPV 对 ETF≈NAV
     iopv = nav if nav else 0.0
     category, sub = _classify(name, code)
+    # 麦蕊 申购状态(sgzt) → subscribe_limit；成交额(元)/成交量(手) 仅新浪兜底源提供，缺失 → None
+    subscribe_limit = _pick(item, "申购状态", "sgzt")
+    is_suspended = bool(subscribe_limit) and any(k in str(subscribe_limit) for k in ("暂停", "停止"))
+    vol_raw = _pick(item, "成交额", "成交量")
+    volume = _safe_int(vol_raw) if vol_raw is not None else None
+    # 跨境 ETF 份额 T+2 到账，境内 T+1
+    holding_days = 2 if category == "cross_border" else 1
     return {
         "name": name,
         "code": code,
@@ -49,11 +46,14 @@ def _map_etf(item: dict[str, Any]) -> dict[str, Any] | None:
         "price": price,
         "iopv": iopv,
         "premium_pct": premium_pct,
-        "volume": 0,  # fund_rank 无成交额列（上游缺字段，属 C 类）
-        "premium_percentile": 50,
+        "volume": volume,
+        "premium_percentile": None,  # 历史溢价率序列需 premium_history 逐只取，无源 → None
         # 折溢价套利毛收益 = 溢价率（折价为负即反向套利空间）
         "net_arbitrage_yield": premium_pct,
         "change_pct": change_pct,
+        "subscribe_limit": subscribe_limit,
+        "is_suspended": is_suspended,
+        "holding_days": holding_days,
     }
 
 

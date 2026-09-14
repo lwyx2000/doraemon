@@ -105,11 +105,18 @@ export interface IndexValuation {
   pb: number | null
   pe_percentile: number | null
   pb_percentile: number | null
-  category: 'undervalued' | 'normal' | 'overvalued' | 'opportunity'
+  category: 'undervalued' | 'normal' | 'overvalued' | 'opportunity' | 'unknown'
   change_3m_pct: number
   win_rate: number
   hasValuation?: boolean
   market: 'a_share' | 'hk' | 'us'
+}
+
+// 指数估值历史序列点（乐咕乐股真实数据，PE TTM / PB）
+export interface IndexValuationHistPoint {
+  date: string
+  value: number
+  index_level: number | null
 }
 
 export interface SwSector {
@@ -137,6 +144,22 @@ export interface SwSectorHistoryItem {
   pb: number | null
   dividend_yield: number | null
   count: number | null
+}
+
+/** 申万一级行业历史估值数据项（来自 index_analysis_daily_sw） */
+export interface SwSectorValuationItem {
+  code: string
+  name: string
+  date: string
+  price: number | null
+  change_pct: number | null
+  turnover_rate: number | null
+  pe: number | null
+  pb: number | null
+  dividend_yield: number | null
+  avg_price: number | null
+  turnover_ratio: number | null
+  circ_market_cap: number | null
 }
 
 export interface SwSectorStrength {
@@ -192,21 +215,24 @@ export interface FundItem {
   name: string
   code: string
   type: 'lof' | 'closed' | 'qdii'
+  category?: 'broad' | 'industry' | 'cross_border' | 'theme'
+  sub_category?: string
   price: number
   iopv: number
   premium_pct: number
-  premium_percentile: number
+  premium_percentile: number | null   // 需历史溢价率序列，无源时为 null（前端显示 -）
   net_arbitrage_yield: number
   remaining_term?: string
   annualized?: number
   est_ytm?: number
   maturity?: string
-  volume: number
+  volume: number | null               // 新浪兜底源提供成交额(元)；麦蕊源缺失时为 null
   // 套利风险量化
-  subscribe_limit?: string       // 申购限额描述 (如 "限购 100 元" / "无限制")
+  subscribe_limit?: string       // 申购限额描述 (如 "限购 100 元" / "无限制" / "暂停申购")
   daily_volatility?: number      // 日波动率(%)
   holding_days?: number          // 套利资金占用天数 (T+N到账)
   is_suspended?: boolean         // 是否停牌/暂停申购
+  change_pct?: number            // 涨跌幅(%)
   // 封闭基金专属
   nav?: number                   // 基金净值
   nav_date?: string              // 净值披露日期
@@ -220,31 +246,32 @@ export interface EtfFund {
   name: string
   code: string
   category: 'broad' | 'industry' | 'cross_border' | 'theme'
-  sub_category: string
+  sub_category?: string
   price: number
   iopv: number
   premium_pct: number
-  volume: number
+  volume: number | null          // 新浪兜底源提供成交额(元)；缺失时为 null
   // 折溢价套利
-  premium_percentile: number
+  premium_percentile: number | null   // 需历史溢价率序列，无源时为 null（前端显示 -）
   net_arbitrage_yield: number
   subscribe_limit?: string
   // 套利风险量化
   daily_volatility?: number      // 日波动率(%)
   holding_days?: number          // 套利资金占用天数 (T+N到账, 跨境ETF=2, 境内=1)
   is_suspended?: boolean         // 是否停牌/暂停申购
-  // 网格交易参数
-  grid_low: number
-  grid_high: number
-  grid_step: number
-  grid_yield_est: number
-  // 行业轮动
-  momentum_score: number
+  // 网格交易参数（需 K 线计算，无源时为 null，前端显示 -）
+  grid_low?: number | null
+  grid_high?: number | null
+  grid_step?: number | null
+  grid_yield_est?: number | null
+  // 行业轮动（需 K 线计算，无源时为 null，前端显示 -）
+  momentum_score?: number | null
   // 估值定投
-  pe?: number
-  pe_percentile?: number
-  val_category?: 'undervalued' | 'normal' | 'overvalued'
-  dividend_rate?: number
+  pe?: number | null
+  pe_percentile?: number | null
+  val_category?: 'undervalued' | 'normal' | 'overvalued' | null
+  dividend_rate?: number | null
+  change_pct?: number
 }
 
 

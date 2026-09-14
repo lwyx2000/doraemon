@@ -29,10 +29,23 @@ async def lifespan(app: FastAPI):
     else:
         db = get_db()
         print(f"[Startup] Database connected: {db.db_path}")
+        # 幂等确保全部表存在（含 base_sw_sector_daily）：新库/旧库缺表自动补建，
+        # 否则 SW 快照统计在启动时就会因表不存在而报错，自动回填也永远不会触发。
+        from database.init_db import ensure_schema
+
+        ensure_schema(db)
+        # 申万行业快照：定时收盘落库 + 首次启动自动回填历史
+        from jobs.sw_snapshot_job import start_sw_snapshot_scheduler
+
+        start_sw_snapshot_scheduler()
 
     yield
 
     # Shutdown
+    if not USE_MOCK_DATA:
+        from jobs.sw_snapshot_job import stop_sw_snapshot_scheduler
+
+        stop_sw_snapshot_scheduler()
     close_db()
     print("[Shutdown] Database connection closed")
 

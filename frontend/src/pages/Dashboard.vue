@@ -13,6 +13,7 @@ import type {
   ZTStats,
   FundRankingItem,
   SectionSourceMeta,
+  SwSector,
 } from '../types'
 import PageHeader from '../components/PageHeader.vue'
 import DataPanel from '../components/DataPanel.vue'
@@ -261,6 +262,7 @@ const CATEGORY_LABEL: Record<string, string> = {
   opportunity: '极度低估',
   normal: '正常',
   overvalued: '高估',
+  unknown: '—',
 }
 
 const columns = [
@@ -269,7 +271,8 @@ const columns = [
     render: (row: any) => row.level.toLocaleString() },
   { title: 'CHG%', key: 'change_pct', width: 90, align: 'right' as const,
     render: (row: any) => {
-      const color = row.change_pct >= 0 ? 'var(--color-success)' : 'var(--color-danger)'
+      // 涨红跌绿（A股惯例，与全站其余面板一致）
+      const color = row.change_pct >= 0 ? 'var(--color-danger)' : 'var(--color-success)'
       return h('span', { style: { color } },
         `${row.change_pct >= 0 ? '+' : ''}${row.change_pct.toFixed(2)}%`)
     },
@@ -301,7 +304,7 @@ const columns = [
   },
   { title: titleWithHelp('近3月涨跌', 'change_3m_pct'), key: 'change_3m_pct', width: 110, align: 'right' as const,
     render: (row: any) => {
-      const color = row.change_3m_pct >= 0 ? 'var(--color-success)' : 'var(--color-danger)'
+      const color = row.change_3m_pct >= 0 ? 'var(--color-danger)' : 'var(--color-success)'
       return h('span', { style: { color } },
         `${row.change_3m_pct >= 0 ? '+' : ''}${row.change_3m_pct.toFixed(2)}%`)
     },

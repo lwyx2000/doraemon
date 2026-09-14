@@ -1,7 +1,8 @@
 <script setup lang="ts">
 defineOptions({ name: 'ConvertibleBonds' })
-import { ref, computed, h, onMounted } from 'vue'
+import { ref, computed, h, onMounted, watch } from 'vue'
 import { NDataTable, NInput, NSelect, NIcon, NModal, NButton, useMessage } from 'naive-ui'
+import type { PaginationProps } from 'naive-ui'
 import { DownloadOutline, FilterOutline, WarningOutline, SwapHorizontalOutline, StatsChartOutline, WalletOutline, ConstructOutline } from '@vicons/ionicons5'
 import type { Component } from 'vue'
 import { useAsyncData } from '../composables/useApi'
@@ -31,6 +32,29 @@ const conversionMap = computed(() => {
 const volatilityMap = computed(() => {
   if (!bonds.value) return new Map<string, VolatilityAnalysis>()
   return analyzeVolatilityBatch(bonds.value)
+})
+
+// 市场统计：中位价格 / 中位溢价率（从实际数据计算，不使用硬编码数值）
+function median(nums: number[]): number {
+  if (!nums.length) return 0
+  const sorted = [...nums].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+}
+const medianPrice = computed(() => (bonds.value ? median(bonds.value.map(b => b.price)) : 0))
+const medianPremium = computed(() => (bonds.value ? median(bonds.value.map(b => b.premium_pct)) : 0))
+
+// 表格分页：每页默认 20 行，客户端分页
+const pagination = ref<PaginationProps>({
+  page: 1,
+  pageSize: 20,
+  showSizePicker: true,
+  pageSizes: [10, 20, 50, 100],
+  onChange: (page: number) => { pagination.value.page = page },
+  onUpdatePageSize: (pageSize: number) => {
+    pagination.value.pageSize = pageSize
+    pagination.value.page = 1
+  },
 })
 // 策略快捷按钮
 interface StrategyDef {
@@ -121,6 +145,9 @@ function applyFilters() {
   message.success(`筛选完成：${matched} / ${total} 只转债匹配`)
 }
 
+// 筛选条件/策略变化时回到第一页
+watch(filteredBonds, () => { pagination.value.page = 1 })
+
 function resetAdvancedFilters() {
   filterYtmMin.value = ''
   filterYearsMax.value = ''
@@ -167,7 +194,7 @@ const columns = [
     align: 'right' as const,
     render: (row: ConvertibleBond) => h(
       'span',
-      { style: { color: row.change_pct >= 0 ? 'var(--color-success)' : 'var(--color-danger)' } },
+      { style: { color: row.change_pct >= 0 ? 'var(--color-danger)' : 'var(--color-success)' } },
       `${row.change_pct >= 0 ? '+' : ''}${row.change_pct}%`,
     ),
   },
@@ -481,16 +508,14 @@ function exportBonds() {
         <div class="mstat">
           <span class="mstat-label">中位价格</span>
           <div class="mstat-row">
-            <span class="mstat-value">118.42</span>
-            <span class="mstat-chg pos">+0.12%</span>
+            <span class="mstat-value">{{ medianPrice.toFixed(2) }}</span>
           </div>
         </div>
         <div class="mstat-divider" />
         <div class="mstat">
           <span class="mstat-label">中位溢价</span>
           <div class="mstat-row">
-            <span class="mstat-value">35.1%</span>
-            <span class="mstat-chg neg">-2.4%</span>
+            <span class="mstat-value">{{ medianPremium.toFixed(1) }}%</span>
           </div>
         </div>
       </div>
@@ -534,14 +559,10 @@ function exportBonds() {
         :single-line="false"
         size="small"
         :row-props="rowProps"
+        :pagination="pagination"
       />
       <div class="table-footer">
-        <span class="footer-info">显示 1-{{ filteredBonds.length }} / {{ bonds?.length ?? 0 }} 只转债</span>
-        <div class="footer-pages">
-          <button class="page-btn">上一页</button>
-          <button class="page-btn active">1</button>
-          <button class="page-btn">下一页</button>
-        </div>
+        <span class="footer-info">筛选后 {{ filteredBonds.length }} 只 / 全部 {{ bonds?.length ?? 0 }} 只转债</span>
       </div>
     </DataPanel>
 
@@ -867,14 +888,6 @@ function exportBonds() {
 }
 
 .footer-info { font-size: 13px; color: var(--text-muted); }
-.footer-pages { display: flex; gap: 4px; }
-.page-btn {
-  padding: 4px 12px; border: 1px solid var(--border-default); border-radius: 4px;
-  background: var(--bg-card); cursor: pointer; font-size: 13px; color: var(--text-muted); transition: all 0.15s;
-}
-.page-btn.active { background: var(--color-primary); color: var(--bg-card); border-color: var(--color-primary); }
-.page-btn:hover:not(.active) { background: var(--bg-hover); }
-.page-btn:active:not(.active) { background: var(--bg-active); }
 
 /* Bottom Rankings */
 .bottom-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; height: 200px; }

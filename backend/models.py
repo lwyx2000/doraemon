@@ -69,14 +69,15 @@ class IndexValuation(BaseModel):
     code: str
     level: float
     change_pct: float
-    pe: float
-    pb: float
-    pe_percentile: float
-    pb_percentile: float
+    pe: float | None = None
+    pb: float | None = None
+    pe_percentile: float | None = None
+    pb_percentile: float | None = None
     category: str
     change_3m_pct: float
     win_rate: float
     market: str = "a_share"  # a_share, hk, us
+    hasValuation: bool | None = None  # False=实时行情补录（科创板等），无估值数据，前端显示"—"
 
 
 class MarketIndex(BaseModel):
@@ -236,21 +237,24 @@ class FundItem(BaseModel):
     name: str
     code: str
     type: str
+    category: Optional[str] = None
+    sub_category: Optional[str] = None
     price: float
     iopv: float
     premium_pct: float
-    premium_percentile: float
+    premium_percentile: Optional[float] = None  # 需历史溢价率序列，无源时为 None（前端显示 -）
     net_arbitrage_yield: float
     remaining_term: Optional[str] = None
     annualized: Optional[float] = None
     est_ytm: Optional[float] = None
     maturity: Optional[str] = None
-    volume: int
+    volume: Optional[int] = None  # 新浪兜底源提供成交额(元)；麦蕊源缺失时为 None
     subscribe_limit: Optional[str] = None
     daily_volatility: Optional[float] = None
     holding_days: Optional[int] = None
     is_suspended: Optional[bool] = None
     nav: Optional[float] = None
+    change_pct: Optional[float] = None
     credit_rating: Optional[str] = None
     is_lof_convertible: Optional[bool] = None
     underlying_type: Optional[str] = None
@@ -298,8 +302,8 @@ class EtfFund(BaseModel):
     price: float
     iopv: float
     premium_pct: float
-    volume: int
-    premium_percentile: float
+    volume: Optional[int] = None
+    premium_percentile: Optional[float] = None
     net_arbitrage_yield: float
     subscribe_limit: Optional[str] = None
     daily_volatility: Optional[float] = None

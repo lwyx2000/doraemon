@@ -210,7 +210,7 @@ function calcScore(
 
 export function analyzeClosedFund(fund: FundItem): ClosedFundAnalysis {
   const { level: liquidity, label: liquidityLabel, turnover: turnoverEstimate } =
-    analyzeLiquidity(fund.volume)
+    analyzeLiquidity(fund.volume ?? 0)
   const { certainty: convergence, label: convergenceLabel, isLofConvertible, remainingDays, convergenceYield } =
     analyzeConvergence(fund)
   const { level: creditRisk, label: creditLabel } =
@@ -236,7 +236,7 @@ export function analyzeClosedFund(fund: FundItem): ClosedFundAnalysis {
   return {
     liquidity,
     liquidityLabel,
-    volume: fund.volume,
+    volume: fund.volume ?? 0,
     turnoverEstimate,
     convergence,
     convergenceLabel,

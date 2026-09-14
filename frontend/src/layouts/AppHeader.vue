@@ -26,7 +26,7 @@ const refreshing = ref(false)
 const { isDark, toggle: toggleDarkMode } = useDarkMode()
 const { toggleMobile } = useSidebar()
 const { openTab } = useTabs()
-const { username, isLoggedIn, userInitial, logout } = useAuth()
+const { isLoggedIn, userInitial, logout } = useAuth()
 
 const userMenuOptions = [
   { label: '个人中心', key: 'profile', icon: () => h(PersonOutline) },

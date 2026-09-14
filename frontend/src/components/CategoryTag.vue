@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 
 const props = defineProps<{
-  type: 'undervalued' | 'normal' | 'overvalued' | 'opportunity'
+  type: 'undervalued' | 'normal' | 'overvalued' | 'opportunity' | 'unknown'
   label?: string
 }>()
 
@@ -13,6 +13,7 @@ const displayLabel = computed(() => {
     normal: '正常',
     overvalued: '高估',
     opportunity: '机会',
+    unknown: '—',
   }
   return map[props.type] || props.type
 })

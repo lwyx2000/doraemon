@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { NModal, NSpin, NEmpty, NTag, NText, NSpace, NSelect, NButton } from 'naive-ui'
-import type { SwSector, SwSectorHistoryItem, SwSectorStrength } from '../types'
+import { NModal, NSpin, NEmpty, NText, NSelect } from 'naive-ui'
+import type { SwSector, SwSectorHistoryItem, SwSectorValuationItem, SwSectorStrength } from '../types'
 import { api } from '../utils/api'
 import BaseChart from './BaseChart.vue'
 
@@ -39,6 +39,8 @@ const modalVisible = ref(false)
 const selectedSector = ref<SwSector | null>(null)
 const historyLoading = ref(false)
 const historyData = ref<SwSectorHistoryItem[]>([])
+const valuationLoading = ref(false)
+const valuationData = ref<SwSectorValuationItem[]>([])
 const strengthLoading = ref(false)
 const strengthData = ref<SwSectorStrength[]>([])
 const strengthDays = ref(5)
@@ -53,7 +55,7 @@ const strengthDaysOptions = [
 async function openSectorDetail(sector: SwSector) {
   selectedSector.value = sector
   modalVisible.value = true
-  await Promise.all([loadHistory(), loadStrength()])
+  await Promise.all([loadHistory(), loadStrength(), loadValuation()])
 }
 
 async function loadHistory() {
@@ -76,6 +78,18 @@ async function loadStrength() {
     strengthData.value = []
   } finally {
     strengthLoading.value = false
+  }
+}
+
+async function loadValuation() {
+  if (!selectedSector.value) return
+  valuationLoading.value = true
+  try {
+    valuationData.value = await api.getSwSectorValuationHistory(selectedSector.value.code)
+  } catch {
+    valuationData.value = []
+  } finally {
+    valuationLoading.value = false
   }
 }
 
@@ -121,6 +135,58 @@ const historyChartOption = computed(() => {
         smooth: true,
         showSymbol: false,
         lineStyle: { width: 2 },
+      },
+    ],
+  }
+})
+
+// PE / PB 历史估值走势图 option
+const valuationChartOption = computed(() => {
+  if (!valuationData.value.length) return null
+  const dates = valuationData.value.map(h => h.date)
+  const peData = valuationData.value.map(h => h.pe)
+  const pbData = valuationData.value.map(h => h.pb)
+  const divYieldData = valuationData.value.map(h => h.dividend_yield)
+  return {
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['PE(市盈率)', 'PB(市净率)', '股息率(%)'] },
+    grid: { left: 50, right: 60, top: 40, bottom: 50 },
+    xAxis: { type: 'category', data: dates, boundaryGap: false },
+    yAxis: [
+      { type: 'value', name: 'PE / PB', scale: true, position: 'left' },
+      { type: 'value', name: '股息率(%)', scale: true, position: 'right' },
+    ],
+    dataZoom: [{ type: 'inside' }, { type: 'slider', height: 16, bottom: 10 }],
+    series: [
+      {
+        name: 'PE(市盈率)',
+        type: 'line',
+        yAxisIndex: 0,
+        data: peData,
+        smooth: true,
+        showSymbol: false,
+        lineStyle: { width: 2, color: '#3b82f6' },
+        itemStyle: { color: '#3b82f6' },
+      },
+      {
+        name: 'PB(市净率)',
+        type: 'line',
+        yAxisIndex: 0,
+        data: pbData,
+        smooth: true,
+        showSymbol: false,
+        lineStyle: { width: 2, color: '#f59e0b' },
+        itemStyle: { color: '#f59e0b' },
+      },
+      {
+        name: '股息率(%)',
+        type: 'line',
+        yAxisIndex: 1,
+        data: divYieldData,
+        smooth: true,
+        showSymbol: false,
+        lineStyle: { width: 2, color: '#10b981', type: 'dashed' },
+        itemStyle: { color: '#10b981' },
       },
     ],
   }
@@ -220,6 +286,15 @@ const strengthChartOption = computed(() => {
           <n-spin :show="historyLoading">
             <BaseChart v-if="historyChartOption" :option="historyChartOption" :height="300" />
             <n-empty v-else description="暂无历史数据（需积累多个交易日快照）" style="padding: 40px 0" />
+          </n-spin>
+        </div>
+
+        <!-- PE / PB 历史估值走势图 -->
+        <div class="detail-section">
+          <h4 class="section-title">PE / PB / 股息率历史走势（近半年，AkShare）</h4>
+          <n-spin :show="valuationLoading">
+            <BaseChart v-if="valuationChartOption" :option="valuationChartOption" :height="300" />
+            <n-empty v-else description="暂无估值历史数据" style="padding: 40px 0" />
           </n-spin>
         </div>
 

@@ -1,7 +1,24 @@
 # 前端 UI 手动验证清单
 
 > 生成日期：2026-08-19
-> 后端 API 自动测试已全部通过（39 个端点，38 PASS / 1 超时），以下为前端 UI 级别需手动验证的功能点。
+> 最近核对：2026-09-01 — 后端 API 自动测试 **40 个端点全部 PASS（0 FAIL / 0 ERROR）**
+> （原文写的「38 PASS / 1 超时」与实测不符，已更正；估值接口 `market_sw_valuation` 为 2026-09-01 新补的用例）。
+> 以下为前端 UI 级别需手动验证的功能点。
+>
+> 2026-09-01 已修的后端问题（会影响下面部分验证项的表现）：
+> - 单例 DuckDB connection 并发使用导致 **GIL + 内部锁死锁、整个进程冻结**（打开行业弹窗即触发）→ `database/connection.py` 加 `threading.RLock()` 串行化。
+> - `_fetch_10y_history` 只拉 3 年却要算 10 年分位，且超时 6s < 网关实测 12s 导致必然全部失败 → ERP 长期为 `None`。已改为后台刷新 + 缓存，超时 25s、拉满 10 年；现 `erp=5.97 / 10年分位=68.6`，响应 1.3s。
+> - 申万估值接口缓存无并发保护（3 并发触发 3 次 30s 全量拉取）→ 加按 key 的互斥锁，现 3 并发只拉 1 次；缓存 key 超过 8 个自动清理最旧的。
+>
+> ⚠️ 曾长期为空的两项：「历史走势」「相对强度排行」依赖 `base_sw_sector_daily` 表，该表常年 0 行。
+> **2026-09-01 已定位并修复**（此前文档写的"没有落快照的定时任务"是误判）：
+> - 真因：该表同时有 PRIMARY KEY 与 UNIQUE(sector_code, trade_date) 两个唯一约束，
+>   DuckDB 的 `INSERT OR REPLACE` 无法推断冲突目标，每次写入都抛 `BinderException`，
+>   又被 `_save_sw_sector_snapshot` 的 `except Exception: pass` 静默吞掉 → 一年多 0 行。
+> - 已修：改为 `ON CONFLICT (sector_code, trade_date) DO UPDATE`（估值列用 `COALESCE` 保护）；
+>   新增历史回填（本地 akshare `index_hist_sw`，31 行业约 45s）与每交易日 15:30 定时落快照。
+> - **验证时请注意维度**：免费源只有**当日**估值快照（`sw_index_first_info`），没有 PE/PB 历史序列，
+>   所以历史走势图请选**收盘价 / 涨跌幅**维度；切到 PE / PB / 股息率维度仍为 NULL，属数据源限制，非 bug。
 
 ---
 

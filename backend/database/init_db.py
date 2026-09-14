@@ -56,6 +56,23 @@ def create_indexes(db: Database) -> int:
     return count
 
 
+def ensure_schema(db: Database) -> None:
+    """幂等确保全部序列 / 表 / 索引存在（应用启动时调用，无需手动 init_db）。
+
+    所有 DDL 均为 IF NOT EXISTS，重复执行安全：新库全量建表，
+    旧库缺哪张表（如 base_sw_sector_daily）就补哪张。
+    """
+    for sql in SEQUENCES:
+        db.execute(sql)
+    for sql in TABLES:
+        db.execute(sql)
+    for sql in INDEXES:
+        try:
+            db.execute(sql)
+        except Exception as e:
+            print(f"  [WARN] Index creation skipped: {e}")
+
+
 def drop_all(db: Database) -> None:
     """Drop all tables and sequences for a clean rebuild."""
     print("Dropping existing tables...")

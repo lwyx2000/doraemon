@@ -1,11 +1,11 @@
 <script setup lang="ts">
 defineOptions({ name: 'IndexAnalysis' })
-import { ref, computed, watch, h, reactive, onMounted } from 'vue'
-import { NButton, NDataTable, NModal, NInput, useMessage } from 'naive-ui'
+import { ref, computed, watch, h, onMounted } from 'vue'
+import { NButton, NDataTable, NModal, NEmpty, useMessage } from 'naive-ui'
 import { SearchOutline, ExpandOutline } from '@vicons/ionicons5'
 import { useAsyncData } from '../composables/useApi'
 import { api } from '../utils/api'
-import type { IndexValuation } from '../types'
+import type { IndexValuation, IndexValuationHistPoint, SectionSourceMeta } from '../types'
 import PageHeader from '../components/PageHeader.vue'
 import DataPanel from '../components/DataPanel.vue'
 import PercentileIndicator from '../components/PercentileIndicator.vue'
@@ -18,85 +18,125 @@ import { useFieldHelp } from '../composables/useFieldHelp'
 
 const message = useMessage()
 const { titleWithHelp } = useFieldHelp()
-const { data: indices, loading, error, refresh: refetch } = useAsyncData<IndexValuation[]>(() => api.getIndices().then(r => r.data))
+const indicesMeta = ref<SectionSourceMeta | null>(null)
+const { data: indices, loading, error, refresh: refetch } = useAsyncData<IndexValuation[]>(async () => {
+  const r = await api.getIndices()
+  indicesMeta.value = r.meta ?? null
+  return r.data
+})
 const selectedIndex = ref<IndexValuation | null>(null)
 onMounted(refetch)
 const timeWindow = ref('3Y')
-const valMethod = ref('PE (TTM)')
-
-// 自定义指数弹窗
-const showCustomIndex = ref(false)
-const customForm = reactive({ name: '', code: '' })
-function openCustomIndex() {
-  customForm.name = ''
-  customForm.code = ''
-  showCustomIndex.value = true
-}
-function submitCustomIndex() {
-  if (!customForm.name.trim() || !customForm.code.trim()) {
-    message.warning('请填写指数名称和代码')
-    return
-  }
-  if (!indices.value) indices.value = []
-  const newIdx: IndexValuation = {
-    name: customForm.name.trim(),
-    code: customForm.code.trim(),
-    level: 1000,
-    change_pct: 0,
-    pe: 12,
-    pe_percentile: 30,
-    pb: 1.2,
-    pb_percentile: 25,
-    category: 'opportunity',
-    change_3m_pct: 0,
-    win_rate: 0,
-    market: 'a_share',
-  }
-  indices.value.push(newIdx)
-  message.success(`已添加自定义指数: ${newIdx.name}`)
-  showCustomIndex.value = false
-}
+const valMethods = ['PE (TTM)', 'PB (MRQ)'] as const
+const valMethod = ref<(typeof valMethods)[number]>('PE (TTM)')
+const indicator = computed<'pe' | 'pb'>(() => (valMethod.value.startsWith('PE') ? 'pe' : 'pb'))
+const valUnit = computed(() => (indicator.value === 'pe' ? 'PE(TTM)' : 'PB(MRQ)'))
 
 // 放大查看弹窗
 const showZoomChart = ref(false)
 
-// 仅取有估值数据的指数用于 PE 分析（科创板/科创50/中证A500 等暂无估值，不在分析页展示）
+// 仅取有估值数据的指数用于分析（科创板/科创50/中证A500 等暂无估值，不在分析页展示）
 const analyzableIndices = computed(() => (indices.value ?? []).filter(i => i.hasValuation !== false))
 
+// 表格"最后更新"来自接口 meta（真实时间，不再写死）
+const tableMeta = computed(() =>
+  indicesMeta.value?.updateTime
+    ? `最后更新: ${indicesMeta.value.updateTime}`
+    : `数据源: ${indicesMeta.value?.dataSource ?? '实时数据'}`,
+)
+
 // ============================================================
-// ECharts option — PE 估值带 (replaces static SVG)
+// 估值历史序列（真实数据：乐咕乐股 PE TTM / PB 序列，随选中指数/估值方法切换加载）
+// ============================================================
+const valHist = ref<IndexValuationHistPoint[]>([])
+const histLoading = ref(false)
+
+watch(
+  () => [selectedIndex.value?.name, indicator.value] as [string | undefined, 'pe' | 'pb'],
+  async ([name, ind]) => {
+    if (!name) {
+      valHist.value = []
+      return
+    }
+    histLoading.value = true
+    try {
+      const r = await api.getIndexValuationHistory(name, ind)
+      valHist.value = r.data ?? []
+    } catch {
+      valHist.value = []
+    } finally {
+      histLoading.value = false
+    }
+  },
+  { immediate: true },
+)
+
+// 按时间窗口截取真实序列（1Y/3Y/5Y/全部）
+const windowedHist = computed(() => {
+  const list = valHist.value
+  if (!list.length || timeWindow.value === '全部') return list
+  const years = timeWindow.value === '1Y' ? 1 : timeWindow.value === '3Y' ? 3 : 5
+  const cutoff = new Date()
+  cutoff.setFullYear(cutoff.getFullYear() - years)
+  const cutoffStr = cutoff.toISOString().slice(0, 10)
+  return list.filter(p => p.date >= cutoffStr)
+})
+
+function quantile(sorted: number[], q: number): number {
+  const pos = (sorted.length - 1) * q
+  const base = Math.floor(pos)
+  const rest = pos - base
+  return sorted[base + 1] !== undefined ? sorted[base] + rest * (sorted[base + 1] - sorted[base]) : sorted[base]
+}
+
+// 真实序列统计：窗口内百分位/分位线/极值均值全部由历史序列计算，不再用公式反推
+const bandStats = computed(() => {
+  const values = windowedHist.value.map(p => p.value)
+  if (values.length < 2) return null
+  const sorted = [...values].sort((a, b) => a - b)
+  const current = values[values.length - 1]
+  const below = sorted.filter(v => v <= current).length
+  const r2 = (n: number) => Math.round(n * 100) / 100
+  return {
+    current: r2(current),
+    min: r2(sorted[0]),
+    max: r2(sorted[sorted.length - 1]),
+    avg: r2(values.reduce((s, v) => s + v, 0) / values.length),
+    p90: r2(quantile(sorted, 0.9)),
+    p70: r2(quantile(sorted, 0.7)),
+    p50: r2(quantile(sorted, 0.5)),
+    p10: r2(quantile(sorted, 0.1)),
+    percentile: Math.round((below / sorted.length) * 1000) / 10,
+    count: values.length,
+    firstDate: windowedHist.value[0].date,
+    lastDate: windowedHist.value[windowedHist.value.length - 1].date,
+  }
+})
+
+const winLabel = computed(() => (timeWindow.value === '全部' ? '全部历史' : `近${timeWindow.value.replace('Y', '')}年`))
+
+// ============================================================
+// ECharts option — 真实估值带（历史序列 + 真实分位线）
 // ============================================================
 const peBandChartOption = computed(() => {
-  const idx = selectedIndex.value
-  if (!idx || idx.pe == null) return {}
-  // Simulated 3-year PE history (decreasing trend toward current undervaluation)
-  const labels = ['2021-05', '2021-09', '2022-01', '2022-05', '2022-09', '2023-01', '2023-05', '2023-09', '2024-01', '当前']
-  const currentPe = idx.pe
-  // Build a smooth descending curve from ~max3y toward current
-  const startPe = currentPe * 1.65
-  const peData = labels.map((_, i) => {
-    const t = i / (labels.length - 1)
-    // gentle wave around a downward trend
-    const trend = startPe - (startPe - currentPe) * t
-    const wave = Math.sin(t * Math.PI * 2.2) * (currentPe * 0.08)
-    return Number((trend + wave).toFixed(2))
-  })
-  const p90 = currentPe * 1.6
-  const p70 = currentPe * 1.35
-  const p50 = currentPe * 1.18
-  const p10 = currentPe * 0.92
+  const stats = bandStats.value
+  const pts = windowedHist.value
+  if (!stats || pts.length < 2) return {}
+  // 日频序列降采样到 ≤200 点，保留末点，避免图表过密
+  const step = Math.max(1, Math.floor(pts.length / 200))
+  const sampled = pts.filter((_, i) => i % step === 0 || i === pts.length - 1)
   return {
     tooltip: {
       trigger: 'axis',
       formatter: (params: any) => {
         const p = params[0]
-        return `${p.axisValue}<br/>PE: <b>${p.value}</b>`
+        return `${p.axisValue}<br/>${valUnit.value}: <b>${p.value}</b>`
       },
     },
-    grid: { top: 16, right: 16, bottom: 28, left: 36 },
+    grid: { top: 16, right: 44, bottom: 28, left: 40 },
     xAxis: {
       type: 'category',
-      data: labels,
+      data: sampled.map(p => p.date),
       axisTick: { show: false },
       axisLine: { lineStyle: { color: '#c1c6d7' } },
       axisLabel: { fontSize: 10, color: '#717782' },
@@ -110,11 +150,9 @@ const peBandChartOption = computed(() => {
     series: [
       {
         type: 'line',
-        smooth: true,
-        symbol: 'circle',
-        symbolSize: 5,
-        showSymbol: true,
-        data: peData,
+        smooth: false,
+        showSymbol: false,
+        data: sampled.map(p => p.value),
         lineStyle: { width: 2, color: '#005ea1' },
         itemStyle: { color: '#005ea1' },
         areaStyle: {
@@ -133,10 +171,10 @@ const peBandChartOption = computed(() => {
           silent: true,
           lineStyle: { type: 'dashed', width: 1 },
           data: [
-            { yAxis: p90, lineStyle: { color: 'rgba(220,38,38,0.5)' }, label: { formatter: '90%', position: 'end', fontSize: 9, color: '#dc2626' } },
-            { yAxis: p70, lineStyle: { color: 'rgba(249,115,22,0.5)' }, label: { formatter: '70%', position: 'end', fontSize: 9, color: '#f97316' } },
-            { yAxis: p50, lineStyle: { color: 'rgba(107,114,128,0.5)' }, label: { formatter: '50%', position: 'end', fontSize: 9, color: '#6b7280' } },
-            { yAxis: p10, lineStyle: { color: 'rgba(59,130,246,0.5)' }, label: { formatter: '10%', position: 'end', fontSize: 9, color: '#3b82f6' } },
+            { yAxis: stats.p90, lineStyle: { color: 'rgba(220,38,38,0.5)' }, label: { formatter: '90%', position: 'end', fontSize: 9, color: '#dc2626' } },
+            { yAxis: stats.p70, lineStyle: { color: 'rgba(249,115,22,0.5)' }, label: { formatter: '70%', position: 'end', fontSize: 9, color: '#f97316' } },
+            { yAxis: stats.p50, lineStyle: { color: 'rgba(107,114,128,0.5)' }, label: { formatter: '50%', position: 'end', fontSize: 9, color: '#6b7280' } },
+            { yAxis: stats.p10, lineStyle: { color: 'rgba(59,130,246,0.5)' }, label: { formatter: '10%', position: 'end', fontSize: 9, color: '#3b82f6' } },
           ],
         },
       },
@@ -156,38 +194,44 @@ function selectIndex(index: IndexValuation) {
 }
 
 const timeWindows = ['1Y', '3Y', '5Y', '全部']
-const valMethods = ['PE (TTM)', 'PB (MRQ)', 'PS', '股息率']
 
-const peAnalysis = computed(() => {
+// 估值评估：全部基于真实历史序列统计；无序列时仅用上游真实分位，不推算区间
+const valAnalysis = computed(() => {
   const idx = selectedIndex.value
-  if (!idx || idx.pe == null || idx.pe_percentile == null) return { current: 0, min3y: 0, avg3y: 0, max3y: 0, percentile: 0, assessment: '请选择指数' }
-  // 基于当前 PE 和百分位推算历史区间
-  // 百分位 < 50% → 当前低于中位数，历史区间上移
-  const pct = idx.pe_percentile
-  const current = idx.pe
-  // 估算近3年中位数：当前PE在百分位的相对位置反推
-  const median = pct > 0 && pct < 100
-    ? Math.round((current / (pct / 100 + 0.15)) * 100) / 100
-    : current
-  const max3y = Math.round(median * (1 + (100 - pct) / 100 * 0.6) * 100) / 100
-  const min3y = Math.round(median * (1 - pct / 100 * 0.5) * 100) / 100
-  const avg3y = Math.round((median + max3y + min3y) / 3 * 100) / 100
-
-  // 生成评估文案
-  let assessment = ''
-  const name = idx.name
-  if (pct < 20) {
-    assessment = `${name}当前PE(TTM)为${current}倍，处于近3年历史区间的第${pct}百分位，属于极度低估区域。相比历史中位数${median}倍存在显著的估值折价。PB为${idx.pb}倍，接近多年低点。长期风险收益比偏向正的对称收益，适合定投建仓。`
-  } else if (pct < 40) {
-    assessment = `${name}当前PE(TTM)为${current}倍，处于近3年历史区间的第${pct}百分位，估值偏低。相比历史中位数${median}倍有一定折价空间，可逢低布局。`
-  } else if (pct < 60) {
-    assessment = `${name}当前PE(TTM)为${current}倍，处于近3年历史区间的第${pct}百分位，估值处于中性水平。接近历史中位数${median}倍，不具备明显的估值优势或劣势。`
-  } else if (pct < 80) {
-    assessment = `${name}当前PE(TTM)为${current}倍，处于近3年历史区间的第${pct}百分位，估值偏高。相比历史中位数${median}倍有一定溢价，追高需谨慎。`
-  } else {
-    assessment = `${name}当前PE(TTM)为${current}倍，处于近3年历史区间的第${pct}百分位，属于极度高估区域。远高于历史中位数${median}倍，估值泡沫风险较大，建议减仓或回避。`
+  if (!idx) {
+    return { current: null as number | null, min: null as number | null, avg: null as number | null, max: null as number | null, percentile: null as number | null, assessment: '请选择指数' }
   }
-  return { current, min3y, avg3y, max3y, percentile: pct, assessment }
+  const stats = bandStats.value
+  const name = idx.name
+  const unit = valUnit.value
+  if (stats) {
+    const pct = stats.percentile
+    let assessment = ''
+    const scope = `${winLabel.value}真实序列（${stats.count}个样本，${stats.firstDate} ~ ${stats.lastDate}）`
+    if (pct < 20) {
+      assessment = `${name}当前${unit}为${stats.current}倍，处于${scope}的第${pct}百分位，属于极度低估区域，显著低于历史中位数${stats.p50}倍，长期风险收益比偏向正的对称收益，适合定投建仓。`
+    } else if (pct < 40) {
+      assessment = `${name}当前${unit}为${stats.current}倍，处于${scope}的第${pct}百分位，估值偏低，低于历史中位数${stats.p50}倍，可逢低布局。`
+    } else if (pct < 60) {
+      assessment = `${name}当前${unit}为${stats.current}倍，处于${scope}的第${pct}百分位，接近历史中位数${stats.p50}倍，估值中性，不具备明显的估值优势或劣势。`
+    } else if (pct < 80) {
+      assessment = `${name}当前${unit}为${stats.current}倍，处于${scope}的第${pct}百分位，估值偏高，高于历史中位数${stats.p50}倍，追高需谨慎。`
+    } else {
+      assessment = `${name}当前${unit}为${stats.current}倍，处于${scope}的第${pct}百分位，属于极度高估区域，远高于历史中位数${stats.p50}倍，注意估值回落风险，建议减仓或回避。`
+    }
+    return { current: stats.current, min: stats.min, avg: stats.avg, max: stats.max, percentile: pct, assessment }
+  }
+  // 无历史序列（上游未覆盖该指数）：仅展示列表接口的真实当前值与近5年百分位
+  const upstreamCur = indicator.value === 'pe' ? idx.pe : idx.pb
+  const upstreamPct = indicator.value === 'pe' ? idx.pe_percentile : idx.pb_percentile
+  if (upstreamCur == null && upstreamPct == null) {
+    return { current: null, min: null, avg: null, max: null, percentile: null, assessment: `${name}暂无${unit}估值数据（上游数据源未覆盖该指数）。` }
+  }
+  const pctText = upstreamPct != null ? `，上游近5年百分位第${upstreamPct}%` : ''
+  return {
+    current: upstreamCur, min: null, avg: null, max: null, percentile: upstreamPct,
+    assessment: `${name}当前${unit}为${upstreamCur ?? '—'}倍${pctText}。该指数无逐日估值历史序列，区间统计不可用（不展示推算值）。`,
+  }
 })
 
 const columns = [
@@ -197,7 +241,7 @@ const columns = [
     title: '涨跌幅', key: 'change_pct', align: 'right' as const,
     render: (row: IndexValuation) => h(
       'span',
-      { style: { color: row.change_pct >= 0 ? 'var(--color-success)' : 'var(--color-danger)' } },
+      { style: { color: row.change_pct >= 0 ? 'var(--color-danger)' : 'var(--color-success)' } },
       `${row.change_pct >= 0 ? '+' : ''}${row.change_pct}%`,
     ),
   },
@@ -217,7 +261,7 @@ const columns = [
     title: '3月变化', key: 'change_3m_pct', align: 'right' as const,
     render: (row: IndexValuation) => h(
       'span',
-      { style: { color: row.change_3m_pct >= 0 ? 'var(--color-success)' : 'var(--color-danger)' } },
+      { style: { color: row.change_3m_pct >= 0 ? 'var(--color-danger)' : 'var(--color-success)' } },
       `${row.change_3m_pct >= 0 ? '+' : ''}${row.change_3m_pct}%`,
     ),
   },
@@ -266,10 +310,9 @@ function toggleFullscreen() {
   >
     <div v-if="selectedIndex" class="analysis-page">
     <!-- Page Header -->
-    <PageHeader title="指数估值分析" subtitle="宽基指数估值历史分位与 PE 估值带分析" helpKey="indexAnalysis">
+    <PageHeader title="指数估值分析" subtitle="宽基指数估值历史分位与真实 PE/PB 估值带分析" helpKey="indexAnalysis">
       <template #actions>
         <n-button size="tiny" @click="exportCSV">导出CSV</n-button>
-        <n-button size="tiny" type="primary" @click="openCustomIndex">自定义指数</n-button>
       </template>
     </PageHeader>
 
@@ -309,7 +352,7 @@ function toggleFullscreen() {
     <!-- Main Layout -->
     <div class="main-grid">
       <!-- Left: Index Table -->
-      <DataPanel class="table-panel" title="宽基指数全景" meta="最后更新: 2026-07-23 15:00:00">
+      <DataPanel class="table-panel" title="宽基指数全景" :meta="tableMeta">
         <n-data-table
           :columns="columns"
           :data="analyzableIndices"
@@ -323,7 +366,7 @@ function toggleFullscreen() {
       </DataPanel>
 
       <!-- Right: Detail Panel -->
-      <DataPanel class="detail-panel" :title="`${selectedIndex?.name ?? ''} PE估值带分析`" meta="估值视角: 历史百分位法">
+      <DataPanel class="detail-panel" :title="`${selectedIndex?.name ?? ''} ${valUnit}估值带分析`" :meta="bandStats ? `估值视角: ${winLabel}真实历史序列百分位` : '估值视角: 上游近5年百分位'">
         <template #actions>
           <IconButton :icon="SearchOutline" label="放大查看" @click="showZoomChart = true" />
           <IconButton :icon="ExpandOutline" label="全屏" @click="toggleFullscreen" />
@@ -331,32 +374,37 @@ function toggleFullscreen() {
 
         <!-- Chart Area -->
         <div class="chart-area">
-          <div class="chart-legend">
-            <div class="legend-item"><span class="legend-line solid" />PE (TTM)</div>
-            <div class="legend-item"><span class="legend-line dashed-red" />90% 分位</div>
-            <div class="legend-item"><span class="legend-line dashed-orange" />70% 分位</div>
-            <div class="legend-item"><span class="legend-line dashed-gray" />50% 分位</div>
-            <div class="legend-item"><span class="legend-line dashed-blue" />10% 分位</div>
+          <template v-if="bandStats">
+            <div class="chart-legend">
+              <div class="legend-item"><span class="legend-line solid" />{{ valUnit }}</div>
+              <div class="legend-item"><span class="legend-line dashed-red" />90% 分位</div>
+              <div class="legend-item"><span class="legend-line dashed-orange" />70% 分位</div>
+              <div class="legend-item"><span class="legend-line dashed-gray" />50% 分位</div>
+              <div class="legend-item"><span class="legend-line dashed-blue" />10% 分位</div>
+            </div>
+            <BaseChart :option="peBandChartOption" :height="220" />
+          </template>
+          <div v-else class="chart-placeholder">
+            {{ histLoading ? '估值历史序列加载中...' : '该指数暂无估值历史序列（上游数据源未覆盖），不展示模拟曲线' }}
           </div>
-          <BaseChart :option="peBandChartOption" :height="220" />
         </div>
 
         <!-- Analysis Summary -->
         <div class="analysis-summary">
           <h3>估值评估</h3>
-          <p>{{ peAnalysis.assessment }}</p>
+          <p>{{ valAnalysis.assessment }}</p>
           <div class="summary-stats">
             <div class="summary-stat">
-              <span class="ss-label">近3年最低</span>
-              <span class="ss-value">{{ peAnalysis.min3y }}x</span>
+              <span class="ss-label">{{ winLabel }}最低</span>
+              <span class="ss-value">{{ valAnalysis.min != null ? valAnalysis.min + 'x' : '—' }}</span>
             </div>
             <div class="summary-stat">
-              <span class="ss-label">近3年平均</span>
-              <span class="ss-value">{{ peAnalysis.avg3y }}x</span>
+              <span class="ss-label">{{ winLabel }}平均</span>
+              <span class="ss-value">{{ valAnalysis.avg != null ? valAnalysis.avg + 'x' : '—' }}</span>
             </div>
             <div class="summary-stat">
-              <span class="ss-label">近3年最高</span>
-              <span class="ss-value">{{ peAnalysis.max3y }}x</span>
+              <span class="ss-label">{{ winLabel }}最高</span>
+              <span class="ss-value">{{ valAnalysis.max != null ? valAnalysis.max + 'x' : '—' }}</span>
             </div>
           </div>
         </div>
@@ -364,28 +412,17 @@ function toggleFullscreen() {
     </div>
     </div>
 
-    <!-- 自定义指数弹窗 -->
-    <n-modal v-model:show="showCustomIndex" preset="card" title="添加自定义指数" style="width: 420px; max-width: 92vw;" :bordered="false">
-      <div style="display: flex; flex-direction: column; gap: 12px;">
-        <div style="display: flex; flex-direction: column; gap: 4px;">
-          <label style="font-size: 11px; font-weight: 700; color: var(--text-muted);">指数名称</label>
-          <n-input v-model:value="customForm.name" placeholder="例如：中证红利低波" />
-        </div>
-        <div style="display: flex; flex-direction: column; gap: 4px;">
-          <label style="font-size: 11px; font-weight: 700; color: var(--text-muted);">指数代码</label>
-          <n-input v-model:value="customForm.code" placeholder="例如：930904.CSI" />
-        </div>
-      </div>
-      <template #footer>
-        <div style="display: flex; justify-content: flex-end; gap: 8px;">
-          <n-button size="small" @click="showCustomIndex = false">取消</n-button>
-          <n-button size="small" type="primary" @click="submitCustomIndex">添加</n-button>
-        </div>
-      </template>
-    </n-modal>
+    <!-- 取数失败/空数据时的显式空态（修复原先整页白屏无任何提示的问题） -->
+    <div v-else-if="!loading && !error" class="empty-page">
+      <n-empty description="暂无指数估值数据（上游取数失败或返回为空）">
+        <template #extra>
+          <n-button size="small" @click="refetch">重试</n-button>
+        </template>
+      </n-empty>
+    </div>
 
     <!-- 放大查看图表弹窗 -->
-    <n-modal v-model:show="showZoomChart" preset="card" :title="`${selectedIndex?.name ?? ''} PE估值带（放大）`" style="width: 880px; max-width: 94vw;" :bordered="false">
+    <n-modal v-model:show="showZoomChart" preset="card" :title="`${selectedIndex?.name ?? ''} ${valUnit}估值带（放大）`" style="width: 880px; max-width: 94vw;" :bordered="false">
       <BaseChart :option="peBandChartOption" :height="420" />
     </n-modal>
   </LoadingState>
@@ -550,6 +587,29 @@ function toggleFullscreen() {
   border-bottom: 1px solid var(--border-default);
   position: relative;
   min-height: 180px;
+}
+
+/* 无估值历史序列时的占位提示（不再展示模拟曲线） */
+.chart-placeholder {
+  flex: 1;
+  min-height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+  border: 1px dashed var(--border-default);
+  border-radius: 4px;
+}
+
+/* 取数失败/空数据空态 */
+.empty-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 420px;
 }
 
 .grid-lines {

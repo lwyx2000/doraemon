@@ -109,6 +109,10 @@ export const api = {
       `/api/v1/market/indices/${code}/history`
     ),
 
+  // 指数估值历史序列（乐咕乐股真实数据：PE TTM / PB，供估值带图表）
+  getIndexValuationHistory: (name: string, indicator: 'pe' | 'pb') =>
+    requestWithMeta<IndexValuationHistPoint[]>('/api/v1/market/indices/valuation-history', { name, indicator }),
+
   // 数据源连接状态（AkShare 可达 + 集思录登录/可用态）
   getDataSourceStatus: () =>
     requestWithMeta<DataSourceStatus>('/api/v1/market/status'),
@@ -128,6 +132,14 @@ export const api = {
   // 申万一级行业相对强度（近 N 日累计涨跌幅 vs 当日涨跌幅）
   getSwSectorStrength: (days: number = 5) =>
     request<SwSectorStrength[]>('/api/v1/market/sw-sectors/relative-strength', { days }),
+
+  // 申万一级行业历史估值数据（PE / PB / 股息率，来自 AkShare index_analysis_daily_sw）
+  getSwSectorValuationHistory: (sectorCode?: string, startDate?: string, endDate?: string) =>
+    request<SwSectorValuationItem[]>('/api/v1/market/sw-sectors/valuation-history', {
+      sector_code: sectorCode,
+      start_date: startDate,
+      end_date: endDate,
+    }),
 
   // ============================================================
   // 基金数据（LOF / ETF / 封基）
@@ -179,7 +191,7 @@ export const api = {
   // 预警事件历史
   getAlertEvents: (params?: { is_read?: boolean; since?: string; page?: number; page_size?: number }) =>
     request<{ items: AlertEvent[]; total: number; page: number; page_size: number }>('/api/v1/alerts/events', {
-      is_read: params?.is_read,
+      is_read: params?.is_read !== undefined ? String(params.is_read) : undefined,
       since: params?.since,
       page: params?.page,
       page_size: params?.page_size,
@@ -497,6 +509,7 @@ export const libraryApi = {
 import type {
   MacroIndicators,
   IndexValuation,
+  IndexValuationHistPoint,
   FundItem,
   MarketOverview,
   BoardSector,
@@ -524,10 +537,11 @@ import type {
   NotificationConfig,
   PreciousMetals,
   SwSector,
-SwSectorHistoryItem,
-SwSectorStrength,
+  SwSectorHistoryItem,
+  SwSectorValuationItem,
+  SwSectorStrength,
   BrokerAccount,
-AccountName,
+  AccountName,
   StrategyDef,
   SignalResult,
   TrackedSignal,

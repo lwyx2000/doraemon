@@ -3,10 +3,9 @@ defineOptions({ name: 'SystemSettings' })
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import {
   NIcon, NButton, NInput, NInputNumber, NSelect, NSwitch, NSlider,
-  NTag, NCard, NModal, useMessage,
+  NTag, useMessage,
 } from 'naive-ui'
 import {
-  SettingsOutline,
   ServerOutline,
   CloudDownloadOutline,
   HardwareChipOutline,
@@ -21,7 +20,6 @@ import {
   EyeOutline,
   EyeOffOutline,
   SpeedometerOutline,
-  TimeOutline,
   NotificationsOutline,
   SendOutline,
 } from '@vicons/ionicons5'

@@ -73,7 +73,7 @@ function exportPortfolio() {
   const headers = ['标的名称', '代码', '价格', '折溢价率', '年化收益', '到期收益', '百分位', '成交量']
   const rows = displayFunds.value.map(f => [
     f.name, f.code, f.price.toFixed(3), f.premium_pct, f.annualized ?? '',
-    f.est_ytm ?? '', f.premium_percentile, f.volume,
+    f.est_ytm ?? '', f.premium_percentile ?? '', f.volume ?? '',
   ])
   exportToCSV(`portfolio_${activeTab.value}_${new Date().toISOString().slice(0, 10)}`, headers, rows)
   message.success(`已导出 ${rows.length} 条 ${tabs.find(t => t.key === activeTab.value)?.label || ''} 数据`)
@@ -138,9 +138,11 @@ const columns = computed(() => [
     title: titleWithHelp('百分位', 'premium_percentile'),
     key: 'premium_percentile',
     align: 'center' as const,
-    render: (row: FundItem) => h('div', { class: 'perc-bar' }, [
-      h('div', { class: 'perc-fill', style: { width: row.premium_percentile + '%' } }),
-    ]),
+    render: (row: FundItem) => row.premium_percentile != null
+      ? h('div', { class: 'perc-bar' }, [
+        h('div', { class: 'perc-fill', style: { width: row.premium_percentile + '%' } }),
+      ])
+      : h('span', { class: 'text-muted' }, '-'),
   },
 ])
 

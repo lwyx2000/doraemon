@@ -7,10 +7,9 @@ import {
 import {
   FlashOutline, AddOutline, TrashOutline, RefreshOutline, TrendingUpOutline, TrendingDownOutline,
 } from '@vicons/ionicons5'
-import { api, signalApi } from '../utils/api'
+import { signalApi } from '../utils/api'
 import type { StrategyDef, SignalResult, TrackedSignal, SignalPoint } from '../types'
 import PageHeader from '../components/PageHeader.vue'
-import LoadingState from '../components/LoadingState.vue'
 
 const message = useMessage()
 
@@ -157,7 +156,7 @@ async function addTracked() {
   try {
     const params: Record<string, number> = {}
     selectedStrategy.value?.params.forEach(p => { params[p.key] = paramValues[p.key] })
-    await signalApi.addTracked(symbol.value.trim(), selectedStrategyId.value, symbolName.value.trim() || null, params)
+    await signalApi.addTracked(symbol.value.trim(), selectedStrategyId.value, symbolName.value.trim() || undefined, params)
     message.success('已加入监控')
     await loadTracked()
   } catch (e: any) {

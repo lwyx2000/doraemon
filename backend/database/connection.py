@@ -9,6 +9,7 @@ Usage:
 """
 
 import duckdb
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -30,6 +31,10 @@ class Database:
     def __init__(self, db_path: Optional[str | Path] = None):
         self.db_path = Path(db_path) if db_path else DEFAULT_DB_PATH
         self._conn: Optional[duckdb.DuckDBPyConnection] = None
+        # 单个 DuckDB connection 不允许并发使用：并发调用会触发「GIL + DuckDB 内部锁」
+        # 死锁（线程持 GIL 等 DuckDB 锁，DuckDB 工作线程持锁等 GIL），导致整个进程冻结。
+        # Python 的 lock 在阻塞等待时会释放 GIL，因此用它串行化访问即可打破死锁。
+        self._lock = threading.RLock()
         self._connect()
 
     def _connect(self) -> None:
@@ -43,31 +48,41 @@ class Database:
         return self._conn  # type: ignore
 
     def execute(self, sql: str, params: Optional[list | dict] = None) -> duckdb.DuckDBPyConnection:
-        """Execute a SQL statement with optional parameters."""
-        if params:
-            return self.conn.execute(sql, params)
-        return self.conn.execute(sql)
+        """Execute a SQL statement with optional parameters.（串行化，避免 GIL 死锁）"""
+        with self._lock:
+            if params:
+                return self.conn.execute(sql, params)
+            return self.conn.execute(sql)
+
+    def executemany(self, sql: str, params_seq: list[list | dict]) -> duckdb.DuckDBPyConnection:
+        """Execute the same SQL against a sequence of parameter sets.（串行化，一次持锁批量写）"""
+        with self._lock:
+            return self.conn.executemany(sql, params_seq)
 
     def fetchall(self, sql: str, params: Optional[list | dict] = None) -> list[tuple]:
-        """Execute query and return all rows."""
-        result = self.execute(sql, params)
-        return result.fetchall()
+        """Execute query and return all rows.（串行化，避免 GIL 死锁）"""
+        with self._lock:
+            result = self.execute(sql, params)
+            return result.fetchall()
 
     def fetchone(self, sql: str, params: Optional[list | dict] = None) -> Optional[tuple]:
-        """Execute query and return a single row."""
-        result = self.execute(sql, params)
-        return result.fetchone()
+        """Execute query and return a single row.（串行化，避免 GIL 死锁）"""
+        with self._lock:
+            result = self.execute(sql, params)
+            return result.fetchone()
 
     def fetch_df(self, sql: str, params: Optional[list | dict] = None):
-        """Execute query and return results as a pandas DataFrame."""
-        result = self.execute(sql, params)
-        return result.df()
+        """Execute query and return results as a pandas DataFrame.（串行化，避免 GIL 死锁）"""
+        with self._lock:
+            result = self.execute(sql, params)
+            return result.df()
 
     def close(self) -> None:
         """Close the database connection."""
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+        with self._lock:
+            if self._conn:
+                self._conn.close()
+                self._conn = None
 
     def __enter__(self):
         return self

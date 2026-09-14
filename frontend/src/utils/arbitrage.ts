@@ -188,9 +188,13 @@ export function analyzeArbitrage(
 
   const traps: string[] = []
 
-  // 陷阱1: 资金容量C级
+  // 陷阱1: 资金容量C级（暂停申购 → 无法申购；限购金额 → 资金容量不足）
   if (capitalGrade === 'C') {
-    traps.push(`限购${capitalLimit}元，资金容量不足`)
+    if (capitalLimit === -1) {
+      traps.push('暂停申购，无法套利')
+    } else {
+      traps.push(`限购${capitalLimit}元，资金容量不足`)
+    }
   }
 
   // 陷阱2: T+N敞口大于套利收益
@@ -198,13 +202,14 @@ export function analyzeArbitrage(
     traps.push(`T+${holdingDays}敞口${riskExposure}% > 收益${netYieldAfterCosts}%`)
   }
 
-  // 陷阱3: 停牌
-  if (isSuspended) {
+  // 陷阱3: 停牌（与"暂停申购"同源时去重，避免重复标记）
+  if (isSuspended && capitalLimit !== -1) {
     traps.push('停牌/暂停申购')
   }
 
-  // 陷阱4: 流动性不足 (成交量 < 50万)
-  if (fund.volume < 500000) {
+  // 陷阱4: 流动性不足 (成交额 < 50万)。成交额缺失(undefined/null，麦蕊源无此列)时
+  // 不误报——只有拿到真实值时才判定流动性。
+  if (fund.volume != null && fund.volume < 500000) {
     traps.push('流动性不足')
   }
 

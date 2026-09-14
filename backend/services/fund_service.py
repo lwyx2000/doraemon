@@ -6,14 +6,23 @@
 
 说明：iopv / 溢价率 / 折溢价分位 / 套利收益 需要基金净值(NAV)源，当前 akshare 通用接口
 未直接提供，故置 0（表示“暂无该数据源”，而非虚构数值），由分析层据此标注。
+
+ETF 增强指标（仅 doraemon 侧计算，无需上游改动）：
+- 估值：宽基 ETF 按名称匹配跟踪指数 → 复用上游 index_valuation 的 PE/PE 百分位（1h 缓存）；
+- K线指标：动量(近20日涨幅的组内百分位)/网格(60日高低点)/日波动率，来自上游 /api/quote/kline
+  type=ETF；懒加载 + 后台线程预热 + 1h 进程内缓存，首次访问部分指标为空，随后自动补全。
 """
 
 from __future__ import annotations
 
 import json
+import math
 import re
+import statistics
+import threading
 import time
-from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime, timedelta
 
 import requests
 
@@ -86,6 +95,235 @@ def _safe_int(value, default: int = 0) -> int:
         return default
 
 
+def _classify(name: str, code: str) -> tuple[str, str]:
+    """基于名称/代码轻量分类（非虚构数据）。
+
+    供 ETF / LOF 共用（etf_service 亦复用）。
+    """
+    n = name
+    if any(k in n for k in ("纳指", "纳斯达克", "标普", "道琼斯", "德国", "法国", "日经", "恒生", "港股", "美国", "海外", "中概", "原油", "黄金")):
+        return "cross_border", "跨境"
+    if any(k in n for k in ("沪深300", "中证500", "中证1000", "上证50", "创业板", "科创50", "科创", "中证A500", "深证", "上证")):
+        return "broad", "宽基"
+    return "industry", "行业"
+
+
+# ============================================================
+# ETF 增强指标：估值（宽基→指数PE百分位）+ K线（动量/网格/波动率）
+# ============================================================
+
+# 宽基 ETF 名称关键词 → 上游 index_valuation 的指数名（长关键词在前，避免"中证100"命中"中证1000"）
+_ETF_INDEX_KEYWORDS: list[tuple[str, str]] = [
+    ("中证1000", "中证1000"),
+    ("沪深300", "沪深300"),
+    ("中证500", "中证500"),
+    ("上证50", "上证50"),
+    ("上证380", "上证380"),
+    ("上证180", "上证180"),
+    ("中证800", "中证800"),
+    ("中证100", "中证100"),
+    ("深证红利", "深证红利"),
+    ("深证100", "深证100"),
+    ("创业板", "创业板50"),
+]
+
+# K线指标缓存: code -> (ts, metrics|None)；成功/失败均缓存 1h，避免重复请求
+_ETF_KLINE_CACHE: dict[str, tuple[float, dict | None]] = {}
+_ETF_KLINE_TTL = 3600
+_ETF_KLINE_LOCK = threading.Lock()
+_ETF_KLINE_WARMING = False
+# 回看约 130 自然日 ≈ 60+ 交易日，覆盖 20 日动量 + 60 日网格区间
+_ETF_KLINE_LOOKBACK_DAYS = 130
+
+# 指数估值缓存: (ts, {index_name: {pe, pe_percentile}})
+_INDEX_VAL_CACHE: dict[str, tuple[float, dict[str, dict]]] = {}
+_INDEX_VAL_TTL = 3600
+_INDEX_VAL_LOCK = threading.Lock()
+
+
+# --- K线指标 ---
+
+def _kline_request_quiet(code: str) -> list | None:
+    """静默调用上游 /api/quote/kline (type=ETF, 前复权日线)，失败返回 None（不刷屏日志）。"""
+    end = date.today().isoformat()
+    start = (date.today() - timedelta(days=_ETF_KLINE_LOOKBACK_DAYS)).isoformat()
+    try:
+        resp = requests.get(
+            f"{AKSHARE_API_BASE}/api/quote/kline",
+            params={"code": code, "type": "ETF", "start_date": start, "end_date": end},
+            timeout=12,
+        )
+        result = resp.json()
+        if result.get("code") == 200 and isinstance(result.get("data"), list):
+            return result["data"]
+    except Exception:
+        pass
+    return None
+
+
+def _compute_kline_metrics(rows: list) -> dict | None:
+    """从日 K 线计算 动量/网格/波动率 指标（启发式，非收益承诺）。
+
+    - momentum_ret20: 近 20 交易日涨幅(%)，供组内百分位排成 momentum_score(0-100)
+    - daily_volatility: 日收益率标准差(%)，同时改善套利 T+N 敞口估算
+    - grid_low/high: 近 60 交易日最低/最高价（网格区间）
+    - grid_step: ≈1.5×日波动率，钳制在 1%~5%
+    - grid_yield_est: ≈60%×年化波动率，钳制 50% 以内（网格可捕捉的波动收益上限估计）
+    """
+    rows = [r for r in rows if r.get("close") is not None]
+    rows.sort(key=lambda r: str(r.get("date", "")))
+    closes = [float(r["close"]) for r in rows]
+    if len(closes) < 20:
+        return None
+    rets = [closes[i] / closes[i - 1] - 1 for i in range(1, len(closes))]
+    daily_vol = statistics.pstdev(rets) * 100 if rets else 0.0
+    ret20 = (closes[-1] / closes[-20] - 1) * 100
+    recent = rows[-60:]
+    try:
+        grid_low = min(float(r.get("low") or r.get("close")) for r in recent)
+        grid_high = max(float(r.get("high") or r.get("close")) for r in recent)
+    except (TypeError, ValueError):
+        grid_low = grid_high = closes[-1]
+    step = round(min(5.0, max(1.0, daily_vol * 1.5)), 1)
+    annual_vol = daily_vol * math.sqrt(250)
+    yield_est = round(min(50.0, annual_vol * 0.6), 1)
+    return {
+        "momentum_ret20": round(ret20, 2),
+        "daily_volatility": round(daily_vol, 2),
+        "grid_low": round(grid_low, 3),
+        "grid_high": round(grid_high, 3),
+        "grid_step": step,
+        "grid_yield_est": yield_est,
+    }
+
+
+def _fetch_kline_metrics(code: str) -> dict | None:
+    """取单只 ETF 的 K 线指标（带 1h 缓存，会发网络请求）。仅供后台预热线程调用。"""
+    now = time.time()
+    with _ETF_KLINE_LOCK:
+        cached = _ETF_KLINE_CACHE.get(code)
+        if cached and now - cached[0] < _ETF_KLINE_TTL:
+            return cached[1]
+    rows = _kline_request_quiet(code)
+    metrics = _compute_kline_metrics(rows) if rows else None
+    with _ETF_KLINE_LOCK:
+        _ETF_KLINE_CACHE[code] = (now, metrics)
+    return metrics
+
+
+def _kline_metrics_cached(code: str) -> dict | None:
+    """只读缓存取 K 线指标（不发网络请求），请求路径专用。"""
+    now = time.time()
+    with _ETF_KLINE_LOCK:
+        cached = _ETF_KLINE_CACHE.get(code)
+        if cached and now - cached[0] < _ETF_KLINE_TTL:
+            return cached[1]
+    return None
+
+
+def _warm_etf_kline(codes: list[str]) -> None:
+    """后台线程预热缺失的 ETF K 线指标（幂等，已在跑则忽略）。"""
+    global _ETF_KLINE_WARMING
+    if not codes:
+        return
+    with _ETF_KLINE_LOCK:
+        if _ETF_KLINE_WARMING:
+            return
+        _ETF_KLINE_WARMING = True
+
+    def _worker() -> None:
+        global _ETF_KLINE_WARMING
+        try:
+            with ThreadPoolExecutor(max_workers=8) as ex:
+                list(ex.map(_fetch_kline_metrics, codes))
+            print(f"[ETF K线] 指标预热完成：{len(codes)} 只")
+        except Exception as e:
+            print(f"[ETF K线] 预热异常: {type(e).__name__}: {e}")
+        finally:
+            with _ETF_KLINE_LOCK:
+                _ETF_KLINE_WARMING = False
+
+    threading.Thread(target=_worker, name="etf-kline-warm", daemon=True).start()
+
+
+def _attach_kline_metrics(funds: list[dict]) -> None:
+    """K 线指标挂载：仅读缓存（不发网络请求，保证请求路径低延迟）；
+
+    缺失码由后台线程预热，首次访问网格/轮动/波动率为空（前端显示 -），
+    预热完成后（约 1-2 分钟）自动补全，后续 1h 内命中缓存。
+    """
+    etfs = [f for f in funds if f.get("type") == "etf"]
+    if not etfs:
+        return
+    missing: list[str] = []
+    for f in etfs:
+        m = _kline_metrics_cached(f["code"])
+        if not m:
+            missing.append(f["code"])
+            continue
+        f["momentum_ret20"] = m["momentum_ret20"]
+        f["daily_volatility"] = m["daily_volatility"]
+        f["grid_low"] = m["grid_low"]
+        f["grid_high"] = m["grid_high"]
+        f["grid_step"] = m["grid_step"]
+        f["grid_yield_est"] = m["grid_yield_est"]
+    # 动量得分：近 20 日涨幅在本次全量 ETF 中的百分位 0-100
+    with_ret = [f for f in etfs if "momentum_ret20" in f]
+    if with_ret:
+        sorted_rets = sorted(f["momentum_ret20"] for f in with_ret)
+        n = len(sorted_rets)
+        for f in with_ret:
+            rank = sum(1 for s in sorted_rets if s <= f["momentum_ret20"])
+            f["momentum_score"] = round(rank / n * 100)
+            f.pop("momentum_ret20", None)  # 中间量不返回
+    if missing:
+        _warm_etf_kline(missing)
+
+
+# --- 估值（宽基 ETF → 指数 PE 百分位）---
+
+def _get_index_valuation_map() -> dict[str, dict]:
+    """宽基指数 PE/PE百分位 map（复用 market_service.get_realtime_indices，1h 缓存）。"""
+    now = time.time()
+    with _INDEX_VAL_LOCK:
+        cached = _INDEX_VAL_CACHE.get("all")
+        if cached and now - cached[0] < _INDEX_VAL_TTL:
+            return cached[1]
+    val_map: dict[str, dict] = {}
+    try:
+        from services.market_service import get_realtime_indices
+
+        for idx in get_realtime_indices():
+            name = idx.get("name", "")
+            pe = idx.get("pe")
+            pct = idx.get("pePercentile")
+            if name and pe and pct:
+                val_map[name] = {"pe": pe, "pe_percentile": pct}
+    except Exception as e:
+        print(f"[ETF 估值] 指数估值获取失败: {e}")
+    with _INDEX_VAL_LOCK:
+        _INDEX_VAL_CACHE["all"] = (now, val_map)
+    return val_map
+
+
+def _attach_index_valuation(funds: list[dict]) -> None:
+    """宽基 ETF → 跟踪指数 PE/PE百分位 → val_category（<30 低估 / >70 高估）。"""
+    val_map = _get_index_valuation_map()
+    if not val_map:
+        return
+    for f in funds:
+        name = str(f.get("name", ""))
+        for kw, idx in _ETF_INDEX_KEYWORDS:
+            if kw in name:
+                iv = val_map.get(idx)
+                if iv:
+                    f["pe"] = iv["pe"]
+                    f["pe_percentile"] = iv["pe_percentile"]
+                    pct = iv["pe_percentile"]
+                    f["val_category"] = "undervalued" if pct < 30 else ("overvalued" if pct > 70 else "normal")
+                break
+
+
 def get_funds_from_api(fund_subtype: str = "etf") -> list[dict]:
     """从真实 API 获取基金排行数据。
 
@@ -119,24 +357,46 @@ def get_funds_from_api(fund_subtype: str = "etf") -> list[dict]:
         # IOPV 对 ETF≈NAV；LOF 无 IOPV 概念，统一以 NAV 近似供前端展示。
         iopv = nav if nav else 0.0
 
+        # 名称 → 轻量分类（宽基/行业/跨境），替代此前硬编码 industry（导致网格/轮动/估值 tab 筛选全部失真）
+        category, sub_category = _classify(name, code)
+        # 麦蕊 申购状态(sgzt) → subscribe_limit："暂停申购"→资金容量 C 级(不可行)，"开放申购"→无限制
+        subscribe_limit = _pick(item, "申购状态", "sgzt")
+        is_suspended = bool(subscribe_limit) and any(k in str(subscribe_limit) for k in ("暂停", "停止"))
+        # 成交额(元)/成交量(手)：新浪兜底源提供真实值；麦蕊源无此列 → None（前端显示 -，不虚构 0）
+        vol_raw = _pick(item, "成交额", "成交量")
+        volume = _safe_int(vol_raw) if vol_raw is not None else None
+        # 跨境 ETF/LOF 份额 T+2 到账，境内 T+1
+        holding_days = 2 if category == "cross_border" else 1
+
         funds.append({
             "name": name,
             "code": code,
             "type": fund_type,
+            "category": category,
+            "sub_category": sub_category,
             "price": _safe_float(_pick(item, "最新价", "实时价", "当前单位净值")),
             "iopv": iopv,
             "premium_pct": premium_pct,
-            "premium_percentile": 50,
+            # 溢价百分位需逐只历史溢价率序列（fund_rank premium_history），无源 → None（前端显示 -）
+            "premium_percentile": None,
             # 折溢价套利毛收益 = 溢价率（折价为负即反向套利空间），供 analyze_arbitrage 判定可行性。
             "net_arbitrage_yield": premium_pct,
             "nav": nav,
             "nav_date": _pick(item, "净值日期"),
-            # 53 fund_rank 无成交额列 → 恒为 0（上游缺字段，非代码问题，属 C 类）。
-            "volume": _safe_int(_pick(item, "成交额")),
-            "category": "industry",
-            "val_category": "normal",
+            "volume": volume,
+            "subscribe_limit": subscribe_limit,
+            "is_suspended": is_suspended,
+            "holding_days": holding_days,
+            # 估值需 ETF 级 PE 历史（index_valuation 仅覆盖 8 个宽基指数），无源 → None
+            "val_category": None,
             "change_pct": _safe_float(_pick(item, "涨跌幅", "增长率")),
         })
+
+    # ETF 增强指标：估值（宽基→指数PE百分位，etf/lof/all 均适用）+ K线（动量/网格/波动率，仅 etf）
+    if fund_subtype in ("etf", "lof", "all"):
+        _attach_index_valuation(funds)
+    if fund_subtype == "etf":
+        _attach_kline_metrics(funds)
 
     print(f"[Fund Service] 成功获取 {len(funds)} 个 {fund_subtype}")
     return funds
