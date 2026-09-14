@@ -1,0 +1,11 @@
+# 宿主机构建前端时会产生 300MB+ 的 node_modules，但镜像只需要 dist
+node_modules
+.vite
+.vitest
+coverage
+*.log
+npm-debug.log*
+.git
+.gitignore
+.idea
+.vscode
