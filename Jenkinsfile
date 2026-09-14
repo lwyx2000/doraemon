@@ -252,7 +252,7 @@ pipeline {
                                 fi
 
                                 echo "验证后端 API..."
-                                api_code=\$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9080/api/v1/ 2>/dev/null || echo "000")
+                                api_code=\$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9080/health 2>/dev/null || echo "000")
                                 echo "后端 API 状态: \$api_code"
                             '
                         """
