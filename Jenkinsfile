@@ -9,7 +9,7 @@ pipeline {
         DEPLOY_PATH = '/home/sos/apps/doraemon'
         SSH_CREDENTIALS_ID = 'sos'
 
-        GIT_REPO = 'git@codeup.aliyun.com:601d027657a5c7b95a42cb0c/doraemon.git'
+        GIT_REPO = 'git@github.com:lwyx2000/doraemon.git'
 
         COMPOSE_PROJECT_NAME = 'doraemon'
     }
@@ -43,7 +43,7 @@ pipeline {
                             ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${DEPLOY_SERVER} '
                                 docker --version
                                 docker-compose --version
-                                ssh-keyscan codeup.aliyun.com >> /home/sos/.ssh/known_hosts 2>/dev/null || true
+                                ssh-keyscan github.com >> /home/sos/.ssh/known_hosts 2>/dev/null || true
                             '
                         """
                     }
