@@ -7,3 +7,5 @@ passlib[bcrypt]>=1.7.4
 python-multipart>=0.0.9
 requests>=2.31.0
 apscheduler>=3.10.4
+# 申万行业等行情走本地 akshare（见 market_service.py），非可选
+akshare>=1.12.0
