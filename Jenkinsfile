@@ -237,9 +237,9 @@ pipeline {
                             ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${DEPLOY_SERVER} '
                                 echo "等待服务就绪..."
                                 for i in \$(seq 1 30); do
-                                    code=\$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/ 2>/dev/null || echo "000")
+                                    code=\$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9080/ 2>/dev/null || echo "000")
                                     if [ "\$code" = "200" ]; then
-                                        echo "健康检查通过: http://localhost:8080/ (status=\$code)"
+                                        echo "健康检查通过: http://localhost:9080/ (status=\$code)"
                                         break
                                     fi
                                     echo "  等待服务就绪... \$i/30 (status=\$code)"
@@ -252,7 +252,7 @@ pipeline {
                                 fi
 
                                 echo "验证后端 API..."
-                                api_code=\$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/v1/ 2>/dev/null || echo "000")
+                                api_code=\$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9080/api/v1/ 2>/dev/null || echo "000")
                                 echo "后端 API 状态: \$api_code"
                             '
                         """
@@ -312,7 +312,7 @@ pipeline {
     post {
         success {
             script {
-                echo "部署成功! 访问地址: http://${DEPLOY_SERVER.split('@')[1]}:8080"
+                echo "部署成功! 访问地址: http://${DEPLOY_SERVER.split('@')[1]}:9080"
             }
         }
         failure {
