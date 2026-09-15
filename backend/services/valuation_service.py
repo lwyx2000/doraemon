@@ -5,11 +5,11 @@
    估值分位 = 该利差在历史中的百分位（越小=越便宜）
 2. 拥挤度 = (指数PB / 基准PB) 在历史中的百分位（衡量行业/指数间相对估值）
 
-数据源：
-- akshare.stock_index_pb_lg  → 宽基指数 PB 历史（月度，2005年起）
-- akshare.stock_index_pe_lg  → 宽基指数 PE 历史（月度，2005年起）
+数据源（全部走远程 AkShare WebAPI 网关，不依赖本地 akshare）：
+- 网关 /api/ak?method=stock_index_pb_lg  → 宽基指数 PB 历史（月度，2005年起）
+- 网关 /api/ak?method=stock_index_pe_lg  → 宽基指数 PE 历史（月度，2005年起）
 - market_service._fetch_10y_history → 10年期国债收益率历史
-- akshare.macro_china_cpi → CPI 同比
+- 网关 /api/ak?method=macro_china_cpi → CPI 同比
 
 缓存策略：
 - PB/PE 历史数据按指数缓存 12 小时（月度数据日内不变）
@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 from core.config import USE_MOCK_DATA
+from services.akshare_client import akshare_request
 
 # ============================================================
 # 配置
@@ -75,7 +76,7 @@ _cache_lock = threading.Lock()
 # ============================================================
 
 def _get_pb_history(index_name: str) -> list[dict]:
-    """获取指数 PB 月度历史数据。
+    """获取指数 PB 月度历史数据（走远程 AkShare WebAPI 网关）。
 
     Returns:
         [{"date": "2005-04-29", "pb": 1.89, "index_value": 932.40}, ...]
@@ -85,18 +86,12 @@ def _get_pb_history(index_name: str) -> list[dict]:
     if cached and (now - cached["ts"]) < _CACHE_TTL_DATA:
         return cached["data"]
 
-    try:
-        import akshare as ak
-        df = ak.stock_index_pb_lg(symbol=index_name)
-    except Exception as e:
-        print(f"[Valuation] stock_index_pb_lg({index_name}) 失败: {e}")
-        return []
-
-    if df is None or len(df) == 0:
+    rows = akshare_request("stock_index_pb_lg", {"symbol": index_name}, retries=2, timeout=12)
+    if not rows:
         return []
 
     result = []
-    for _, row in df.iterrows():
+    for row in rows:
         pb_val = row.get("市净率")
         result.append({
             "date": str(row.get("日期", "")),
@@ -110,7 +105,7 @@ def _get_pb_history(index_name: str) -> list[dict]:
 
 
 def _get_pe_history(index_name: str) -> list[dict]:
-    """获取指数 PE 月度历史数据。
+    """获取指数 PE 月度历史数据（走远程 AkShare WebAPI 网关）。
 
     Returns:
         [{"date": "2005-04-29", "pe_ttm": 15.2, "pe_static": 14.8, ...}, ...]
@@ -120,18 +115,12 @@ def _get_pe_history(index_name: str) -> list[dict]:
     if cached and (now - cached["ts"]) < _CACHE_TTL_DATA:
         return cached["data"]
 
-    try:
-        import akshare as ak
-        df = ak.stock_index_pe_lg(symbol=index_name)
-    except Exception as e:
-        print(f"[Valuation] stock_index_pe_lg({index_name}) 失败: {e}")
-        return []
-
-    if df is None or len(df) == 0:
+    rows = akshare_request("stock_index_pe_lg", {"symbol": index_name}, retries=2, timeout=12)
+    if not rows:
         return []
 
     result = []
-    for _, row in df.iterrows():
+    for row in rows:
         pe_ttm = row.get("滚动市盈率")
         result.append({
             "date": str(row.get("日期", "")),
@@ -146,24 +135,18 @@ def _get_pe_history(index_name: str) -> list[dict]:
 
 
 def _get_cpi_yoy() -> float | None:
-    """获取最新 CPI 同比（%）。"""
+    """获取最新 CPI 同比（%）（走远程 AkShare WebAPI 网关）。"""
     now = time.time()
     cached = _cpi_cache.get("data")
-    if cached and (now - _cpi_cache.get("ts", 0)) < _CACHE_TTL_DATA:
+    if cached is not None and (now - _cpi_cache.get("ts", 0)) < _CACHE_TTL_DATA:
         return cached
 
-    try:
-        import akshare as ak
-        df = ak.macro_china_cpi()
-    except Exception as e:
-        print(f"[Valuation] macro_china_cpi 失败: {e}")
+    rows = akshare_request("macro_china_cpi", retries=2, timeout=12)
+    if not rows:
         return None
 
-    if df is None or len(df) == 0:
-        return None
-
-    # 最新月份的全国同比
-    latest = df.iloc[0]  # 数据按时间倒序排列
+    # 网关返回按时间倒序，取首条的最新全国同比
+    latest = rows[0]
     cpi_yoy = latest.get("全国-同比增长")
     result = float(cpi_yoy) if cpi_yoy is not None else None
 
@@ -449,7 +432,7 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
     with _cache_lock:
         _result_cache["broad"] = {"data": results, "ts": now}
 
-    return results, _build_meta(False, "AkShare (stock_index_pb_lg + 国债 + CPI)")
+    return results, _build_meta(False, "远程网关 (stock_index_pb_lg + 国债 + CPI)")
 
 
 def get_single_index_valuation(index_name: str) -> tuple[dict | None, dict]:
