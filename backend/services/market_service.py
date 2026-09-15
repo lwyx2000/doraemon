@@ -941,30 +941,21 @@ def get_market_overview_with_meta() -> tuple[dict, dict]:
 def get_sw_sectors() -> tuple[list[dict], dict]:
     """申万一级行业基础数据（实时涨跌幅 + PE / PB / 股息率），用于行业热力图。
 
-    数据源：本地 akshare（免费、无需 token），不走 AkShare WebAPI 网关。
+    数据源：远程 AkShare WebAPI 网关（core.config.AKSHARE_API_BASE 的 /api/ak），不依赖本地 akshare。
       - ``index_realtime_sw(symbol='一级行业')`` 取 31 个申万一级行业实时价 → 计算涨跌幅；
       - ``sw_index_first_info()`` 取各行业的 PE / PB / 股息率 / 成份数。
-    网关（192.168.3.53:8000）未映射任何申万行业方法（sw_index_spot / index_hist_sw 等
-    均返回 500），故这里直接调用本地 akshare。
+    网关返回 list[dict]，无需 pandas。
     """
     if USE_MOCK_DATA:
         return [], _build_meta(True, "MOCK(模拟数据)")
 
-    try:
-        import akshare as ak
-    except Exception as e:  # pragma: no cover
-        return [], _build_meta(False, f"本地 akshare 不可用: {e}")
-
     # 1) 实时一级行业（最新价 / 昨收盘）
-    try:
-        rt = ak.index_realtime_sw(symbol="一级行业")
-    except Exception as e:
-        return [], _build_meta(False, f"AkShare index_realtime_sw 失败: {e}")
-    if rt is None or len(rt) == 0:
-        return [], _build_meta(False, "AkShare 无申万实时返回")
+    rt = _akshare_request("index_realtime_sw", {"symbol": "一级行业"}, timeout=20)
+    if not rt:
+        return [], _build_meta(False, f"网关 index_realtime_sw 无返回 ({AKSHARE_HOST})")
 
     rt_map: dict[str, dict] = {}
-    for _, row in rt.iterrows():
+    for row in rt:
         name = row.get("指数名称")
         last = _safe_float(row.get("最新价"))
         prev = _safe_float(row.get("昨收盘"))
@@ -979,9 +970,9 @@ def get_sw_sectors() -> tuple[list[dict], dict]:
     # 2) 一级行业估值（PE / PB / 股息率 / 成份数）
     val_map: dict[str, dict] = {}
     try:
-        first = ak.sw_index_first_info()
-        if first is not None and len(first) > 0:
-            for _, row in first.iterrows():
+        first = _akshare_request("sw_index_first_info", timeout=20)
+        if first:
+            for row in first:
                 val_map[row.get("行业名称")] = {
                     "count": _safe_int(row.get("成份个数")),
                     "pe": _safe_float(row.get("静态市盈率")),
@@ -1012,7 +1003,7 @@ def get_sw_sectors() -> tuple[list[dict], dict]:
     # 将当日快照写入 DuckDB（同日去重）
     _save_sw_sector_snapshot(sectors)
 
-    return sectors, _build_meta(False, "AkShare 本地 (index_realtime_sw)")
+    return sectors, _build_meta(False, f"网关 {AKSHARE_HOST} (index_realtime_sw)")
 
 
 # ⚠️ 该表同时有 PRIMARY KEY(代理主键) 和 UNIQUE(sector_code, trade_date) 两个唯一约束，
@@ -1109,13 +1100,14 @@ def get_sw_sector_snapshot_stats() -> dict:
 def _fetch_sw_sector_meta() -> list[dict]:
     """申万一级行业清单（代码 + 名称 + 当日估值），用于历史回填的行业遍历。
 
-    代码形如 `801010.SI`，回填时统一截掉后缀取 `801010`。
+    代码形如 `801010.SI`，回填时统一截掉后缀取 `801010`。数据来自远程网关 sw_index_first_info。
     """
-    import akshare as ak
+    first = _akshare_request("sw_index_first_info", timeout=20)
+    if not first:
+        raise RuntimeError("网关 sw_index_first_info 无返回")
 
-    first = ak.sw_index_first_info()
     out: list[dict] = []
-    for _, r in first.iterrows():
+    for r in first:
         code = str(r.get("行业代码", "")).split(".")[0]
         if not code:
             continue
@@ -1134,7 +1126,7 @@ def _fetch_sw_sector_meta() -> list[dict]:
 def backfill_sw_sector_history(days: int = 250) -> dict:
     """回填申万一级行业历史日线到 base_sw_sector_daily。
 
-    数据源：本地 akshare `index_hist_sw(symbol=<行业代码>, period='day')`（全历史，约 0.7s/行业）。
+    数据源：远程网关 `index_hist_sw(symbol=<行业代码>, period='day')`（全历史，约 0.7s/行业）。
     可回填：price（收盘）、prev_close、change_pct。
     无法回填：PE / PB / 股息率 —— 免费源 `sw_index_first_info()` 只有**当日**估值快照，
     没有历史序列，因此历史行的估值列留 NULL（前端历史走势图请选"收盘价/涨跌幅"维度）。
@@ -1147,11 +1139,6 @@ def backfill_sw_sector_history(days: int = 250) -> dict:
     Returns:
         {"ok": bool, "sectors": int, "rows": int, "days": int, "error": str|None}
     """
-    try:
-        import akshare as ak
-    except Exception as e:
-        return {"ok": False, "sectors": 0, "rows": 0, "days": days, "error": f"本地 akshare 不可用: {e}"}
-
     try:
         from database.connection import get_db
     except Exception as e:
@@ -1170,17 +1157,17 @@ def backfill_sw_sector_history(days: int = 250) -> dict:
     for meta in metas:
         code, name = meta["code"], meta["name"]
         try:
-            hist = ak.index_hist_sw(symbol=code, period="day")
+            hist = _akshare_request("index_hist_sw", {"symbol": code, "period": "day"}, timeout=20)
         except Exception as e:
             failed.append(f"{code}({name}): {e}")
             continue
-        if hist is None or len(hist) == 0:
+        if not hist:
             failed.append(f"{code}({name}): 空数据")
             continue
 
-        tail = hist.tail(days + 1)  # 多取一天用于算首日的 prev_close
-        closes = [_safe_float(v) for v in tail["收盘"].tolist()]
-        dates = [str(v)[:10] for v in tail["日期"].tolist()]
+        tail = hist[-(days + 1):]  # 多取一天用于算首日的 prev_close
+        closes = [_safe_float(d.get("收盘")) for d in tail]
+        dates = [str(d.get("日期"))[:10] for d in tail]
 
         rows: list[list] = []
         for i in range(1, len(dates)):  # 跳过第一天（它没有前收盘，算不出涨跌幅）
@@ -1385,17 +1372,18 @@ def get_sw_sector_valuation_history(
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> tuple[list[dict], dict]:
-    """获取申万一级行业的历史估值数据（PE / PB / 股息率），来自 AkShare index_analysis_daily_sw。
+    """获取申万一级行业的历史估值数据（PE / PB / 股息率），来自远程网关 index_analysis_daily_sw。
 
-    数据源：本地 akshare ``index_analysis_daily_sw(symbol='一级行业')``
+    数据源：远程网关 ``index_analysis_daily_sw(symbol='一级行业')``
     该接口返回所有 31 个申万一级行业在指定日期范围内的每日指标，包括：
     收盘指数、涨跌幅、换手率、市盈率(PE)、市净率(PB)、股息率、流通市值等。
 
-    由于该接口较慢（按日期分批请求），对全量结果做 1 小时缓存。
+    由于该接口较慢（按交易日分批请求，约 0.7s/天），对全量结果做 1 小时缓存，
+    且网关侧 AKSHARE_TIMEOUT 默认 30s：超出会 500，故默认窗口控制在约 120 天以内。
 
     Args:
         sector_code: 申万一级行业代码（如 '801010'），为 None 则返回所有行业
-        start_date: 开始日期 'YYYYMMDD'，默认近半年
+        start_date: 开始日期 'YYYYMMDD'，默认近 120 天
         end_date: 结束日期 'YYYYMMDD'，默认今天
 
     Returns:
@@ -1404,32 +1392,37 @@ def get_sw_sector_valuation_history(
     if USE_MOCK_DATA:
         return [], _build_meta(True, "MOCK(模拟数据)")
 
-    import akshare as ak
     from datetime import date as _date
 
     today = _date.today()
     if not end_date:
         end_date = today.strftime("%Y%m%d")
     if not start_date:
-        # 默认取近半年
-        start_date = (today - timedelta(days=190)).strftime("%Y%m%d")
+        # 默认取近 120 天（约 80 个交易日，网关 30s 超时内可完成）
+        start_date = (today - timedelta(days=120)).strftime("%Y%m%d")
 
     # 检查缓存
     cache_key = f"sw_val_{start_date}_{end_date}"
     now_ts = time.time()
     def _miss() -> list[dict]:
-        """缓存未命中：实际调用 akshare（约 30s），结果写回缓存。"""
+        """缓存未命中：实际调用网关 index_analysis_daily_sw（约 0.7s/交易日），结果写回缓存。"""
         try:
-            print(f"[SW Valuation] 调用 index_analysis_daily_sw(一级行业, {start_date}, {end_date})...")
-            df = ak.index_analysis_daily_sw(symbol="一级行业", start_date=start_date, end_date=end_date)
+            print(f"[SW Valuation] 调用网关 index_analysis_daily_sw(一级行业, {start_date}, {end_date})...")
+            df = _akshare_request(
+                "index_analysis_daily_sw",
+                {"symbol": "一级行业", "start_date": start_date, "end_date": end_date},
+                timeout=120,
+            )
         except Exception as e:
-            raise RuntimeError(f"AkShare index_analysis_daily_sw 失败: {e}") from e
+            raise RuntimeError(f"网关 index_analysis_daily_sw 失败: {e}") from e
 
-        if df is None or len(df) == 0:
-            raise RuntimeError("AkShare 无返回数据")
+        if df is None:
+            raise RuntimeError("网关 index_analysis_daily_sw 无返回（可能超出网关超时，请缩短 start_date~end_date 区间）")
+        if len(df) == 0:
+            raise RuntimeError("网关无返回数据")
 
         rows: list[dict] = []
-        for _, row in df.iterrows():
+        for row in df:
             rows.append({
                 "code": str(row.get("指数代码", "")),
                 "name": str(row.get("指数名称", "")),
@@ -1472,7 +1465,7 @@ def get_sw_sector_valuation_history(
     else:
         result = all_data
 
-    return result, _build_meta(False, "AkShare 本地 (index_analysis_daily_sw)")
+    return result, _build_meta(False, f"网关 {AKSHARE_HOST} (index_analysis_daily_sw)")
 
 
 def get_board_sectors_with_meta() -> tuple[list, dict]:

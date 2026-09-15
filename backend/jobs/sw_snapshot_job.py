@@ -34,13 +34,14 @@ def _load_trading_days() -> set[date] | None:
     if _trading_days is not None:
         return _trading_days
     try:
-        import akshare as ak
+        from services.akshare_client import akshare_request
 
-        df = ak.tool_trade_date_hist_sina()
-        days = {datetime.strptime(str(v)[:10], "%Y-%m-%d").date() for v in df["trade_date"].tolist()}
-        if days:
-            _trading_days = days
-            print(f"[SW Job] 交易日历加载成功：{len(days)} 个交易日")
+        df = akshare_request("tool_trade_date_hist_sina", timeout=30)
+        if df:
+            days = {datetime.strptime(str(v.get("trade_date"))[:10], "%Y-%m-%d").date() for v in df}
+            if days:
+                _trading_days = days
+                print(f"[SW Job] 交易日历加载成功：{len(days)} 个交易日（网关）")
     except Exception as e:
         print(f"[SW Job] 交易日历加载失败（回退到周一~周五判断）: {type(e).__name__}: {e}")
     return _trading_days

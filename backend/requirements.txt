@@ -5,3 +5,6 @@ pydantic>=2.6.0
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
 python-multipart>=0.0.9
+requests>=2.31.0
+apscheduler>=3.10.4
+# 不再依赖本地 akshare：所有行情/行业数据统一走 AKSHARE_API_BASE 远程网关（/api/ak）

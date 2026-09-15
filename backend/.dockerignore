@@ -1,0 +1,14 @@
+__pycache__
+*.py[cod]
+*.pyo
+.venv
+venv
+.pytest_cache
+.mypy_cache
+.git
+.gitignore
+.idea
+.vscode
+# 本地数据库文件不进镜像（数据走 volume /data）
+*.duckdb
+*.duckdb.wal
