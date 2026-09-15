@@ -96,7 +96,7 @@ class MarketOverview(BaseModel):
     downCount: int
     flatCount: int
     totalVolume: float
-    volumeChange: float
+    volumeChange: Optional[float] = None
 
 
 class BoardSector(BaseModel):

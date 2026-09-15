@@ -3,9 +3,10 @@ import { ref, onMounted, watch, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NIcon } from 'naive-ui'
 import {
-  StatsChartOutline,
-  Analytics,
-  WalletOutline,
+StatsChartOutline,
+Analytics,
+TrendingUp,
+WalletOutline,
   LockClosedOutline,
   CashOutline,
   SwapHorizontalOutline,
@@ -65,6 +66,7 @@ interface NavItem {
 const navItems: NavItem[] = [
   { name: 'Dashboard', path: '/dashboard', icon: StatsChartOutline, label: '宏观看板' },
   { name: 'IndexAnalysis', path: '/index-analysis', icon: Analytics, label: '指数分析' },
+  { name: 'IndexValuation', path: '/index-valuation', icon: TrendingUp, label: '宽基估值分位' },
   { name: 'LofFunds', path: '/lof-funds', icon: WalletOutline, label: 'LOF基金' },
   { name: 'ClosedFunds', path: '/closed-funds', icon: LockClosedOutline, label: '封闭基金' },
   { name: 'ConvertibleBonds', path: '/convertible-bonds', icon: CashOutline, label: '可转债' },

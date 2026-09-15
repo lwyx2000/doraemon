@@ -135,6 +135,8 @@ export function useTabs() {
     watchRegistered = true
     watch(() => route.path, (newPath) => {
       if (!newPath) return
+      // 登录/注册等 public 页面不纳入标签页管理
+      if (route.meta?.public) return
       const normPath = normalizePath(newPath)
       ensureHome()
       // 查找是否已有该路径的 tab（用规范化路径匹配）

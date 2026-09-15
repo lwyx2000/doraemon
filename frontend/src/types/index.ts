@@ -162,6 +162,38 @@ export interface SwSectorValuationItem {
   circ_market_cap: number | null
 }
 
+/** 宽基指数估值分位 + 拥挤度 */
+export interface BroadIndexValuation {
+  name: string
+  code: string
+  pb: number | null
+  pe_ttm: number | null
+  roe_mean: number | null       // ROE近5年均值 (%)
+  spread: number | null          // 股债利差 (%)
+  valuation_percentile: number | null  // 估值分位 0-100, 越小越便宜
+  crowding: number | null        // 拥挤度 0-100, 越小相对越便宜
+  yield_10y: number | null       // 10年期国债收益率 (%)
+  cpi_yoy: number | null         // CPI同比 (%)
+  is_benchmark: boolean
+  pb_history: ValuationHistPoint[]
+  spread_history: SpreadHistPoint[]
+}
+
+export interface ValuationHistPoint {
+  date: string
+  pb: number | null
+  index_value: number | null
+}
+
+export interface SpreadHistPoint {
+  date: string
+  spread: number
+  pb: number
+  yield_10y: number
+  roe_mean: number
+  earnings_yield: number
+}
+
 export interface SwSectorStrength {
   code: string
   name: string
@@ -555,7 +587,7 @@ export interface MarketOverview {
   downCount: number
   flatCount: number
   totalVolume: number // 成交额（亿）
-  volumeChange: number // 较上一日变化（亿）
+  volumeChange: number | null // 较上一日变化（亿），null 表示上游无数据
 }
 
 // 板块数据（行业/概念）

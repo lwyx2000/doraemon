@@ -125,7 +125,10 @@ const hasMore = computed(() => {
       </div>
       <div class="volume-change">
         <span class="label">较上一日此时</span>
-        <span class="value" :style="{ color: overview.volumeChange >= 0 ? 'var(--color-danger)' : 'var(--color-success)' }">
+        <span v-if="overview.volumeChange == null" class="value" style="color: var(--text-muted)">
+          —
+        </span>
+        <span v-else class="value" :style="{ color: overview.volumeChange >= 0 ? 'var(--color-danger)' : 'var(--color-success)' }">
           {{ overview.volumeChange >= 0 ? '+' : '' }}{{ overview.volumeChange }}亿
         </span>
       </div>

@@ -692,7 +692,7 @@ def get_market_stats_real() -> dict | None:
         "totalTurnover": total_e,
         "shTurnover": sh_e,
         "szTurnover": sz_e,
-        "turnoverChangePct": _safe_float(data.get("turnover_change_pct")),
+        "turnoverChangePct": _safe_float_or_none(data.get("turnover_change_pct")),
         "turnoverChangeAbs": turnover_change_abs,
         "upCount": _safe_int(data.get("advance_count")),
         "downCount": _safe_int(data.get("decline_count")),
@@ -894,15 +894,14 @@ def get_market_overview_with_meta() -> tuple[dict, dict]:
 
     if market_stats:
         # 成交额变化统一使用绝对值(亿元)：上游提供昨日成交额则直接相减；
-        # 只有百分比时，按当前成交额反推近似绝对变化；都没有则置 0。
+        # 只有百分比时，按当前成交额反推近似绝对变化；都没有则返回 None（前端显示"—"）。
         total_e = market_stats.get("totalTurnover", 0) or 0
         vol_change = market_stats.get("turnoverChangeAbs")
         if vol_change is None:
             pct = market_stats.get("turnoverChangePct")
             if pct is not None and total_e:
                 vol_change = round(total_e * pct / 100, 2)
-            else:
-                vol_change = 0
+            # pct 也为 None → 上游未提供变化数据，保持 None
         data = {
             "date": market_stats["date"],
             "status": _market_status(),

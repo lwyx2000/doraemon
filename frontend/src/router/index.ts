@@ -19,6 +19,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '指数估值分析', icon: 'analytics' },
   },
   {
+    path: '/index-valuation',
+    name: 'IndexValuation',
+    component: () => import('../pages/IndexValuation.vue'),
+    meta: { title: '宽基估值分位', icon: 'trending_up' },
+  },
+  {
     path: '/lof-funds',
     name: 'LofFunds',
     component: () => import('../pages/LofFunds.vue'),

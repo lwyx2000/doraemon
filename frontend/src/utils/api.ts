@@ -503,6 +503,15 @@ export const libraryApi = {
     request<{ ok: boolean }>(`/api/v1/strategy-library/tracked/${id}`, undefined, { method: 'DELETE' }),
   refreshTracked: () =>
     request<TrackedLibrary[]>('/api/v1/strategy-library/tracked/refresh'),
+
+  // ============================================================
+  // 宽基指数估值分位 + 拥挤度（基于股债利差方法论）
+  // ============================================================
+  getBroadIndexValuation: () =>
+    requestWithMeta<BroadIndexValuation[]>('/api/v1/valuation/broad-indices'),
+
+  getSingleIndexValuation: (indexName: string) =>
+    requestWithMeta<BroadIndexValuation>(`/api/v1/valuation/indices/${encodeURIComponent(indexName)}`),
 }
 
 // ---- Type imports for API ----
@@ -540,6 +549,7 @@ import type {
   SwSectorHistoryItem,
   SwSectorValuationItem,
   SwSectorStrength,
+  BroadIndexValuation,
   BrokerAccount,
   AccountName,
   StrategyDef,

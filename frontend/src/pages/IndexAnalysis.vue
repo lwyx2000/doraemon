@@ -71,11 +71,11 @@ watch(
   { immediate: true },
 )
 
-// 按时间窗口截取真实序列（1Y/3Y/5Y/全部）
+// 按时间窗口截取真实序列（1Y/3Y/5Y/10Y/全部）
 const windowedHist = computed(() => {
   const list = valHist.value
   if (!list.length || timeWindow.value === '全部') return list
-  const years = timeWindow.value === '1Y' ? 1 : timeWindow.value === '3Y' ? 3 : 5
+  const years = timeWindow.value === '1Y' ? 1 : timeWindow.value === '3Y' ? 3 : timeWindow.value === '5Y' ? 5 : 10
   const cutoff = new Date()
   cutoff.setFullYear(cutoff.getFullYear() - years)
   const cutoffStr = cutoff.toISOString().slice(0, 10)
@@ -193,7 +193,7 @@ function selectIndex(index: IndexValuation) {
   selectedIndex.value = index
 }
 
-const timeWindows = ['1Y', '3Y', '5Y', '全部']
+const timeWindows = ['1Y', '3Y', '5Y', '10Y', '全部']
 
 // 估值评估：全部基于真实历史序列统计；无序列时仅用上游真实分位，不推算区间
 const valAnalysis = computed(() => {
