@@ -86,18 +86,13 @@ def _check_source_available() -> bool:
     返回 True=可用；False=不可用。
     - 命中结论后 5 分钟内复用，避免每次请求都打网关。
     - 若网关整体 500（如 legulegu 改版/反爬），立即整体降级，而非逐个指数重试 120s+。
+    - 单次探测 + 短超时：上游 legulegu 死时会一直挂到超时，故探测超时不宜过长（5s 足够判定）。
     """
     now = time.time()
     if _SOURCE_DOWN.get("ts", 0) > 0 and (now - _SOURCE_DOWN["ts"]) < _SOURCE_DOWN_TTL:
         return False
-    # 单次探测主基准，短超时，避免拖垮整体
-    probe = akshare_request("stock_index_pb_lg", {"symbol": BENCHMARK_INDEX}, retries=1, timeout=8)
+    probe = akshare_request("stock_index_pb_lg", {"symbol": BENCHMARK_INDEX}, retries=1, timeout=5)
     if probe:
-        _SOURCE_DOWN["ts"] = 0.0
-        return True
-    # 主基准偶发抖动则换一个基准再探一次，排除单指数问题
-    probe2 = akshare_request("stock_index_pb_lg", {"symbol": "沪深300"}, retries=1, timeout=8)
-    if probe2:
         _SOURCE_DOWN["ts"] = 0.0
         return True
     _SOURCE_DOWN["ts"] = now
@@ -412,9 +407,14 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
 
     benchmark_pb_map: dict[str, float] = {item["date"]: item["pb"] for item in benchmark_pb if item.get("pb")}
 
+    start_ts = time.time()
+    _HARD_DEADLINE = 45  # 秒：任何情况下整体处理不得超过此值（防止上游偶发挂起拖垮接口）
+
     results: list[dict] = []
 
     for idx_info in BROAD_INDEX_LIST:
+        if time.time() - start_ts > _HARD_DEADLINE:
+            break
         idx_name = idx_info["name"]
         idx_code = idx_info["code"]
 
@@ -483,6 +483,10 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
             "spread_history": spread_hist_short,
             "is_benchmark": idx_name == benchmark_used,
         })
+
+    if not results:
+        # 探测通过但全部指数取数失败（如网关部分抖动/整体超时），统一降级为不可用
+        return [], _unavailable_meta("估值计算超时或数据源异常")
 
     # 按估值分位升序排列（最便宜的在前）
     results.sort(key=lambda x: x.get("valuation_percentile") or 50)
