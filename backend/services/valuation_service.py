@@ -478,3 +478,52 @@ def _build_meta(is_mock: bool, data_source: str) -> dict:
         "mockTime": None,
         "updateTime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
+
+
+def get_index_spread_history(index_name: str) -> tuple[list[dict], dict]:
+    """获取单指数的股债利差历史完整序列（供前端估值带图表）。
+
+    返回全量历史序列（不截断120月），前端按时间窗口自行截取。
+
+    Returns:
+        (data, meta) — data 为 [{date, spread, pb, yield_10y, roe_mean, earnings_yield}, ...]
+    """
+    if USE_MOCK_DATA:
+        return [], {"isMock": True, "dataSource": "MOCK", "mockTime": None,
+                     "updateTime": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+    # 先获取全部列表，从中找到目标指数的利差历史（复用已有计算+缓存）
+    all_data, meta = get_broad_index_valuation()
+    for item in all_data:
+        if item["name"] == index_name or item["code"] == index_name:
+            # spread_history 是最近120月，这里返回全量需重新计算
+            break
+    else:
+        return [], _build_meta(False, f"未找到指数: {index_name}")
+
+    # 重新获取该指数的全量利差历史（不受120月截断）
+    cpi_yoy = _get_cpi_yoy()
+    if cpi_yoy is None:
+        cpi_yoy = 0.0
+
+    pb_data = _get_pb_history(index_name)
+    pe_data = _get_pe_history(index_name)
+    if not pb_data:
+        return [], _build_meta(False, "该指数无PB历史数据")
+
+    roe_data = _compute_roe_history(pb_data, pe_data)
+    spread_history = _compute_spread_history(roe_data, index_name, cpi_yoy)
+
+    # 返回全量序列
+    out = []
+    for s in spread_history:
+        out.append({
+            "date": s["date"],
+            "spread": s["spread"],
+            "pb": s["pb"],
+            "yield_10y": s["yield_10y"],
+            "roe_mean": s["roe_mean"],
+            "earnings_yield": s["earnings_yield"],
+        })
+
+    return out, meta

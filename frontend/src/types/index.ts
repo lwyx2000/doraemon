@@ -119,6 +119,16 @@ export interface IndexValuationHistPoint {
   index_level: number | null
 }
 
+// 股债利差历史序列点（ valuation_service 计算）
+export interface SpreadHistoryPoint {
+  date: string
+  spread: number       // 股债利差(%)
+  pb: number           // 当期PB
+  yield_10y: number    // 10年期国债收益率(%)
+  roe_mean: number     // ROE均值(小数)
+  earnings_yield: number // 收益率 = ROE均值/PB (%)
+}
+
 export interface SwSector {
   code: string
   name: string

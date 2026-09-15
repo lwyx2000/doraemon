@@ -514,6 +514,10 @@ export const libraryApi = {
 
   getSingleIndexValuation: (indexName: string) =>
     requestWithMeta<BroadIndexValuation>(`/api/v1/valuation/indices/${encodeURIComponent(indexName)}`),
+
+  // 单指数股债利差历史序列（全量，供估值带图表）
+  getIndexSpreadHistory: (indexName: string) =>
+    requestWithMeta<SpreadHistoryPoint[]>(`/api/v1/valuation/indices/${encodeURIComponent(indexName)}/spread-history`),
 }
 
 // ---- Type imports for API ----
@@ -552,6 +556,7 @@ import type {
   SwSectorValuationItem,
   SwSectorStrength,
   BroadIndexValuation,
+  SpreadHistoryPoint,
   BrokerAccount,
   AccountName,
   StrategyDef,

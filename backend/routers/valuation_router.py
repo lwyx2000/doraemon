@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 
 from models import ApiResponse
-from services.valuation_service import get_broad_index_valuation, get_single_index_valuation
+from services.valuation_service import get_broad_index_valuation, get_index_spread_history, get_single_index_valuation
 
 router = APIRouter(tags=["valuation"])
 
@@ -39,4 +39,16 @@ def single_index_valuation(
     data, meta = get_single_index_valuation(index_name)
     if data is None:
         return ApiResponse(code=404, message=f"未找到指数: {index_name}", data=None)
+    return ApiResponse(data=data, meta=meta)
+
+
+@router.get("/indices/{index_name}/spread-history", response_model=ApiResponse[list[dict]])
+def index_spread_history(
+    index_name: str,
+) -> ApiResponse[list[dict]]:
+    """单指数股债利差历史序列（全量，供前端估值带图表按时间窗口截取）。
+
+    每个数据点包含：date, spread(股债利差%), pb, yield_10y(10Y国债%), roe_mean, earnings_yield。
+    """
+    data, meta = get_index_spread_history(index_name)
     return ApiResponse(data=data, meta=meta)
