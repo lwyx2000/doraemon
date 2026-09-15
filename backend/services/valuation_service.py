@@ -48,6 +48,9 @@ BROAD_INDEX_LIST: list[dict] = [
 
 # 基准指数：用中证800（沪深300+中证500）替代万得全A
 BENCHMARK_INDEX = "中证800"
+# 基准指数回退顺序：网关偶发抖动导致某指数 PB 取数失败时，依次尝试其它基准，
+# 避免单次网关失败就让整个估值返回空。
+BENCHMARK_FALLBACKS = ["沪深300", "上证50", "中证500"]
 
 # ROE 均值计算窗口（近5-7年，取5年=60个月）
 ROE_WINDOW_MONTHS = 60
@@ -347,10 +350,17 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
         cpi_yoy = 0.0  # CPI 取不到时用 0 近似
     yield_10y = _get_10y_treasury_yield()
 
-    # 获取基准指数 PB 历史
+    # 获取基准指数 PB 历史（带回退，避免单次网关抖动致整体返回空）
+    benchmark_used = BENCHMARK_INDEX
     benchmark_pb = _get_pb_history(BENCHMARK_INDEX)
     if not benchmark_pb:
-        return [], _build_meta(False, "基准指数PB获取失败")
+        for alt in BENCHMARK_FALLBACKS:
+            benchmark_pb = _get_pb_history(alt)
+            if benchmark_pb:
+                benchmark_used = alt
+                break
+    if not benchmark_pb:
+        return [], _build_meta(False, "基准指数PB获取失败(远程网关)")
 
     benchmark_pb_map: dict[str, float] = {item["date"]: item["pb"] for item in benchmark_pb if item.get("pb")}
 
@@ -423,7 +433,7 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
             "cpi_yoy": cpi_yoy,
             "pb_history": pb_history,
             "spread_history": spread_hist_short,
-            "is_benchmark": idx_name == BENCHMARK_INDEX,
+            "is_benchmark": idx_name == benchmark_used,
         })
 
     # 按估值分位升序排列（最便宜的在前）
@@ -432,7 +442,7 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
     with _cache_lock:
         _result_cache["broad"] = {"data": results, "ts": now}
 
-    return results, _build_meta(False, "远程网关 (stock_index_pb_lg + 国债 + CPI)")
+    return results, _build_meta(False, f"远程网关(基准={benchmark_used}, stock_index_pb_lg + 国债 + CPI)")
 
 
 def get_single_index_valuation(index_name: str) -> tuple[dict | None, dict]:
