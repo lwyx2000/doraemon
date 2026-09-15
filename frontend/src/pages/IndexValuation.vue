@@ -1,7 +1,7 @@
 <script setup lang="ts">
 defineOptions({ name: 'IndexValuation' })
 import { ref, computed, onMounted } from 'vue'
-import { NDataTable, NTag, NSpin, NEmpty, NModal, NTabs, NTabPane, NButton, useMessage } from 'naive-ui'
+import { NDataTable, NTag, NSpin, NEmpty, NModal, NButton, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { api } from '../utils/api'
 import type { BroadIndexValuation, SectionSourceMeta } from '../types'
@@ -31,7 +31,7 @@ async function loadData() {
 onMounted(loadData)
 
 // ==================== 估值分位颜色 ====================
-function percentileColor(pct: number | null): string {
+function percentileColor(pct: number | null): 'default' | 'success' | 'warning' | 'error' {
   if (pct == null) return 'default'
   if (pct < 30) return 'success'   // 便宜
   if (pct < 70) return 'warning'   // 正常
@@ -45,7 +45,7 @@ function percentileLabel(pct: number | null): string {
   return '过热'
 }
 
-function crowdingColor(pct: number | null): string {
+function crowdingColor(pct: number | null): 'default' | 'success' | 'warning' | 'error' {
   if (pct == null) return 'default'
   if (pct < 30) return 'success'
   if (pct < 70) return 'warning'
