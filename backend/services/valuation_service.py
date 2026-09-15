@@ -73,6 +73,47 @@ _CACHE_TTL_DATA = 12 * 3600  # 月度数据缓存12小时
 _CACHE_TTL_RESULT = 3600     # 结果缓存1小时
 _cache_lock = threading.Lock()
 
+# ============================================================
+# 数据源存活探测（避免上游 legulegu 接口挂掉时逐个指数重试 → 120s+ 超时 → nginx 499 白屏）
+# ============================================================
+_SOURCE_DOWN: dict[str, float] = {"ts": 0.0}  # 记录上次判定为不可用的时刻；为 0 表示未判定
+_SOURCE_DOWN_TTL = 300  # 判定不可用后 5 分钟内直接复用结论，不再重复探测
+
+
+def _check_source_available() -> bool:
+    """探测远程网关的指数 PB 接口是否可用。
+
+    返回 True=可用；False=不可用。
+    - 命中结论后 5 分钟内复用，避免每次请求都打网关。
+    - 若网关整体 500（如 legulegu 改版/反爬），立即整体降级，而非逐个指数重试 120s+。
+    """
+    now = time.time()
+    if _SOURCE_DOWN.get("ts", 0) > 0 and (now - _SOURCE_DOWN["ts"]) < _SOURCE_DOWN_TTL:
+        return False
+    # 单次探测主基准，短超时，避免拖垮整体
+    probe = akshare_request("stock_index_pb_lg", {"symbol": BENCHMARK_INDEX}, retries=1, timeout=8)
+    if probe:
+        _SOURCE_DOWN["ts"] = 0.0
+        return True
+    # 主基准偶发抖动则换一个基准再探一次，排除单指数问题
+    probe2 = akshare_request("stock_index_pb_lg", {"symbol": "沪深300"}, retries=1, timeout=8)
+    if probe2:
+        _SOURCE_DOWN["ts"] = 0.0
+        return True
+    _SOURCE_DOWN["ts"] = now
+    return False
+
+
+def _unavailable_meta(reason: str) -> dict:
+    """数据源不可用时的统一 meta（前端据此展示友好横幅，而非白屏/499）。"""
+    m = _build_meta(False, "远程网关(估值数据源暂不可用)")
+    m["status"] = "unavailable"
+    m["message"] = (
+        "估值数据源（远程网关指数 PE/PB 接口）暂不可用，通常为上游 legulegu 数据接口异常。"
+        "功能已优雅降级，请稍后重试。"
+    )
+    return m
+
 
 # ============================================================
 # 数据获取层
@@ -89,7 +130,7 @@ def _get_pb_history(index_name: str) -> list[dict]:
     if cached and (now - cached["ts"]) < _CACHE_TTL_DATA:
         return cached["data"]
 
-    rows = akshare_request("stock_index_pb_lg", {"symbol": index_name}, retries=2, timeout=12)
+    rows = akshare_request("stock_index_pb_lg", {"symbol": index_name}, retries=1, timeout=8)
     if not rows:
         return []
 
@@ -118,7 +159,7 @@ def _get_pe_history(index_name: str) -> list[dict]:
     if cached and (now - cached["ts"]) < _CACHE_TTL_DATA:
         return cached["data"]
 
-    rows = akshare_request("stock_index_pe_lg", {"symbol": index_name}, retries=2, timeout=12)
+    rows = akshare_request("stock_index_pe_lg", {"symbol": index_name}, retries=1, timeout=8)
     if not rows:
         return []
 
@@ -344,6 +385,10 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
         if cached and (now - cached["ts"]) < _CACHE_TTL_RESULT:
             return cached["data"], _build_meta(False, "缓存(1h)")
 
+    # 数据源存活探测：上游 legulegu 接口异常时整体快速降级，避免长时间挂起(499)
+    if not _check_source_available():
+        return [], _unavailable_meta("legulegu 指数 PE/PB 接口不可用")
+
     # 获取 CPI 和国债收益率
     cpi_yoy = _get_cpi_yoy()
     if cpi_yoy is None:
@@ -360,7 +405,10 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
                 benchmark_used = alt
                 break
     if not benchmark_pb:
-        return [], _build_meta(False, "基准指数PB获取失败(远程网关)")
+        m = _build_meta(False, "基准指数PB获取失败(远程网关)")
+        m["status"] = "unavailable"
+        m["message"] = "基准指数 PB 获取失败，估值暂不可用，请稍后重试。"
+        return [], m
 
     benchmark_pb_map: dict[str, float] = {item["date"]: item["pb"] for item in benchmark_pb if item.get("pb")}
 
