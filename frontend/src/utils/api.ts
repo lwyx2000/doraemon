@@ -2,7 +2,9 @@
 // API client for the Financial Data Gateway
 // ============================================================
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8001'
+// 未显式配置 VITE_API_BASE 时，默认走「当前页面同源」由 nginx 反代 /api 到 backend，
+// 这样无论用哪个 IP/域名访问都能自动适配，不再写死 127.0.0.1:8001 导致浏览器 Failed to fetch。
+const API_BASE = import.meta.env.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:8001')
 
 export class ApiError extends Error {
   status: number

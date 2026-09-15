@@ -32,7 +32,8 @@ import { useDarkMode } from '../composables/useDarkMode'
 import type { AiConfig, DataSourceStatus, CacheConfig, MonitorDashboard, NotificationConfig } from '../types'
 
 const message = useMessage()
-const apiBase = import.meta.env.VITE_API_BASE || 'http://localhost:8001'
+// 展示用：默认与 api.ts 保持一致，走当前页面同源（nginx 反代 /api），不写死 localhost:8001
+const apiBase = import.meta.env.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8001')
 const deployMode = import.meta.env.MODE
 const { isDark, toggle: toggleDarkMode } = useDarkMode()
 
