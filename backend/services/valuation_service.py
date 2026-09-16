@@ -6,8 +6,9 @@
 2. 拥挤度 = (指数PB / 基准PB) 在历史中的百分位（衡量行业/指数间相对估值）
 
 数据源（全部走远程 AkShare WebAPI 网关，不依赖本地 akshare）：
-- services.index_pb_pe（B：自建聚合源）→ 按成分股市值/市净率/市盈率聚合还原指数 PB/PE 月度历史
-  （网关方法 index_stock_cons_csindex + stock_zh_valuation_baidu，替代已失效的 legulegu）
+- services.index_pb_pe → 调用网关 GET /api/index-valuation/{code}/history 取指数 PB/PE 月度历史
+  （网关侧以 MySQL t_index_valuation 为唯一真源：腾讯批量快照 + 成分股市值加权聚合，
+   交易日 18:35 定时增量写入当月点，读取带 Redis 2h 缓存；替代已失效的 legulegu）
 - market_service._fetch_10y_history → 10年期国债收益率历史
 - 网关 /api/ak?method=macro_china_cpi → CPI 同比
 
@@ -26,7 +27,7 @@ from typing import Any
 
 from core.config import USE_MOCK_DATA
 from services.akshare_client import akshare_request
-from services.index_pb_pe import get_index_pb_pe
+from services.index_pb_pe import get_index_pb_pe, get_index_pb_pe_meta
 
 # ============================================================
 # 配置
@@ -81,22 +82,25 @@ _cache_lock = threading.Lock()
 # 数据源存活探测（避免上游 legulegu 接口挂掉时逐个指数重试 → 120s+ 超时 → nginx 499 白屏）
 # ============================================================
 _SOURCE_DOWN: dict[str, float] = {"ts": 0.0}  # 记录上次判定为不可用的时刻；为 0 表示未判定
-_SOURCE_DOWN_TTL = 300  # 判定不可用后 5 分钟内直接复用结论，不再重复探测
+_SOURCE_DOWN_TTL = 60   # 判定不可用后 60s 内复用结论。不宜过长：上游冷启动/抖动
+                        # 造成的**一次**误判，会在这段时间里把整个接口锁成空列表
+                        # （曾用 300s，整页估值空白 5 分钟）。
 
 
 def _check_source_available() -> bool:
-    """探测远程网关的指数 PB 接口是否可用。
+    """探测指数 PB/PE 数据源是否可用。
 
     返回 True=可用；False=不可用。
-    - 命中结论后 5 分钟内复用，避免每次请求都打网关。
-    - 若网关整体 500（如 legulegu 改版/反爬），立即整体降级，而非逐个指数重试 120s+。
-    - 单次探测 + 短超时：上游 legulegu 死时会一直挂到超时，故探测超时不宜过长（5s 足够判定）。
+    - 直接探**真实依赖**的 aksharewebapi 指数估值接口（而非 legulegu 时代的
+      网关通用方法 index_stock_cons_csindex），探测结论才与取数路径一致。
+    - 命中「不可用」结论后 5 分钟内复用，避免每次请求都打接口。
+    - 单次探测 + 短超时：上游挂起时不至于拖到整体超时。
     """
     now = time.time()
     if _SOURCE_DOWN.get("ts", 0) > 0 and (now - _SOURCE_DOWN["ts"]) < _SOURCE_DOWN_TTL:
         return False
-    probe = akshare_request("index_stock_cons_csindex", {"symbol": BENCHMARK_CODE}, retries=1, timeout=8)
-    if probe:
+    data = get_index_pb_pe_meta(BENCHMARK_CODE, timeout=8)
+    if data and (data.get("pb") or data.get("pe")):
         _SOURCE_DOWN["ts"] = 0.0
         return True
     _SOURCE_DOWN["ts"] = now
@@ -108,8 +112,8 @@ def _unavailable_meta(reason: str) -> dict:
     m = _build_meta(False, "远程网关(估值数据源暂不可用)")
     m["status"] = "unavailable"
     m["message"] = (
-        "估值数据源（远程网关指数成分股/个股市净率聚合接口）暂不可用，通常为上游数据接口异常。"
-        "功能已优雅降级，请稍后重试。"
+        f"估值数据源（aksharewebapi 指数估值接口 /api/index-valuation）暂不可用，"
+        f"通常为上游数据接口异常。功能已优雅降级，请稍后重试。{(' 原因：' + reason) if reason else ''}"
     )
     return m
 
@@ -119,7 +123,7 @@ def _unavailable_meta(reason: str) -> dict:
 # ============================================================
 
 def _get_pb_history(index_code: str) -> list[dict]:
-    """获取指数 PB 月度历史（B：网关侧自聚合源）。
+    """获取指数 PB 月度历史（网关 /api/index-valuation 接口）。
 
     Returns:
         [{"date": "2005-04-29", "pb": 1.89, "index_value": 932.40}, ...]（按日期升序）
@@ -139,7 +143,7 @@ def _get_pb_history(index_code: str) -> list[dict]:
 
 
 def _get_pe_history(index_code: str) -> list[dict]:
-    """获取指数 PE 月度历史（B：网关侧自聚合源）。
+    """获取指数 PE 月度历史（网关 /api/index-valuation 接口）。
 
     Returns:
         [{"date": "2005-04-29", "pe_ttm": 15.2, "pe_static": 14.8, "index_value": 932.40}, ...]
