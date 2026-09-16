@@ -425,6 +425,19 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
     }),
+
+  // ============================================================
+  // 宽基指数估值分位 + 拥挤度（基于股债利差方法论）
+  // ============================================================
+  getBroadIndexValuation: () =>
+    requestWithMeta<BroadIndexValuation[]>('/api/v1/valuation/broad-indices'),
+
+  getSingleIndexValuation: (indexName: string) =>
+    requestWithMeta<BroadIndexValuation>(`/api/v1/valuation/indices/${encodeURIComponent(indexName)}`),
+
+  // 单指数股债利差历史序列（全量，供估值带图表）
+  getIndexSpreadHistory: (indexName: string) =>
+    requestWithMeta<SpreadHistoryPoint[]>(`/api/v1/valuation/indices/${encodeURIComponent(indexName)}/spread-history`),
 }
 
 // ============================================================
@@ -505,19 +518,6 @@ export const libraryApi = {
     request<{ ok: boolean }>(`/api/v1/strategy-library/tracked/${id}`, undefined, { method: 'DELETE' }),
   refreshTracked: () =>
     request<TrackedLibrary[]>('/api/v1/strategy-library/tracked/refresh'),
-
-  // ============================================================
-  // 宽基指数估值分位 + 拥挤度（基于股债利差方法论）
-  // ============================================================
-  getBroadIndexValuation: () =>
-    requestWithMeta<BroadIndexValuation[]>('/api/v1/valuation/broad-indices'),
-
-  getSingleIndexValuation: (indexName: string) =>
-    requestWithMeta<BroadIndexValuation>(`/api/v1/valuation/indices/${encodeURIComponent(indexName)}`),
-
-  // 单指数股债利差历史序列（全量，供估值带图表）
-  getIndexSpreadHistory: (indexName: string) =>
-    requestWithMeta<SpreadHistoryPoint[]>(`/api/v1/valuation/indices/${encodeURIComponent(indexName)}/spread-history`),
 }
 
 // ---- Type imports for API ----

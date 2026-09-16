@@ -5,11 +5,11 @@
    估值分位 = 该利差在历史中的百分位（越小=越便宜）
 2. 拥挤度 = (指数PB / 基准PB) 在历史中的百分位（衡量行业/指数间相对估值）
 
-数据源：
-- akshare.stock_index_pb_lg  → 宽基指数 PB 历史（月度，2005年起）
-- akshare.stock_index_pe_lg  → 宽基指数 PE 历史（月度，2005年起）
+数据源（全部走远程 AkShare WebAPI 网关，不依赖本地 akshare）：
+- services.index_pb_pe（B：自建聚合源）→ 按成分股市值/市净率/市盈率聚合还原指数 PB/PE 月度历史
+  （网关方法 index_stock_cons_csindex + stock_zh_valuation_baidu，替代已失效的 legulegu）
 - market_service._fetch_10y_history → 10年期国债收益率历史
-- akshare.macro_china_cpi → CPI 同比
+- 网关 /api/ak?method=macro_china_cpi → CPI 同比
 
 缓存策略：
 - PB/PE 历史数据按指数缓存 12 小时（月度数据日内不变）
@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 from core.config import USE_MOCK_DATA
+from services.akshare_client import akshare_request
+from services.index_pb_pe import get_index_pb_pe
 
 # ============================================================
 # 配置
@@ -47,6 +49,11 @@ BROAD_INDEX_LIST: list[dict] = [
 
 # 基准指数：用中证800（沪深300+中证500）替代万得全A
 BENCHMARK_INDEX = "中证800"
+BENCHMARK_CODE = "000906"  # 中证800 的 csindex 代码
+# 基准指数回退顺序：网关偶发抖动导致某指数 PB 取数失败时，依次尝试其它基准，
+# 避免单次网关失败就让整个估值返回空。
+BENCHMARK_FALLBACKS = ["沪深300", "上证50", "中证500"]
+BENCHMARK_FALLBACK_CODES = ["000300", "000016", "000905"]
 
 # ROE 均值计算窗口（近5-7年，取5年=60个月）
 ROE_WINDOW_MONTHS = 60
@@ -69,101 +76,100 @@ _CACHE_TTL_DATA = 12 * 3600  # 月度数据缓存12小时
 _CACHE_TTL_RESULT = 3600     # 结果缓存1小时
 _cache_lock = threading.Lock()
 
+# ============================================================
+# 数据源存活探测（避免上游 legulegu 接口挂掉时逐个指数重试 → 120s+ 超时 → nginx 499 白屏）
+# ============================================================
+_SOURCE_DOWN: dict[str, float] = {"ts": 0.0}  # 记录上次判定为不可用的时刻；为 0 表示未判定
+_SOURCE_DOWN_TTL = 300  # 判定不可用后 5 分钟内直接复用结论，不再重复探测
+
+
+def _check_source_available() -> bool:
+    """探测远程网关的指数 PB 接口是否可用。
+
+    返回 True=可用；False=不可用。
+    - 命中结论后 5 分钟内复用，避免每次请求都打网关。
+    - 若网关整体 500（如 legulegu 改版/反爬），立即整体降级，而非逐个指数重试 120s+。
+    - 单次探测 + 短超时：上游 legulegu 死时会一直挂到超时，故探测超时不宜过长（5s 足够判定）。
+    """
+    now = time.time()
+    if _SOURCE_DOWN.get("ts", 0) > 0 and (now - _SOURCE_DOWN["ts"]) < _SOURCE_DOWN_TTL:
+        return False
+    probe = akshare_request("index_stock_cons_csindex", {"symbol": BENCHMARK_CODE}, retries=1, timeout=8)
+    if probe:
+        _SOURCE_DOWN["ts"] = 0.0
+        return True
+    _SOURCE_DOWN["ts"] = now
+    return False
+
+
+def _unavailable_meta(reason: str) -> dict:
+    """数据源不可用时的统一 meta（前端据此展示友好横幅，而非白屏/499）。"""
+    m = _build_meta(False, "远程网关(估值数据源暂不可用)")
+    m["status"] = "unavailable"
+    m["message"] = (
+        "估值数据源（远程网关指数成分股/个股市净率聚合接口）暂不可用，通常为上游数据接口异常。"
+        "功能已优雅降级，请稍后重试。"
+    )
+    return m
+
 
 # ============================================================
 # 数据获取层
 # ============================================================
 
-def _get_pb_history(index_name: str) -> list[dict]:
-    """获取指数 PB 月度历史数据。
+def _get_pb_history(index_code: str) -> list[dict]:
+    """获取指数 PB 月度历史（B：网关侧自聚合源）。
 
     Returns:
-        [{"date": "2005-04-29", "pb": 1.89, "index_value": 932.40}, ...]
+        [{"date": "2005-04-29", "pb": 1.89, "index_value": 932.40}, ...]（按日期升序）
     """
     now = time.time()
-    cached = _pb_cache.get(index_name)
+    cached = _pb_cache.get(index_code)
     if cached and (now - cached["ts"]) < _CACHE_TTL_DATA:
         return cached["data"]
 
-    try:
-        import akshare as ak
-        df = ak.stock_index_pb_lg(symbol=index_name)
-    except Exception as e:
-        print(f"[Valuation] stock_index_pb_lg({index_name}) 失败: {e}")
+    pb_rows, _ = get_index_pb_pe(index_code)
+    if not pb_rows:
         return []
 
-    if df is None or len(df) == 0:
-        return []
-
-    result = []
-    for _, row in df.iterrows():
-        pb_val = row.get("市净率")
-        result.append({
-            "date": str(row.get("日期", "")),
-            "pb": float(pb_val) if pb_val is not None else None,
-            "index_value": float(row.get("指数", 0)) if row.get("指数") is not None else None,
-        })
-
-    result.sort(key=lambda x: x["date"])
-    _pb_cache[index_name] = {"data": result, "ts": now}
+    result = sorted(pb_rows, key=lambda x: x["date"])
+    _pb_cache[index_code] = {"data": result, "ts": now}
     return result
 
 
-def _get_pe_history(index_name: str) -> list[dict]:
-    """获取指数 PE 月度历史数据。
+def _get_pe_history(index_code: str) -> list[dict]:
+    """获取指数 PE 月度历史（B：网关侧自聚合源）。
 
     Returns:
-        [{"date": "2005-04-29", "pe_ttm": 15.2, "pe_static": 14.8, ...}, ...]
+        [{"date": "2005-04-29", "pe_ttm": 15.2, "pe_static": 14.8, "index_value": 932.40}, ...]
     """
     now = time.time()
-    cached = _pe_cache.get(index_name)
+    cached = _pe_cache.get(index_code)
     if cached and (now - cached["ts"]) < _CACHE_TTL_DATA:
         return cached["data"]
 
-    try:
-        import akshare as ak
-        df = ak.stock_index_pe_lg(symbol=index_name)
-    except Exception as e:
-        print(f"[Valuation] stock_index_pe_lg({index_name}) 失败: {e}")
+    _, pe_rows = get_index_pb_pe(index_code)
+    if not pe_rows:
         return []
 
-    if df is None or len(df) == 0:
-        return []
-
-    result = []
-    for _, row in df.iterrows():
-        pe_ttm = row.get("滚动市盈率")
-        result.append({
-            "date": str(row.get("日期", "")),
-            "pe_ttm": float(pe_ttm) if pe_ttm is not None else None,
-            "pe_static": float(row.get("静态市盈率", 0)) if row.get("静态市盈率") is not None else None,
-            "index_value": float(row.get("指数", 0)) if row.get("指数") is not None else None,
-        })
-
-    result.sort(key=lambda x: x["date"])
-    _pe_cache[index_name] = {"data": result, "ts": now}
+    result = sorted(pe_rows, key=lambda x: x["date"])
+    _pe_cache[index_code] = {"data": result, "ts": now}
     return result
 
 
 def _get_cpi_yoy() -> float | None:
-    """获取最新 CPI 同比（%）。"""
+    """获取最新 CPI 同比（%）（走远程 AkShare WebAPI 网关）。"""
     now = time.time()
     cached = _cpi_cache.get("data")
-    if cached and (now - _cpi_cache.get("ts", 0)) < _CACHE_TTL_DATA:
+    if cached is not None and (now - _cpi_cache.get("ts", 0)) < _CACHE_TTL_DATA:
         return cached
 
-    try:
-        import akshare as ak
-        df = ak.macro_china_cpi()
-    except Exception as e:
-        print(f"[Valuation] macro_china_cpi 失败: {e}")
+    rows = akshare_request("macro_china_cpi", retries=2, timeout=12)
+    if not rows:
         return None
 
-    if df is None or len(df) == 0:
-        return None
-
-    # 最新月份的全国同比
-    latest = df.iloc[0]  # 数据按时间倒序排列
+    # 网关返回按时间倒序，取首条的最新全国同比
+    latest = rows[0]
     cpi_yoy = latest.get("全国-同比增长")
     result = float(cpi_yoy) if cpi_yoy is not None else None
 
@@ -358,28 +364,47 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
         if cached and (now - cached["ts"]) < _CACHE_TTL_RESULT:
             return cached["data"], _build_meta(False, "缓存(1h)")
 
+    # 数据源存活探测：上游 legulegu 接口异常时整体快速降级，避免长时间挂起(499)
+    if not _check_source_available():
+        return [], _unavailable_meta("legulegu 指数 PE/PB 接口不可用")
+
     # 获取 CPI 和国债收益率
     cpi_yoy = _get_cpi_yoy()
     if cpi_yoy is None:
         cpi_yoy = 0.0  # CPI 取不到时用 0 近似
     yield_10y = _get_10y_treasury_yield()
 
-    # 获取基准指数 PB 历史
-    benchmark_pb = _get_pb_history(BENCHMARK_INDEX)
+    # 获取基准指数 PB 历史（带回退，避免单次网关抖动致整体返回空）
+    benchmark_used = BENCHMARK_CODE
+    benchmark_pb = _get_pb_history(BENCHMARK_CODE)
     if not benchmark_pb:
-        return [], _build_meta(False, "基准指数PB获取失败")
+        for alt in BENCHMARK_FALLBACK_CODES:
+            benchmark_pb = _get_pb_history(alt)
+            if benchmark_pb:
+                benchmark_used = alt
+                break
+    if not benchmark_pb:
+        m = _build_meta(False, "基准指数PB获取失败(远程网关)")
+        m["status"] = "unavailable"
+        m["message"] = "基准指数 PB 获取失败，估值暂不可用，请稍后重试。"
+        return [], m
 
     benchmark_pb_map: dict[str, float] = {item["date"]: item["pb"] for item in benchmark_pb if item.get("pb")}
+
+    start_ts = time.time()
+    _HARD_DEADLINE = 45  # 秒：任何情况下整体处理不得超过此值（防止上游偶发挂起拖垮接口）
 
     results: list[dict] = []
 
     for idx_info in BROAD_INDEX_LIST:
+        if time.time() - start_ts > _HARD_DEADLINE:
+            break
         idx_name = idx_info["name"]
         idx_code = idx_info["code"]
 
         # 获取 PB 和 PE 历史
-        pb_data = _get_pb_history(idx_name)
-        pe_data = _get_pe_history(idx_name)
+        pb_data = _get_pb_history(idx_code)
+        pe_data = _get_pe_history(idx_code)
 
         if not pb_data:
             continue
@@ -440,8 +465,12 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
             "cpi_yoy": cpi_yoy,
             "pb_history": pb_history,
             "spread_history": spread_hist_short,
-            "is_benchmark": idx_name == BENCHMARK_INDEX,
+            "is_benchmark": idx_name == benchmark_used,
         })
+
+    if not results:
+        # 探测通过但全部指数取数失败（如网关部分抖动/整体超时），统一降级为不可用
+        return [], _unavailable_meta("估值计算超时或数据源异常")
 
     # 按估值分位升序排列（最便宜的在前）
     results.sort(key=lambda x: x.get("valuation_percentile") or 50)
@@ -449,7 +478,7 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
     with _cache_lock:
         _result_cache["broad"] = {"data": results, "ts": now}
 
-    return results, _build_meta(False, "AkShare (stock_index_pb_lg + 国债 + CPI)")
+    return results, _build_meta(False, f"远程网关(基准={benchmark_used}, 成分股聚合PB/PE + 国债 + CPI)")
 
 
 def get_single_index_valuation(index_name: str) -> tuple[dict | None, dict]:
@@ -494,11 +523,13 @@ def get_index_spread_history(index_name: str) -> tuple[list[dict], dict]:
 
     # 先获取全部列表，从中找到目标指数的利差历史（复用已有计算+缓存）
     all_data, meta = get_broad_index_valuation()
+    target_code = None
     for item in all_data:
         if item["name"] == index_name or item["code"] == index_name:
+            target_code = item["code"]
             # spread_history 是最近120月，这里返回全量需重新计算
             break
-    else:
+    if target_code is None:
         return [], _build_meta(False, f"未找到指数: {index_name}")
 
     # 重新获取该指数的全量利差历史（不受120月截断）
@@ -506,8 +537,8 @@ def get_index_spread_history(index_name: str) -> tuple[list[dict], dict]:
     if cpi_yoy is None:
         cpi_yoy = 0.0
 
-    pb_data = _get_pb_history(index_name)
-    pe_data = _get_pe_history(index_name)
+    pb_data = _get_pb_history(target_code)
+    pe_data = _get_pe_history(target_code)
     if not pb_data:
         return [], _build_meta(False, "该指数无PB历史数据")
 

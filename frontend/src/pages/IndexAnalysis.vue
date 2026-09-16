@@ -261,7 +261,7 @@ const valAnalysis = computed(() => {
 })
 
 // 估值分位颜色/标签
-function percentileColor(pct: number | null): string {
+function percentileColor(pct: number | null): 'default' | 'success' | 'warning' | 'error' {
   if (pct == null) return 'default'
   if (pct < 30) return 'success'
   if (pct < 70) return 'warning'
@@ -275,7 +275,7 @@ function percentileLabel(pct: number | null): string {
   return '过热'
 }
 
-function crowdingColor(pct: number | null): string {
+function crowdingColor(pct: number | null): 'default' | 'success' | 'warning' | 'error' {
   if (pct == null) return 'default'
   if (pct < 30) return 'success'
   if (pct < 70) return 'warning'

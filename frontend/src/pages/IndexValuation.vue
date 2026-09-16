@@ -1,7 +1,7 @@
 <script setup lang="ts">
 defineOptions({ name: 'IndexValuation' })
 import { ref, computed, onMounted } from 'vue'
-import { NDataTable, NTag, NSpin, NEmpty, NModal, NTabs, NTabPane, NButton, useMessage } from 'naive-ui'
+import { NDataTable, NTag, NSpin, NEmpty, NModal, NButton, NAlert, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { api } from '../utils/api'
 import type { BroadIndexValuation, SectionSourceMeta } from '../types'
@@ -12,7 +12,7 @@ import BaseChart from '../components/BaseChart.vue'
 const message = useMessage()
 const loading = ref(false)
 const data = ref<BroadIndexValuation[]>([])
-const meta = ref<SectionSourceMeta | null>(null)
+const meta = ref<(SectionSourceMeta & { status?: string; message?: string }) | null>(null)
 
 async function loadData() {
   loading.value = true
@@ -31,7 +31,7 @@ async function loadData() {
 onMounted(loadData)
 
 // ==================== 估值分位颜色 ====================
-function percentileColor(pct: number | null): string {
+function percentileColor(pct: number | null): 'default' | 'success' | 'warning' | 'error' {
   if (pct == null) return 'default'
   if (pct < 30) return 'success'   // 便宜
   if (pct < 70) return 'warning'   // 正常
@@ -45,7 +45,7 @@ function percentileLabel(pct: number | null): string {
   return '过热'
 }
 
-function crowdingColor(pct: number | null): string {
+function crowdingColor(pct: number | null): 'default' | 'success' | 'warning' | 'error' {
   if (pct == null) return 'default'
   if (pct < 30) return 'success'
   if (pct < 70) return 'warning'
@@ -241,6 +241,17 @@ const macroParams = computed(() => {
       <n-tag type="error" size="small" :bordered="false">&gt;70% 过热</n-tag>
       &nbsp;&nbsp;<strong>拥挤度</strong>：指数PB / 基准PB 的历史分位，衡量相对估值。
     </div>
+
+    <!-- 数据源不可用横幅（优雅降级，替代白屏/499） -->
+    <n-alert
+      v-if="meta && meta.status === 'unavailable'"
+      type="warning"
+      :show-icon="true"
+      title="估值数据源暂不可用"
+      style="margin-bottom: 12px"
+    >
+      {{ meta.message || '远程网关指数 PE/PB 接口异常，估值功能已降级，请稍后重试。' }}
+    </n-alert>
 
     <!-- 数据表格 -->
     <n-spin :show="loading">
