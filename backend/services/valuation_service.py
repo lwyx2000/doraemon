@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import threading
 import time
+from bisect import bisect_right
 from datetime import datetime
 from typing import Any
 
@@ -184,8 +185,10 @@ def _get_10y_treasury_yield() -> float | None:
         from services.market_service import _fetch_10y_history, _10Y_CACHE
         yld_map = _fetch_10y_history()
         if not yld_map:
-            # 等待后台线程加载（最多等 30 秒）
-            for _ in range(15):
+            # 等待后台线程加载（最多 4 秒）。
+            # ⚠️ 原为 15×2s=30s：冷启动时会拖死整个宽基估值接口（撞 45s 硬超时），
+            # 改短后冷启动快速返回，10Y 历史靠后台线程 + 下次请求补齐。
+            for _ in range(2):
                 time.sleep(2)
                 yld_map = _fetch_10y_history()
                 if yld_map:
@@ -198,22 +201,34 @@ def _get_10y_treasury_yield() -> float | None:
         print(f"[Valuation] 获取10Y国债失败: {e}")
         return None
 
+# 10Y 国债历史日期索引缓存（按日期排序，供二分查找；len 变化时重建）
+_10Y_SORTED: dict = {"n": -1, "keys": []}
+
+
 def _get_10y_treasury_yield_by_date(date_str: str) -> float | None:
     """获取指定日期最近的 10 年期国债收益率（%）。
 
     Args:
         date_str: 'YYYY-MM-DD' 格式
+
+    性能说明：原实现每调用一次都全量线性扫描 yld_map（约 5000 个交易日）
+    再取 max()，而 _compute_spread_history 对每个指数要按月份调用约 250 次，
+    12 个指数合计约 1500 万次比较，会直接撞穿 45s 硬超时 → 宽基估值只返回
+    前 2 个指数。改为预排序 + 二分，单次 O(log N)。
     """
     try:
         from services.market_service import _fetch_10y_history
         yld_map = _fetch_10y_history()
         if not yld_map:
             return None
-        target = date_str[:10]
-        candidates = [d for d in yld_map.keys() if d <= target]
-        if not candidates:
+        if _10Y_SORTED["n"] != len(yld_map):
+            _10Y_SORTED["keys"] = sorted(yld_map.keys())
+            _10Y_SORTED["n"] = len(yld_map)
+        keys = _10Y_SORTED["keys"]
+        i = bisect_right(keys, date_str[:10]) - 1
+        if i < 0:
             return None
-        return yld_map[max(candidates)]
+        return yld_map[keys[i]]
     except Exception:
         return None
 
@@ -298,8 +313,17 @@ def _compute_spread_history(
     if not roe_data:
         return []
 
-    # 预先触发国债收益率加载（避免逐日查询时每次都等待）
-    _get_10y_treasury_yield()
+    # 触发 10Y 国债历史的后台加载（非阻塞：未命中缓存时立即返回 {}）。
+    # ⚠️ 切勿在此处调用带阻塞等待的 _get_10y_treasury_yield()：
+    #    本函数对每个指数都要跑一次，冷启动时会造成 3×30s 阻塞直接撞穿 45s 硬超时，
+    #    表现为宽基估值只返回前 2 个指数。
+    try:
+        from services.market_service import _fetch_10y_history
+        if not _fetch_10y_history():
+            # 10Y 历史尚未加载完成：本次不产出利差，由调用方判空后不写结果缓存
+            return []
+    except Exception:
+        pass
 
     # 预计算每个时点的滚动 ROE 均值（近5年）
     roe_values = [r["roe"] for r in roe_data if r.get("roe") is not None and r["roe"] > 0]
@@ -395,9 +419,11 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
     _HARD_DEADLINE = 45  # 秒：任何情况下整体处理不得超过此值（防止上游偶发挂起拖垮接口）
 
     results: list[dict] = []
+    deadline_hit = False
 
     for idx_info in BROAD_INDEX_LIST:
         if time.time() - start_ts > _HARD_DEADLINE:
+            deadline_hit = True
             break
         idx_name = idx_info["name"]
         idx_code = idx_info["code"]
@@ -475,10 +501,27 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
     # 按估值分位升序排列（最便宜的在前）
     results.sort(key=lambda x: x.get("valuation_percentile") or 50)
 
-    with _cache_lock:
-        _result_cache["broad"] = {"data": results, "ts": now}
+    # 完整性判定：任一指数的 spread_history 为空 → 说明 10Y 国债历史尚未加载完成，
+    # 结果的分位/利差是残缺的，此时既不写缓存也不应被当作正常结果长期输出。
+    incomplete = any(not r.get("spread_history") for r in results)
 
-    return results, _build_meta(False, f"远程网关(基准={benchmark_used}, 成分股聚合PB/PE + 国债 + CPI)")
+    # ⚠️ 撞到硬超时被截断的「部分结果」绝不写入 1h 结果缓存：
+    #    否则一次抖动只算出 2 个指数，会被缓存 1 小时持续对外输出。
+    if not deadline_hit and not incomplete:
+        with _cache_lock:
+            _result_cache["broad"] = {"data": results, "ts": now}
+
+    meta = _build_meta(False, f"远程网关(基准={benchmark_used}, 成分股聚合PB/PE + 国债 + CPI)")
+    if deadline_hit:
+        meta["truncated"] = True
+        meta["message"] = (
+            f"部分指数因计算超时未返回（{len(results)}/{len(BROAD_INDEX_LIST)}），"
+            "本次结果不写入缓存，下次请求将自动重试。"
+        )
+    elif incomplete:
+        meta["incomplete"] = True
+        meta["message"] = "10Y 国债历史正在后台加载，本次分位数据可能不完整，稍后自动重试。"
+    return results, meta
 
 
 def get_single_index_valuation(index_name: str) -> tuple[dict | None, dict]:

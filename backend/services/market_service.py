@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -784,14 +786,51 @@ def _compute_erp() -> tuple[float | None, float | None, float | None, float | No
 _10Y_CACHE: dict = {"data": None, "ts": 0, "loading": False, "lock": threading.Lock()}
 _10Y_TTL = 6 * 3600  # 10 年国债历史日内变化极小，缓存 6 小时
 
+# 落盘路径（doraemon 持久卷）：进程重启后直接从磁盘恢复，
+# 免去每次冷启动都要分段拉 10 年历史（约 90s，会把宽基估值接口拖超时）。
+_10Y_CACHE_FILE = os.environ.get("VALUATION_CACHE_DIR", "/data/valuation_cache") + "/10y_history.json"
+
+
+def _10y_load_disk() -> dict | None:
+    """从磁盘恢复 10Y 国债历史 {date: rate}，失败/为空返回 None。"""
+    try:
+        with open(_10Y_CACHE_FILE, "r", encoding="utf-8") as f:
+            rec = json.load(f)
+        data = rec.get("data") or {}
+        return data if data else None
+    except Exception:
+        return None
+
+
+def _10y_save_disk(data: dict) -> None:
+    """原子落盘 10Y 国债历史。"""
+    try:
+        d = os.path.dirname(_10Y_CACHE_FILE)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        tmp = _10Y_CACHE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"ts": time.time(), "data": data}, f)
+        os.replace(tmp, _10Y_CACHE_FILE)
+    except Exception as e:  # noqa: BLE001
+        print(f"[10Y] 落盘失败: {e}")
+
 
 def _fetch_10y_history() -> dict[str, float]:
     """10 年中债国债收益率历史 {date: rate}。
 
     命中缓存直接返回；未命中则触发后台刷新并返回当前已有数据（首次为空）。
+    进程重启后优先从磁盘恢复，避免冷启动空窗期。
     """
     now = time.time()
     with _10Y_CACHE["lock"]:
+        if _10Y_CACHE["data"] is None:
+            disk = _10y_load_disk()
+            if disk:
+                _10Y_CACHE["data"] = disk
+                # 视为“快要过期”：立即对外可用，同时很快会由后台线程刷新到最新
+                _10Y_CACHE["ts"] = now - _10Y_TTL + 300
+                print(f"[10Y] 从磁盘恢复 {len(disk)} 个交易日")
         if _10Y_CACHE["data"] is not None and (now - _10Y_CACHE["ts"]) < _10Y_TTL:
             return _10Y_CACHE["data"]
         if _10Y_CACHE["loading"]:
@@ -806,6 +845,7 @@ def _fetch_10y_history() -> dict[str, float]:
                     _10Y_CACHE["data"] = data
                     _10Y_CACHE["ts"] = time.time()
                     _10Y_CACHE["loading"] = False
+                _10y_save_disk(data)
                 print(f"[10Y] 后台刷新完成，{len(data)} 个交易日")
                 return
         except Exception as e:  # noqa: BLE001
