@@ -2,6 +2,7 @@
 defineOptions({ name: 'Reits' })
 import { ref, h, computed, onMounted } from 'vue'
 import { NButton, NDataTable, NIcon, NTag, useMessage } from 'naive-ui'
+import type { PaginationProps } from 'naive-ui'
 import { WarningOutline } from '@vicons/ionicons5'
 import { useAsyncData } from '../composables/useApi'
 import { api } from '../utils/api'
@@ -21,6 +22,19 @@ const { titleWithHelp } = useFieldHelp()
 const { data: reits, loading, error, refresh: refetch } = useAsyncData<ReitItem[]>(() => api.getReits())
 onMounted(refetch)
 const refreshing = ref(false)
+
+// 表格分页：每页默认 20 行，客户端分页
+const pagination = ref<PaginationProps>({
+  page: 1,
+  pageSize: 20,
+  showSizePicker: true,
+  pageSizes: [10, 20, 50, 100],
+  onChange: (page: number) => { pagination.value.page = page },
+  onUpdatePageSize: (pageSize: number) => {
+    pagination.value.pageSize = pageSize
+    pagination.value.page = 1
+  },
+})
 
 // 三维度分析映射 (code → ReitsAnalysis)
 const analysisMap = computed(() => {
@@ -267,15 +281,16 @@ const columns = [
 
     <!-- REITs Table -->
     <DataPanel title="REITs估值看板" meta="中国A股公募REITs">
-      <n-data-table
-        :columns="columns"
-        :data="sortedReits"
-        :row-key="(row: any) => row.code"
-        :bordered="false"
-        :single-line="false"
-        size="small"
-        :row-props="(row: any) => ({ onClick: () => message.info(row.name) })"
-      />
+<n-data-table
+:columns="columns"
+:data="sortedReits"
+:row-key="(row: any) => row.code"
+:bordered="false"
+:single-line="false"
+size="small"
+:pagination="pagination"
+:row-props="(row: any) => ({ onClick: () => message.info(row.name) })"
+/>
     </DataPanel>
 
     <!-- Bottom Panels -->

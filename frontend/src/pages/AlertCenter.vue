@@ -2,6 +2,7 @@
 defineOptions({ name: 'AlertCenter' })
 import { ref, reactive, h, computed, onMounted } from 'vue'
 import { NButton, NSwitch, NIcon, NModal, NDrawer, NDrawerContent, NInput, NInputNumber, NSelect, NCheckboxGroup, NCheckbox, NDataTable, useMessage, useDialog } from 'naive-ui'
+import type { PaginationProps } from 'naive-ui'
 import {
   AddCircleOutline,
   WarningOutline,
@@ -46,6 +47,19 @@ onMounted(() => {
 const alertEvents = ref<AlertEvent[]>([])
 const eventsLoading = ref(false)
 const scanning = ref(false)
+
+// 表格分页：每页默认 20 行，客户端分页
+const pagination = ref<PaginationProps>({
+  page: 1,
+  pageSize: 20,
+  showSizePicker: true,
+  pageSizes: [10, 20, 50, 100],
+  onChange: (page: number) => { pagination.value.page = page },
+  onUpdatePageSize: (pageSize: number) => {
+    pagination.value.pageSize = pageSize
+    pagination.value.page = 1
+  },
+})
 
 async function loadAlertEvents() {
   eventsLoading.value = true
@@ -620,6 +634,7 @@ const filteredHistory = computed(() => {
         :bordered="false"
         :single-line="false"
         size="small"
+        :pagination="pagination"
         :row-props="historyRowProps"
       />
     </DataPanel>

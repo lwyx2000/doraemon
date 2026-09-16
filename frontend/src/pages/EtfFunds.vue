@@ -1,7 +1,8 @@
 <script setup lang="ts">
 defineOptions({ name: 'EtfFunds' })
-import { ref, computed, h, onMounted } from 'vue'
+import { ref, computed, h, onMounted, watch } from 'vue'
 import { NDataTable, NButton, NIcon, NTag, useMessage } from 'naive-ui'
+import type { PaginationProps } from 'naive-ui'
 import {
   SwapHorizontalOutline,
   GridOutline,
@@ -10,7 +11,10 @@ import {
   Download,
   RefreshOutline,
   WarningOutline,
+  ChevronDownOutline,
+  ChevronUpOutline,
 } from '@vicons/ionicons5'
+import { NCollapseTransition } from 'naive-ui'
 import { api } from '../composables/useApi'
 import { useAsyncData } from '../composables/useApi'
 import type { EtfFund } from '../types'
@@ -33,6 +37,10 @@ const { data: etfs, loading, error, execute: refetch } = useAsyncData<EtfFund[]>
 )
 const activeTab = ref<string>('arbitrage')
 const scanning = ref(false)
+
+// 套利陷阱与策略说明的折叠状态
+const trapExpanded = ref(false)
+const strategyExpanded = ref(false)
 
 const tabs = [
   { key: 'arbitrage', label: '折溢价套利', icon: SwapHorizontalOutline },
@@ -404,6 +412,22 @@ function scan() {
   }, 1500)
 }
 
+// 表格分页：每页默认 20 行，客户端分页（参考可转债页面）
+const pagination = ref<PaginationProps>({
+  page: 1,
+  pageSize: 20,
+  showSizePicker: true,
+  pageSizes: [10, 20, 50, 100],
+  onChange: (page: number) => { pagination.value.page = page },
+  onUpdatePageSize: (pageSize: number) => {
+    pagination.value.pageSize = pageSize
+    pagination.value.page = 1
+  },
+})
+
+// 切换 tab 或筛选变化时回到第一页
+watch(activeTab, () => { pagination.value.page = 1 })
+
 function exportEtf() {
   const headersMap: Record<string, string[]> = {
     arbitrage: ['基金名称', '代码', '折溢价率', '溢价百分位', '收益下限%', '收益上限%', '资金容量', 'T+N', '敞口风险%', '可行性', '陷阱', '成交量'],
@@ -455,6 +479,20 @@ function exportEtf() {
       </PageHeader>
       <GlossaryPanel page-key="etfFunds" />
 
+      <!-- 策略说明（可折叠，默认收起） -->
+      <div class="strategy-note">
+        <button class="note-toggle" @click="strategyExpanded = !strategyExpanded">
+          <span class="note-header-left">
+            <n-icon :component="tabs.find(t => t.key === activeTab)?.icon ?? SwapHorizontalOutline" size="18" />
+            <h4>{{ strategyNotes[activeTab].title }}</h4>
+          </span>
+          <n-icon :component="strategyExpanded ? ChevronUpOutline : ChevronDownOutline" size="16" class="note-arrow" />
+        </button>
+        <NCollapseTransition :show="strategyExpanded">
+          <p>{{ strategyNotes[activeTab].desc }}</p>
+        </NCollapseTransition>
+      </div>
+
       <!-- 统计卡片 -->
       <div class="stat-grid">
         <StatCard
@@ -480,6 +518,7 @@ function exportEtf() {
           :bordered="false"
           :single-line="false"
           size="small"
+          :pagination="pagination"
           :row-class-name="(row: EtfFund) => {
             if (activeTab !== 'arbitrage') return ''
             const a = arbitrageAnalysisMap.get(row.code)
@@ -487,57 +526,53 @@ function exportEtf() {
           }"
           :row-props="(row: EtfFund) => ({ onClick: () => message.info(`${row.name} 详情`), style: 'cursor: pointer' })"
         />
+        <div class="table-footer">
+          <span class="footer-info">当前 {{ displayEtfs.length }} 条 ETF 数据</span>
+        </div>
       </DataPanel>
 
       <!-- 套利陷阱警告 (仅套利tab显示) -->
       <div v-if="activeTab === 'arbitrage'" class="trap-warnings">
-        <div class="trap-header">
+        <div class="trap-header" @click="trapExpanded = !trapExpanded">
           <n-icon :component="WarningOutline" size="16" />
           <span>套利陷阱识别</span>
-          <span v-if="trappedEtfs.length" class="trap-total">共 {{ trappedEtfs.length }} 只有标记</span>
+          <span v-if="trappedEtfs.length" class="trap-total">共 {{ trappedEtfs.length }} 只标记</span>
+          <n-icon :component="trapExpanded ? ChevronUpOutline : ChevronDownOutline" size="16" class="trap-arrow" />
         </div>
 
-        <!-- 按类型汇总 -->
-        <div v-if="trapSummary.length" class="trap-summary">
-          <span
-            v-for="c in trapSummary"
-            :key="c.key"
-            class="trap-chip"
-            :class="`trap-chip-${c.tone}`"
-          >{{ c.label }} <b>{{ c.count }}</b></span>
-        </div>
-
-        <!-- 高危标的 Top N -->
-        <div v-if="trapOffenders.length" class="trap-list">
-          <div v-for="etf in trapOffenders" :key="etf.code" class="trap-row">
-            <span class="trap-name" :title="etf.name">{{ etf.name }}</span>
-            <span class="trap-premium" :class="etf.premium_pct > 0 ? 'premium-pos' : 'premium-neg'">
-              {{ etf.premium_pct >= 0 ? '+' : '' }}{{ etf.premium_pct }}%
-            </span>
-            <div class="trap-tags">
-              <span
-                v-for="(trap, i) in arbitrageAnalysisMap.get(etf.code)?.traps"
-                :key="i"
-                class="trap-tag"
-                :class="`trap-tag-${trapTone(trap)}`"
-              >{{ trap }}</span>
+        <NCollapseTransition :show="trapExpanded">
+          <!-- 按类型汇总 -->
+          <div v-if="trapSummary.length" class="trap-summary">
+            <div v-for="c in trapSummary" :key="c.key" class="trap-chip" :class="`trap-chip-${c.tone}`">
+              <span class="trap-chip-label">{{ c.label }}</span>
+              <span class="trap-chip-count">{{ c.count }}</span>
             </div>
           </div>
-          <div v-if="trappedEtfs.length > trapOffenders.length" class="trap-more">
-            还有 {{ trappedEtfs.length - trapOffenders.length }} 只，见上方表格（灰行 = 不可行）
+
+          <!-- 高危标的 Top N -->
+          <div v-if="trapOffenders.length" class="trap-list">
+            <div v-for="etf in trapOffenders" :key="etf.code" class="trap-row">
+              <span class="trap-name" :title="etf.name">{{ etf.name }}</span>
+              <span class="trap-premium" :class="etf.premium_pct > 0 ? 'premium-pos' : 'premium-neg'">
+                {{ etf.premium_pct >= 0 ? '+' : '' }}{{ etf.premium_pct }}%
+              </span>
+              <div class="trap-tags">
+                <span
+                  v-for="(trap, i) in arbitrageAnalysisMap.get(etf.code)?.traps"
+                  :key="i"
+                  class="trap-tag"
+                  :class="`trap-tag-${trapTone(trap)}`"
+                >{{ trap }}</span>
+              </div>
+            </div>
+            <div v-if="trappedEtfs.length > trapOffenders.length" class="trap-more">
+              还有 {{ trappedEtfs.length - trapOffenders.length }} 只，见上方表格（灰行 = 不可行）
+            </div>
           </div>
-        </div>
-        <div v-else class="trap-empty">暂无陷阱标记</div>
+          <div v-else class="trap-empty">暂无陷阱标记</div>
+        </NCollapseTransition>
       </div>
 
-      <!-- 策略说明 -->
-      <div class="strategy-note">
-        <div class="note-header">
-          <n-icon :component="tabs.find(t => t.key === activeTab)?.icon ?? SwapHorizontalOutline" size="18" />
-          <h4>{{ strategyNotes[activeTab].title }}</h4>
-        </div>
-        <p>{{ strategyNotes[activeTab].desc }}</p>
-      </div>
     </div>
   </LoadingState>
 </template>
@@ -657,27 +692,56 @@ function exportEtf() {
   border: 1px solid var(--border-default);
   border-left: 3px solid var(--color-primary);
   border-radius: 10px;
-  padding: 12px 18px;
+  overflow: hidden;
 }
-.note-header {
+.note-toggle {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: 12px 18px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.note-toggle:hover {
+  background: var(--bg-hover);
+}
+.note-header-left {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 6px;
   color: var(--color-primary);
 }
-.note-header h4 {
+.note-header-left h4 {
   margin: 0;
   font-family: 'Work Sans', sans-serif;
   font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.02em;
 }
+.note-arrow {
+  color: var(--text-muted);
+  transition: transform 0.2s ease;
+}
 .strategy-note p {
   margin: 0;
+  padding: 0 18px 14px;
   font-size: 13px;
   line-height: 1.6;
   color: var(--text-secondary);
+}
+
+/* 表格底部信息 */
+.table-footer {
+  padding: 8px 4px 4px;
+  display: flex;
+  justify-content: flex-end;
+}
+.footer-info {
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 /* === 套利陷阱警告 === */
@@ -686,44 +750,59 @@ function exportEtf() {
   border: 1px solid var(--border-default);
   border-left: 3px solid var(--color-danger);
   border-radius: 10px;
-  padding: 12px 18px;
+  overflow: hidden;
 }
 .trap-header {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-bottom: 10px;
+  padding: 12px 18px;
   color: var(--color-danger);
   font-family: 'Work Sans', sans-serif;
   font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.02em;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease;
+}
+.trap-header:hover {
+  background: var(--bg-hover);
 }
 .trap-total {
   font-size: 11px;
   font-weight: 500;
   color: var(--text-muted);
   letter-spacing: 0;
+  margin-left: auto;
+}
+.trap-arrow {
+  color: var(--text-muted);
+  transition: transform 0.2s ease;
 }
 /* 按类型汇总 chips */
 .trap-summary {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 10px;
+  padding: 0 18px 10px;
 }
 .trap-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 10px;
-  border-radius: 12px;
+  padding: 4px 12px;
+  border-radius: 16px;
   font-size: 11px;
   font-weight: 600;
 }
-.trap-chip b {
+.trap-chip-label {
+  font-family: 'Work Sans', sans-serif;
+}
+.trap-chip-count {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 800;
 }
 .trap-chip-danger { background: var(--tag-red-bg); color: var(--tag-red-text); }
 .trap-chip-warning { background: var(--tag-orange-bg); color: var(--tag-orange-text); }
@@ -732,12 +811,18 @@ function exportEtf() {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding: 0 18px 14px;
 }
 .trap-row {
   display: flex;
   align-items: center;
   gap: 8px;
   font-size: 12px;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--border-subtle);
+}
+.trap-row:last-child {
+  border-bottom: none;
 }
 .trap-name {
   min-width: 150px;
@@ -763,8 +848,8 @@ function exportEtf() {
 }
 .trap-tag {
   display: inline-block;
-  padding: 1px 6px;
-  border-radius: 2px;
+  padding: 2px 8px;
+  border-radius: 3px;
   font-size: 9px;
   font-weight: 700;
 }
@@ -774,11 +859,12 @@ function exportEtf() {
 .trap-more {
   font-size: 11px;
   color: var(--text-muted);
-  padding-top: 2px;
+  padding-top: 4px;
 }
 .trap-empty {
   font-size: 12px;
   color: var(--text-muted);
   font-style: italic;
+  padding: 0 18px 14px;
 }
 </style>
