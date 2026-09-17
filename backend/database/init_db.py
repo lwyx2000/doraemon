@@ -271,6 +271,31 @@ def migrate_pk_user_schema(db: Database) -> None:
     print("[Migration] pk_user / fk_user 迁移完成")
 
 
+# ============================================================
+# 用户安全列迁移（2026-09-18）
+# - biz_users 增加 must_change_password（强制改密）/ token_version（令牌失效版本号）
+# 幂等：列已存在则跳过。
+# ============================================================
+
+def migrate_user_security_columns(db: Database) -> None:
+    """为 biz_users 增加安全相关列（幂等）：must_change_password / token_version。"""
+    cols = {r[0] for r in db.fetchall(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'biz_users'"
+    )}
+    if "must_change_password" not in cols:
+        db.execute(
+            "ALTER TABLE biz_users ADD COLUMN must_change_password BOOLEAN DEFAULT FALSE"
+        )
+        print("[Migration] biz_users: added must_change_password")
+    if "token_version" not in cols:
+        db.execute(
+            "ALTER TABLE biz_users ADD COLUMN token_version INTEGER DEFAULT 0"
+        )
+        print("[Migration] biz_users: added token_version")
+    if "must_change_password" in cols and "token_version" in cols:
+        print("[Migration] biz_users 安全列已就绪")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Initialize QuantTerminal Pro DuckDB database")
     parser.add_argument(

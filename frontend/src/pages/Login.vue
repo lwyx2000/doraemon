@@ -9,7 +9,7 @@ defineOptions({ name: 'Login' })
 const router = useRouter()
 const route = useRoute()
 const message = useMessage()
-const { login } = useAuth()
+const { login, isAdmin } = useAuth()
 
 const username = ref('')
 const password = ref('')
@@ -24,7 +24,7 @@ async function onSubmit() {
   try {
     await login(username.value.trim(), password.value)
     message.success('登录成功')
-    const redirect = (route.query.redirect as string) || '/dashboard'
+    const redirect = (route.query.redirect as string) || (isAdmin.value ? '/admin/users' : '/dashboard')
     router.push(redirect)
   } catch (e: any) {
     message.error('登录失败：' + (e?.data?.detail || e?.message || '用户名或密码错误'))

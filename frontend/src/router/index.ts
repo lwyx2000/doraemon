@@ -126,6 +126,12 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../pages/Profile.vue'),
     meta: { title: '个人中心', icon: 'person' },
   },
+  {
+    path: '/admin/users',
+    name: 'AdminUsers',
+    component: () => import('../pages/AdminUsers.vue'),
+    meta: { title: '账号管理', icon: 'people', admin: true },
+  },
 ]
 
 const router = createRouter({
@@ -135,13 +141,21 @@ const router = createRouter({
 
 // 全局路由守卫：未登录访问非公开页面时跳转登录页，登录后回跳原页面
 router.beforeEach((to) => {
-  const { isLoggedIn } = useAuth()
+  const { isLoggedIn, isAdmin } = useAuth()
   if (!to.meta.public && !isLoggedIn.value) {
     return { path: '/login', query: { redirect: to.fullPath } }
   }
-  // 已登录用户访问登录/注册页时直接回首页
+  // 已登录用户访问登录/注册页时回首页（管理员回账号管理页）
   if (to.meta.public && isLoggedIn.value && (to.path === '/login' || to.path === '/register')) {
-    return { path: '/' }
+    return { path: isAdmin.value ? '/admin/users' : '/' }
+  }
+  // 管理员仅允许访问账号管理页，其余一律重定向
+  if (isLoggedIn.value && isAdmin.value && !(to.meta.admin || to.path === '/admin/users')) {
+    return { path: '/admin/users' }
+  }
+  // 非管理员访问管理员页则回看板
+  if (isLoggedIn.value && !isAdmin.value && to.meta.admin) {
+    return { path: '/dashboard' }
   }
   return true
 })

@@ -6,11 +6,14 @@ import type { GlobalThemeOverrides } from 'naive-ui'
 import AppHeader from './AppHeader.vue'
 import AppSidebar from './AppSidebar.vue'
 import TabNav from '../components/TabNav.vue'
+import ForceChangeModal from '../components/ForceChangeModal.vue'
 import { useDarkMode } from '../composables/useDarkMode'
 import { useTabs } from '../composables/useTabs'
+import { useAuth } from '../composables/useAuth'
 
 const { isDark } = useDarkMode()
 const { tabs } = useTabs()
+const { forceChange } = useAuth()
 const route = useRoute()
 
 // 登录/注册页全屏展示，不套用头部/侧栏/主内容布局
@@ -155,6 +158,7 @@ const theme = computed(() => (isDark.value ? darkTheme : null))
         </div>
         <div v-else class="app-layout">
           <AppHeader />
+          <ForceChangeModal v-if="forceChange" />
           <AppSidebar />
           <main class="app-main">
             <TabNav />

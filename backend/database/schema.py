@@ -314,7 +314,9 @@ TABLES = [
         username         VARCHAR(50) NOT NULL,
         email            VARCHAR(100),
         password_hash    VARCHAR(255) NOT NULL,
-        created_at       TIMESTAMP DEFAULT now()
+        created_at       TIMESTAMP DEFAULT now(),
+        must_change_password  BOOLEAN DEFAULT FALSE,
+        token_version        INTEGER DEFAULT 0
     )
     """,
 

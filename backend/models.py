@@ -39,6 +39,8 @@ class LoginResponse(BaseModel):
     token: str
     expires_at: str
     username: str
+    is_admin: bool = False
+    force_change: bool = False
 
 
 class RegisterRequest(BaseModel):
@@ -47,7 +49,8 @@ class RegisterRequest(BaseModel):
 
 
 class ChangePasswordRequest(BaseModel):
-    old_password: str
+    # 常规改密必填；被管理员强制改密的用户可省略（免旧密码改密）
+    old_password: Optional[str] = None
     new_password: str
 
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, h } from 'vue'
+import { ref, h, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { NInput, NButton, NIcon, NBadge, NAvatar, NDropdown, useMessage } from 'naive-ui'
+import { NInput, NButton, NIcon, NBadge, NAvatar, NDropdown, NTag, useMessage } from 'naive-ui'
 import {
   Search,
   TimeOutline,
@@ -26,12 +26,16 @@ const refreshing = ref(false)
 const { isDark, toggle: toggleDarkMode } = useDarkMode()
 const { toggleMobile } = useSidebar()
 const { openTab } = useTabs()
-const { isLoggedIn, userInitial, logout } = useAuth()
+const { isLoggedIn, userInitial, isAdmin, logout } = useAuth()
 
-const userMenuOptions = [
-  { label: '个人中心', key: 'profile', icon: () => h(PersonOutline) },
-  { label: '退出登录', key: 'logout', icon: () => h(LogOutOutline) },
-]
+const userMenuOptions = computed(() =>
+  isAdmin.value
+    ? [{ label: '退出登录', key: 'logout', icon: () => h(LogOutOutline) }]
+    : [
+        { label: '个人中心', key: 'profile', icon: () => h(PersonOutline) },
+        { label: '退出登录', key: 'logout', icon: () => h(LogOutOutline) },
+      ]
+)
 
 function handleUserMenu(key: string) {
   if (key === 'profile') {
@@ -72,7 +76,7 @@ function refreshAll() {
         <n-icon :component="MenuOutline" size="22" />
       </n-button>
       <span class="brand-title">QuantTerminal Pro</span>
-      <div class="search-box">
+      <div class="search-box" v-if="!isAdmin">
         <n-input
           v-model:value="searchQuery"
           placeholder="搜索标的、指数或分析模块..."
@@ -88,18 +92,18 @@ function refreshAll() {
       </div>
     </div>
     <div class="header-right">
-      <n-button text class="header-btn" @click="navigateTo('/strategy-center')" aria-label="定时任务">
+      <n-button v-if="!isAdmin" text class="header-btn" @click="navigateTo('/strategy-center')" aria-label="定时任务">
         <n-icon :component="TimeOutline" size="20" />
       </n-button>
-      <n-button text class="header-btn" :loading="refreshing" @click="refreshAll" aria-label="刷新数据">
+      <n-button v-if="!isAdmin" text class="header-btn" :loading="refreshing" @click="refreshAll" aria-label="刷新数据">
         <n-icon :component="SyncOutline" size="20" />
       </n-button>
-      <n-badge :value="3" :max="99" dot>
+      <n-badge v-if="!isAdmin" :value="3" :max="99" dot>
         <n-button text class="header-btn" @click="navigateTo('/alert-center')" aria-label="预警中心">
           <n-icon :component="NotificationsOutline" size="20" />
         </n-button>
       </n-badge>
-      <n-button text class="header-btn" @click="navigateTo('/system-settings')" aria-label="系统设置">
+      <n-button v-if="!isAdmin" text class="header-btn" @click="navigateTo('/system-settings')" aria-label="系统设置">
         <n-icon :component="SettingsOutline" size="20" />
       </n-button>
       <n-button text class="header-btn" @click="toggleDarkMode" :aria-label="isDark ? '切换到浅色模式' : '切换到深色模式'">
@@ -108,6 +112,7 @@ function refreshAll() {
       <div class="header-divider" />
       <n-dropdown v-if="isLoggedIn" :options="userMenuOptions" @select="handleUserMenu">
         <div class="user-trigger" aria-label="用户菜单">
+          <n-tag v-if="isAdmin" size="small" type="warning" :bordered="false" class="admin-badge">管理员</n-tag>
           <n-avatar round size="small" style="background: #2178c3; color: white; font-weight: 700; font-size: 12px;">
             {{ userInitial }}
           </n-avatar>
@@ -225,6 +230,9 @@ function refreshAll() {
 }
 .login-link:hover {
   color: var(--color-primary);
+}
+.admin-badge {
+  margin-right: 6px;
 }
 
 /* Tablet: shrink search box */

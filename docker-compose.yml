@@ -11,6 +11,7 @@ services:
       - JWT_SECRET=${JWT_SECRET:-quantterminal-secret-key-change-in-production}
       - USE_MOCK_DATA=false
       - AKSHARE_API_BASE=${AKSHARE_API_BASE:-http://10.100.213.248:8000}
+      - ADMIN_USERS=${ADMIN_USERS:-sos}
       - WECOM_WEBHOOK_URL=${WECOM_WEBHOOK_URL:-}
       - DINGTALK_WEBHOOK_URL=${DINGTALK_WEBHOOK_URL:-}
     volumes:

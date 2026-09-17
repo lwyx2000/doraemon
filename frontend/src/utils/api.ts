@@ -409,21 +409,34 @@ export const api = {
   // 认证（登录 / 注册）
   // ============================================================
   login: (username: string, password: string) =>
-    request<{ token: string; expires_at: string; username: string }>('/api/v1/auth/login', undefined, {
+    request<LoginResult>('/api/v1/auth/login', undefined, {
       method: 'POST',
       body: JSON.stringify({ username, password }),
     }),
 
   register: (username: string, password: string) =>
-    request<{ token: string; expires_at: string; username: string }>('/api/v1/auth/register', undefined, {
+    request<LoginResult>('/api/v1/auth/register', undefined, {
       method: 'POST',
       body: JSON.stringify({ username, password }),
     }),
 
-  changePassword: (oldPassword: string, newPassword: string) =>
+  changePassword: (oldPassword: string | undefined, newPassword: string) =>
     request<{ changed: boolean; username: string }>('/api/v1/auth/password', undefined, {
       method: 'PUT',
       body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
+    }),
+
+  // 管理员：列出全部用户（不含密码哈希）
+  adminListUsers: () =>
+    request<AdminListUsersResponse>('/api/v1/auth/admin/list-users', undefined, {
+      method: 'POST',
+    }),
+
+  // 管理员：重置指定用户密码（newPassword 省略则由后端生成临时密码）
+  adminResetPassword: (username: string, newPassword?: string) =>
+    request<AdminResetPasswordResponse>('/api/v1/auth/admin/reset-password', undefined, {
+      method: 'POST',
+      body: JSON.stringify({ username, new_password: newPassword }),
     }),
 
   // ============================================================
@@ -565,4 +578,7 @@ import type {
   LibraryStrategy,
   LibraryBacktestResult,
   TrackedLibrary,
+  LoginResult,
+  AdminListUsersResponse,
+  AdminResetPasswordResponse,
 } from '../types'

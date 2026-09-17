@@ -11,6 +11,11 @@ JWT_SECRET = os.getenv("JWT_SECRET", "quantterminal-secret-key-change-in-product
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "24"))
 
+# 管理员账号（仅用于「账号管理」功能：列出用户 / 重置密码）。
+# 以逗号分隔；命中即视为管理员。管理员登录后仅暴露账号管理功能，不暴露交易功能。
+# 默认包含 sos —— 内部系统小而固定，用环境变量集中管理，无需在数据库额外加 is_admin 列。
+ADMIN_USERS = {u.strip() for u in os.getenv("ADMIN_USERS", "sos").split(",") if u.strip()}
+
 API_PREFIX = "/api/v1"
 APP_NAME = "QuantTerminal Pro"
 APP_VERSION = "1.0.0"

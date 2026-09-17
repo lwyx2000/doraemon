@@ -8,6 +8,32 @@ export interface ApiResponse<T> {
   data: T
 }
 
+// ---- 认证相关类型 ----
+export interface LoginResult {
+  token: string
+  expires_at: string
+  username: string
+  is_admin?: boolean
+  force_change?: boolean
+}
+
+export interface AdminUserItem {
+  pk_user: number
+  username: string
+  is_admin: boolean
+  must_change_password: boolean
+}
+
+export interface AdminListUsersResponse {
+  users: AdminUserItem[]
+}
+
+export interface AdminResetPasswordResponse {
+  username: string
+  new_password: string
+  must_change_password: boolean
+}
+
 export interface DataSourceStatus {
   akshareConnected: boolean
   jisiluLoggedIn: boolean

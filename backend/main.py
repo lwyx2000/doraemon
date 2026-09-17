@@ -40,6 +40,9 @@ async def lifespan(app: FastAPI):
         # 用户绑定迁移：pk_users(UUID) -> pk_user(BIGINT 自增)；fk_users(UUID) -> fk_user(BIGINT)，幂等
         from database.init_db import migrate_pk_user_schema
         migrate_pk_user_schema(db)
+        # 用户安全列迁移：增加 must_change_password / token_version（强制改密 + 令牌失效），幂等
+        from database.init_db import migrate_user_security_columns
+        migrate_user_security_columns(db)
         # 申万行业快照：定时收盘落库 + 首次启动自动回填历史
         from jobs.sw_snapshot_job import start_sw_snapshot_scheduler
 

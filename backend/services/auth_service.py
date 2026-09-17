@@ -12,11 +12,15 @@
 from __future__ import annotations
 
 import re
+import secrets
+import string
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from fastapi import HTTPException, status
 from passlib.context import CryptContext
 
+from core.config import ADMIN_USERS
 from core.deps import create_access_token
 from database.connection import get_db
 
@@ -40,6 +44,34 @@ def _verify(password: str, password_hash: str) -> bool:
         return _pwd_context.verify(password, password_hash)
     except Exception:
         return False
+
+
+def _is_admin(username: str) -> bool:
+    """用户名是否在管理员清单（环境变量 ADMIN_USERS）中。"""
+    return username in ADMIN_USERS
+
+
+def _fetch_user_fields(pk: str) -> Optional[dict]:
+    """按 pk_user 取 (username, must_change_password, token_version)，不存在返回 None。"""
+    db = get_db()
+    row = db.fetchone(
+        "SELECT username, must_change_password, token_version "
+        "FROM biz_users WHERE pk_user = ?",
+        [pk],
+    )
+    if not row:
+        return None
+    return {
+        "username": row[0],
+        "must_change_password": bool(row[1]),
+        "token_version": int(row[2] or 0),
+    }
+
+
+def _generate_temp_password(length: int = 10) -> str:
+    """生成高强度临时密码（字母 + 数字）。"""
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 def _fetch_hash_by_username(username: str) -> str | None:
@@ -67,11 +99,27 @@ def _fetch_username_by_pk(pk: str) -> str | None:
     return row[0] if row else None
 
 
-def _build_token(pk: str, username: str) -> dict:
-    # sub = pk_user（UUID），username 仅随包下发供前端展示。
-    token = create_access_token({"sub": str(pk), "username": username})
+def _build_token(
+    pk: str,
+    username: str,
+    must_change_password: bool = False,
+    token_version: int = 0,
+) -> dict:
+    # sub = pk_user（整数）；username / is_admin / token_version 随包下发供前端展示与令牌失效校验。
+    token = create_access_token({
+        "sub": str(pk),
+        "username": username,
+        "is_admin": _is_admin(username),
+        "token_version": int(token_version),
+    })
     expires_at = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
-    return {"token": token, "expires_at": expires_at, "username": username}
+    return {
+        "token": token,
+        "expires_at": expires_at,
+        "username": username,
+        "is_admin": _is_admin(username),
+        "force_change": bool(must_change_password),
+    }
 
 
 def authenticate(username: str, password: str) -> dict:
@@ -86,11 +134,17 @@ def authenticate(username: str, password: str) -> dict:
     h = _fetch_hash_by_username(username)
     if h is None or not _verify(password, h):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="")
-    return _build_token(pk, username)
+    fields = _fetch_user_fields(pk)
+    must = fields["must_change_password"] if fields else False
+    tv = fields["token_version"] if fields else 0
+    return _build_token(pk, username, must, tv)
 
 
 def register(username: str, password: str) -> dict:
     """注册新用户（写入 biz_users）并返回 JWT。
+
+    新注册用户非管理员（管理员仅由环境变量 ADMIN_USERS 决定），
+    must_change_password / token_version 取表默认值 FALSE / 0。
 
     Raises:
         HTTPException: 400 输入非法或用户名已存在。
@@ -112,11 +166,22 @@ def register(username: str, password: str) -> dict:
     return _build_token(pk, username)
 
 
-def change_password(user_pk: str, old_password: str, new_password: str) -> dict:
+def change_password(
+    user_pk: str,
+    new_password: str,
+    old_password: Optional[str] = None,
+) -> dict:
     """修改密码：按 pk_user 校验旧密码后更新哈希。
 
+    支持两种场景：
+    - 常规改密：必须提供正确的 old_password。
+    - 强制改密（管理员重置后）：用户无旧密码，old_password 可省略；
+      且仅当该账号当前 must_change_password = TRUE 时才允许免旧密码改密。
+
+    成功后清除 must_change_password 标记，使下次登录不再强制改密。
+
     Raises:
-        HTTPException: 400 新密码不合法；401 用户不存在或旧密码不正确。
+        HTTPException: 400 新密码不合法；401 用户不存在 / 旧密码不正确 / 非强制改密却未提供旧密码。
     """
     if not new_password or len(new_password) < 6:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="新密码至少 6 位")
@@ -124,10 +189,21 @@ def change_password(user_pk: str, old_password: str, new_password: str) -> dict:
     h = _fetch_hash_by_pk(user_pk)
     if h is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
-    if not _verify(old_password, h):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="旧密码不正确")
+    fields = _fetch_user_fields(user_pk)
+    is_forced = bool(fields["must_change_password"]) if fields else False
+    if old_password:
+        if not _verify(old_password, h):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="旧密码不正确")
+    else:
+        # 未提供旧密码：仅允许「被管理员强制改密」的用户免旧密码改密
+        if not is_forced:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="请提供旧密码以修改密码",
+            )
     db.execute(
-        "UPDATE biz_users SET password_hash = ? WHERE pk_user = ?",
+        "UPDATE biz_users SET password_hash = ?, must_change_password = FALSE "
+        "WHERE pk_user = ?",
         [_hash(new_password), user_pk],
     )
     return {"changed": True, "username": _fetch_username_by_pk(user_pk)}
@@ -145,3 +221,56 @@ def ensure_seed_users(db) -> None:
             "SELECT 1 FROM biz_users WHERE username = ?)",
             [username, _hash(password), username],
         )
+
+
+# ============================================================
+# 管理员账号管理（仅管理员可调用，由路由层 require_admin 把关）
+# ============================================================
+
+def admin_list_users() -> list[dict]:
+    """列出全部用户（不含密码哈希）。is_admin 由环境变量 ADMIN_USERS 决定。"""
+    db = get_db()
+    rows = db.fetchall(
+        "SELECT pk_user, username, must_change_password "
+        "FROM biz_users ORDER BY pk_user"
+    )
+    return [
+        {
+            "pk_user": r[0],
+            "username": r[1],
+            "is_admin": r[1] in ADMIN_USERS,
+            "must_change_password": bool(r[2]),
+        }
+        for r in rows
+    ]
+
+
+def admin_reset_password(target_username: str, new_password: Optional[str] = None) -> dict:
+    """管理员重置指定用户密码。
+
+    - new_password 省略时自动生成高强度临时密码（返回给管理员转交用户）。
+    - 重置后强制用户下次登录改密（must_change_password = TRUE）。
+    - token_version + 1，使该用户所有已签发 token 立即失效（防旧 token 续用）。
+    """
+    db = get_db()
+    row = db.fetchone(
+        "SELECT pk_user, token_version FROM biz_users WHERE username = ?",
+        [target_username],
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+    pk, tv = row
+    if new_password is None:
+        new_password = _generate_temp_password()
+    if len(new_password) < 6:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="密码至少 6 位")
+    db.execute(
+        "UPDATE biz_users SET password_hash = ?, must_change_password = TRUE, "
+        "token_version = ? WHERE pk_user = ?",
+        [_hash(new_password), int(tv or 0) + 1, pk],
+    )
+    return {
+        "username": target_username,
+        "new_password": new_password,
+        "must_change_password": True,
+    }

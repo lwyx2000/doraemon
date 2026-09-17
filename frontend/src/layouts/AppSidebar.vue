@@ -21,9 +21,11 @@ WalletOutline,
   SettingsOutline,
   DiamondOutline,
   FlashOutline,
+  PeopleOutline,
 } from '@vicons/ionicons5'
 import { useSidebar } from '../composables/useSidebar'
 import { useTabs } from '../composables/useTabs'
+import { useAuth } from '../composables/useAuth'
 import { api } from '../utils/api'
 import type { DataSourceStatus } from '../types'
 
@@ -31,6 +33,7 @@ const route = useRoute()
 const router = useRouter()
 const { mobileOpen, closeMobile } = useSidebar()
 const { openTab } = useTabs()
+const { isAdmin } = useAuth()
 
 // 数据源连接状态（侧栏底部标识）
 const dataSourceStatus = ref<DataSourceStatus | null>(null)
@@ -83,6 +86,9 @@ const navItems: NavItem[] = [
   { name: 'SystemSettings', path: '/system-settings', icon: SettingsOutline, label: '系统设置' },
 ]
 
+const adminNavItem: NavItem = { name: 'AdminUsers', path: '/admin/users', icon: PeopleOutline, label: '账号管理' }
+const visibleNavItems = computed(() => (isAdmin.value ? [adminNavItem] : navItems))
+
 const isActive = (path: string) => route.path === path
 
 function navigate(path: string) {
@@ -128,7 +134,7 @@ if (typeof window !== 'undefined') {
     </div>
     <nav class="sidebar-nav" aria-label="主导航">
       <a
-        v-for="item in navItems"
+        v-for="item in visibleNavItems"
         :key="item.path"
         :class="['nav-item', { active: isActive(item.path) }]"
         :aria-current="isActive(item.path) ? 'page' : undefined"
