@@ -32,6 +32,7 @@ SEQUENCES = [
     "CREATE SEQUENCE IF NOT EXISTS seq_base_macro_daily START 1",
     "CREATE SEQUENCE IF NOT EXISTS seq_biz_alert_events START 1",
     "CREATE SEQUENCE IF NOT EXISTS seq_biz_ai_configs START 1",
+    "CREATE SEQUENCE IF NOT EXISTS seq_user START 1",
     "CREATE SEQUENCE IF NOT EXISTS seq_base_sw_sector_daily START 1",
 ]
 
@@ -309,7 +310,7 @@ TABLES = [
     # 16. 用户表
     """
     CREATE TABLE IF NOT EXISTS biz_users (
-        pk_users         UUID DEFAULT uuid() PRIMARY KEY,
+        pk_user          BIGINT DEFAULT nextval('seq_user') PRIMARY KEY,
         username         VARCHAR(50) NOT NULL,
         email            VARCHAR(100),
         password_hash    VARCHAR(255) NOT NULL,
@@ -321,7 +322,7 @@ TABLES = [
     """
     CREATE TABLE IF NOT EXISTS biz_favorites (
         pk_favorites     UUID DEFAULT uuid() PRIMARY KEY,
-        fk_users         UUID NOT NULL,
+        fk_user BIGINT NOT NULL,
         code             VARCHAR(20) NOT NULL,
         name             VARCHAR(100) NOT NULL,
         type             VARCHAR(10) NOT NULL,
@@ -334,7 +335,7 @@ TABLES = [
     """
     CREATE TABLE IF NOT EXISTS biz_portfolios (
         pk_portfolios    UUID DEFAULT uuid() PRIMARY KEY,
-        fk_users         UUID NOT NULL,
+        fk_user BIGINT NOT NULL,
         name             VARCHAR(50) NOT NULL,
         created_at       TIMESTAMP DEFAULT now()
     )
@@ -358,7 +359,7 @@ TABLES = [
     """
     CREATE TABLE IF NOT EXISTS biz_holdings (
         id               VARCHAR PRIMARY KEY,
-        fk_users          UUID NOT NULL,
+        fk_user BIGINT NOT NULL,
         code             VARCHAR(20) NOT NULL,
         name             VARCHAR(100) NOT NULL,
         type             VARCHAR(20) NOT NULL,
@@ -385,7 +386,7 @@ TABLES = [
     """
     CREATE TABLE IF NOT EXISTS biz_broker_accounts (
         id               VARCHAR PRIMARY KEY,
-        fk_users          UUID NOT NULL,
+        fk_user BIGINT NOT NULL,
         broker           VARCHAR(50) NOT NULL,
         account          VARCHAR(50) DEFAULT '',
         created_at       VARCHAR,
@@ -397,7 +398,7 @@ TABLES = [
     """
     CREATE TABLE IF NOT EXISTS biz_account_names (
         id               VARCHAR PRIMARY KEY,
-        fk_users          UUID NOT NULL,
+        fk_user BIGINT NOT NULL,
         name             VARCHAR(50) NOT NULL,
         created_at       VARCHAR,
         updated_at       VARCHAR
@@ -408,7 +409,7 @@ TABLES = [
     """
     CREATE TABLE IF NOT EXISTS biz_holding_snapshots (
         id                 VARCHAR PRIMARY KEY,
-        fk_users          UUID NOT NULL,
+        fk_user BIGINT NOT NULL,
         snap_date          VARCHAR(10) NOT NULL,
         total_market_value DOUBLE,
         total_cost         DOUBLE,
@@ -425,7 +426,7 @@ TABLES = [
     """
     CREATE TABLE IF NOT EXISTS biz_strategies (
         id            VARCHAR PRIMARY KEY,
-        fk_users          UUID NOT NULL,
+        fk_user BIGINT NOT NULL,
         name          VARCHAR(50) NOT NULL,
         target_asset  VARCHAR(10) NOT NULL,
         rules         JSON,
@@ -454,7 +455,7 @@ TABLES = [
     """
     CREATE TABLE IF NOT EXISTS biz_alert_rules (
         pk_alert_rules   UUID DEFAULT uuid() PRIMARY KEY,
-        fk_users         UUID NOT NULL,
+        fk_user BIGINT NOT NULL,
         name             VARCHAR(50) NOT NULL,
         type             VARCHAR(10) NOT NULL,
         target           VARCHAR(50) NOT NULL,
@@ -483,7 +484,7 @@ TABLES = [
     """
     CREATE TABLE IF NOT EXISTS biz_ai_reports (
         pk_ai_reports       UUID DEFAULT uuid() PRIMARY KEY,
-        fk_users            UUID NOT NULL,
+        fk_user BIGINT NOT NULL,
         report_date         DATE NOT NULL,
         macro_assessment    TEXT,
         strategy_matches    JSON,
@@ -496,7 +497,7 @@ TABLES = [
     """
     CREATE TABLE IF NOT EXISTS biz_ai_configs (
         pk_ai_configs     INTEGER DEFAULT nextval('seq_biz_ai_configs') PRIMARY KEY,
-        fk_users          UUID NOT NULL,
+        fk_user BIGINT NOT NULL,
         provider          VARCHAR(30) NOT NULL,
         api_key           VARCHAR(255),
         endpoint          VARCHAR(255),
@@ -549,18 +550,18 @@ INDEXES = [
 
     # --- 用户数据索引 ---
 
-    "CREATE INDEX IF NOT EXISTS idx_fav_users ON biz_favorites(fk_users)",
+    "CREATE INDEX IF NOT EXISTS idx_fav_users ON biz_favorites(fk_user)",
     "CREATE INDEX IF NOT EXISTS idx_pi_portfolios ON biz_portfolio_items(fk_portfolios)",
-    "CREATE INDEX IF NOT EXISTS idx_strat_users ON biz_strategies(fk_users)",
-    "CREATE INDEX IF NOT EXISTS idx_holdings_users ON biz_holdings(fk_users)",
-    "CREATE INDEX IF NOT EXISTS idx_broker_users ON biz_broker_accounts(fk_users)",
-    "CREATE INDEX IF NOT EXISTS idx_acctname_users ON biz_account_names(fk_users)",
-    "CREATE INDEX IF NOT EXISTS idx_snap_users ON biz_holding_snapshots(fk_users)",
+    "CREATE INDEX IF NOT EXISTS idx_strat_users ON biz_strategies(fk_user)",
+    "CREATE INDEX IF NOT EXISTS idx_holdings_users ON biz_holdings(fk_user)",
+    "CREATE INDEX IF NOT EXISTS idx_broker_users ON biz_broker_accounts(fk_user)",
+    "CREATE INDEX IF NOT EXISTS idx_acctname_users ON biz_account_names(fk_user)",
+    "CREATE INDEX IF NOT EXISTS idx_snap_users ON biz_holding_snapshots(fk_user)",
 
-    "CREATE INDEX IF NOT EXISTS idx_ar_users ON biz_alert_rules(fk_users)",
+    "CREATE INDEX IF NOT EXISTS idx_ar_users ON biz_alert_rules(fk_user)",
     "CREATE INDEX IF NOT EXISTS idx_ae_rule_time ON biz_alert_events(fk_alert_rules, triggered_at DESC)",
-    "CREATE INDEX IF NOT EXISTS idx_air_users_date ON biz_ai_reports(fk_users, report_date DESC)",
-    "CREATE INDEX IF NOT EXISTS idx_aiconfig_users ON biz_ai_configs(fk_users)",
+    "CREATE INDEX IF NOT EXISTS idx_air_users_date ON biz_ai_reports(fk_user, report_date DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_aiconfig_users ON biz_ai_configs(fk_user)",
 
     # --- 筛选优化索引 (高频查询场景) ---
 
@@ -626,5 +627,6 @@ DROP_SEQUENCES = [
     "DROP SEQUENCE IF EXISTS seq_base_macro_daily",
     "DROP SEQUENCE IF EXISTS seq_biz_alert_events",
     "DROP SEQUENCE IF EXISTS seq_biz_ai_configs",
+    "DROP SEQUENCE IF EXISTS seq_user",
     "DROP SEQUENCE IF EXISTS seq_base_sw_sector_daily",
 ]

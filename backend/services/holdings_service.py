@@ -59,7 +59,7 @@ def _ensure_tables() -> None:
         """
         CREATE TABLE IF NOT EXISTS biz_holdings (
             id               VARCHAR PRIMARY KEY,
-            fk_users          UUID NOT NULL,
+            fk_user BIGINT NOT NULL,
             code             VARCHAR(20) NOT NULL,
             name             VARCHAR(100) NOT NULL,
             type             VARCHAR(20) NOT NULL,
@@ -91,7 +91,7 @@ def _ensure_tables() -> None:
         """
         CREATE TABLE IF NOT EXISTS biz_holding_snapshots (
             id                 VARCHAR PRIMARY KEY,
-            fk_users            UUID NOT NULL,
+            fk_user BIGINT NOT NULL,
             snap_date          VARCHAR(10) NOT NULL,
             total_market_value DOUBLE,
             total_cost         DOUBLE,
@@ -124,7 +124,7 @@ def _load_holdings(user_id: str) -> list[dict]:
         "SELECT id, code, name, type, broker, account, quantity, cost_price, "
         "manual_price, stop_loss_pct, take_profit_pct, open_date, currency, created_at, updated_at, fair_value, "
         "grid_lower, grid_upper, grid_step "
-        "FROM biz_holdings WHERE fk_users = ? ORDER BY created_at",
+        "FROM biz_holdings WHERE fk_user = ? ORDER BY created_at",
         [user_id],
     )
     return [
@@ -159,7 +159,7 @@ def _save_holding(user_id: str, item: dict) -> None:
     db.execute("DELETE FROM biz_holdings WHERE id = ?", [item["id"]])
     db.execute(
         "INSERT INTO biz_holdings "
-        "(id, fk_users, code, name, type, broker, account, quantity, cost_price, "
+        "(id, fk_user, code, name, type, broker, account, quantity, cost_price, "
         "manual_price, stop_loss_pct, take_profit_pct, open_date, currency, created_at, updated_at, fair_value, "
         "grid_lower, grid_upper, grid_step) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -266,7 +266,7 @@ def delete_holding(user_id: str, holding_id: str) -> bool:
     _ensure_tables()
     db = get_db()
     row = db.fetchone(
-        "SELECT count(*) FROM biz_holdings WHERE id = ? AND fk_users = ?",
+        "SELECT count(*) FROM biz_holdings WHERE id = ? AND fk_user = ?",
         [holding_id, user_id],
     )
     if not row or row[0] == 0:
@@ -695,12 +695,12 @@ def _upsert_snapshot(
         _ensure_tables()
         db = get_db()
         db.execute(
-            "DELETE FROM biz_holding_snapshots WHERE fk_users = ? AND snap_date = ?",
+            "DELETE FROM biz_holding_snapshots WHERE fk_user = ? AND snap_date = ?",
             [user_id, snap_date],
         )
         db.execute(
             "INSERT INTO biz_holding_snapshots "
-            "(id, fk_users, snap_date, total_market_value, total_cost, total_pnl, "
+            "(id, fk_user, snap_date, total_market_value, total_cost, total_pnl, "
             "total_pnl_pct, daily_pnl, holding_count, priced_count, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [snap["id"], user_id, snap_date, snap["total_market_value"],
@@ -718,7 +718,7 @@ def get_snapshots(user_id: str) -> list[dict]:
     rows = db.fetchall(
         "SELECT id, snap_date, total_market_value, total_cost, total_pnl, "
         "total_pnl_pct, daily_pnl, holding_count, priced_count, created_at "
-        "FROM biz_holding_snapshots WHERE fk_users = ? ORDER BY snap_date",
+        "FROM biz_holding_snapshots WHERE fk_user = ? ORDER BY snap_date",
         [user_id],
     )
     return [

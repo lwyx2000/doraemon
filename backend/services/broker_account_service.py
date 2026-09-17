@@ -32,7 +32,7 @@ def _ensure_tables() -> None:
         """
         CREATE TABLE IF NOT EXISTS biz_broker_accounts (
             id         VARCHAR PRIMARY KEY,
-            fk_users    UUID NOT NULL,
+            fk_user BIGINT NOT NULL,
             broker     VARCHAR(50) NOT NULL,
             account    VARCHAR(50) DEFAULT '',
             created_at VARCHAR,
@@ -58,7 +58,7 @@ def _load_accounts(user_id: str) -> list[dict]:
     db = get_db()
     rows = db.fetchall(
         "SELECT id, broker, account, created_at, updated_at "
-        "FROM biz_broker_accounts WHERE fk_users = ? ORDER BY created_at",
+        "FROM biz_broker_accounts WHERE fk_user = ? ORDER BY created_at",
         [user_id],
     )
     return [
@@ -80,7 +80,7 @@ def _save_account(user_id: str, item: dict) -> None:
     db = get_db()
     db.execute("DELETE FROM biz_broker_accounts WHERE id = ?", [item["id"]])
     db.execute(
-        "INSERT INTO biz_broker_accounts (id, fk_users, broker, account, created_at, updated_at) "
+        "INSERT INTO biz_broker_accounts (id, fk_user, broker, account, created_at, updated_at) "
         "VALUES (?, ?, ?, ?, ?, ?)",
         [item["id"], user_id, item["broker"], item["account"], item["created_at"], item["updated_at"]],
     )
@@ -130,7 +130,7 @@ def delete_broker_account(user_id: str, account_id: str) -> bool:
     _ensure_tables()
     db = get_db()
     row = db.fetchone(
-        "SELECT count(*) FROM biz_broker_accounts WHERE id = ? AND fk_users = ?",
+        "SELECT count(*) FROM biz_broker_accounts WHERE id = ? AND fk_user = ?",
         [account_id, user_id],
     )
     if not row or row[0] == 0:

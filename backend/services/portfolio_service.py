@@ -23,8 +23,8 @@ def get_portfolios(user_id: str) -> list[dict]:
 
     db = get_db()
     rows = db.fetchall(
-        "SELECT pk_portfolios AS id, fk_users AS user_id, name, created_at "
-        "FROM biz_portfolios WHERE fk_users = ? ORDER BY created_at DESC",
+        "SELECT pk_portfolios AS id, fk_user AS user_id, name, created_at "
+        "FROM biz_portfolios WHERE fk_user = ? ORDER BY created_at DESC",
         [user_id],
     )
     return [
@@ -78,7 +78,7 @@ def add_portfolio_item(
     # 确保组合记录存在（若不存在则按 portfolio_id 创建，与 mock 行为一致）
     db.execute(
         "INSERT OR IGNORE INTO biz_portfolios "
-        "(pk_portfolios, fk_users, name, created_at) "
+        "(pk_portfolios, fk_user, name, created_at) "
         "VALUES (?, ?, ?, ?)",
         [portfolio_id, user_id, f"Portfolio {portfolio_id[:8]}", item["created_at"]],
     )

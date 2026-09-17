@@ -450,7 +450,7 @@ def _ensure_tables() -> None:
         """
         CREATE TABLE IF NOT EXISTS biz_signal_subscriptions (
             id VARCHAR PRIMARY KEY,
-            fk_users UUID,
+            fk_user BIGINT,
             symbol VARCHAR,
             name VARCHAR,
             strategy_id VARCHAR,
@@ -467,7 +467,7 @@ def get_tracked(user_id: str) -> list[dict]:
     db = get_db()
     rows = db.fetchall(
         "SELECT id, symbol, name, strategy_id, params_json, created_at FROM "
-        "biz_signal_subscriptions WHERE fk_users = ? ORDER BY created_at DESC",
+        "biz_signal_subscriptions WHERE fk_user = ? ORDER BY created_at DESC",
         [user_id],
     )
     out = []
@@ -492,7 +492,7 @@ def add_tracked(user_id: str, symbol: str, name: str | None, strategy_id: str, p
     rec_id = str(uuid.uuid4())
     db = get_db()
     db.execute(
-        "INSERT INTO biz_signal_subscriptions (id, fk_users, symbol, name, strategy_id, params_json, created_at, updated_at) "
+        "INSERT INTO biz_signal_subscriptions (id, fk_user, symbol, name, strategy_id, params_json, created_at, updated_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         [rec_id, user_id, symbol if name is None else symbol, name or symbol, strategy_id,
          json.dumps(params, ensure_ascii=False), now, now],
@@ -504,7 +504,7 @@ def remove_tracked(user_id: str, rec_id: str) -> bool:
     _ensure_tables()
     db = get_db()
     db.execute(
-        "DELETE FROM biz_signal_subscriptions WHERE id = ? AND fk_users = ?",
+        "DELETE FROM biz_signal_subscriptions WHERE id = ? AND fk_user = ?",
         [rec_id, user_id],
     )
     return True

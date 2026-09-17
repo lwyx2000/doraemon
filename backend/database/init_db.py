@@ -178,63 +178,97 @@ def init_database(
 
 
 
+
 # ============================================================
-# 用户绑定迁移（2026-09-17）
-# 历史表以 user_id VARCHAR 存用户名；现统一改为 fk_users UUID 引用 biz_users.pk_users，
-# 使 username 后续可变更而不影响持仓 / 设置 / 自选等绑定。幂等：已迁移的表自动跳过。
+# 用户绑定 schema 迁移（2026-09-17）
+# - biz_users.pk_users(UUID) -> pk_user(BIGINT 自增主键, nextval(seq_user))
+# - 所有绑定表 fk_users(UUID) / user_id(VARCHAR) -> fk_user(BIGINT)
+# 数据保留：旧 username/UUID 经 biz_users 重新映射；孤儿行删除。幂等，可反复运行。
 # ============================================================
 
-_USER_BINDING_TABLES = [
-    "biz_holdings",
-    "biz_broker_accounts",
-    "biz_account_names",
-    "biz_holding_snapshots",
-    "biz_strategies",
-    "biz_signal_subscriptions",
-    "biz_library_subscriptions",
-    "biz_library_snapshots",
-]
+def migrate_pk_user_schema(db: Database) -> None:
+    """数据保留式迁移：pk_users(UUID) -> pk_user(BIGINT 自增)；fk_users/user_id -> fk_user(BIGINT)。"""
+    import re as _re
 
+    bc = {r[0] for r in db.fetchall(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = ?", ["biz_users"]
+    )}
+    uuid_to_uname: dict = {}
+    uname_to_pk: dict = {}
 
-def migrate_user_binding(db: Database) -> None:
-    """一次性幂等迁移：user_id(username) -> fk_users(pk_users UUID)。"""
-    for table in _USER_BINDING_TABLES:
-        exists = db.fetchone(
-            "SELECT 1 FROM information_schema.tables WHERE table_name = ?", [table]
+    if "pk_users" in bc:
+        print("[Migration] biz_users: pk_users(UUID) -> pk_user(BIGINT 自增)")
+        rows = db.fetchall(
+            "SELECT pk_users, username, email, password_hash, created_at FROM biz_users"
         )
-        if not exists:
-            continue
-        cols = {r[0] for r in db.fetchall(
-            "SELECT column_name FROM information_schema.columns WHERE table_name = ?", [table]
-        )}
-        if "user_id" not in cols or "fk_users" in cols:
-            continue  # 已迁移或本来就用 fk_users
-        print(f"[Migration] {table}: user_id -> fk_users")
-        # 旧索引若依赖 user_id 需先删（仅 biz_strategies 有 idx_strat_users）
-        if table == "biz_strategies":
+        uuid_to_uname = {str(r[0]): r[1] for r in rows}
+        db.execute("DROP TABLE biz_users")
+        db.execute(
+            """
+            CREATE TABLE biz_users (
+                pk_user        BIGINT DEFAULT nextval('seq_user') PRIMARY KEY,
+                username       VARCHAR(50) NOT NULL,
+                email          VARCHAR(100),
+                password_hash  VARCHAR(255) NOT NULL,
+                created_at     TIMESTAMP DEFAULT now()
+            )
+            """
+        )
+        for r in rows:
+            db.execute(
+                "INSERT INTO biz_users (username, email, password_hash, created_at) VALUES (?,?,?,?)",
+                [r[1], r[2], r[3], r[4]],
+            )
+        uname_to_pk = dict(db.fetchall("SELECT username, pk_user FROM biz_users"))
+    else:
+        uname_to_pk = dict(db.fetchall("SELECT username, pk_user FROM biz_users"))
+
+    # 先删旧 fk_users 相关索引，避免列改名后索引失效
+    biz_index_sqls = [x for x in INDEXES if "biz_" in x]
+    for sql in biz_index_sqls:
+        m = _re.search(r"CREATE INDEX IF NOT EXISTS (\w+)", sql)
+        if m:
             try:
-                db.execute("DROP INDEX IF EXISTS idx_strat_users")
+                db.execute(f"DROP INDEX IF EXISTS {m.group(1)}")
             except Exception:
                 pass
-        db.execute(f"ALTER TABLE {table} ADD COLUMN fk_users UUID")
-        # 经 biz_users 映射 username -> pk_users（pk 转字符串以写入 UUID 列）
-        pk_map = {u: str(p) for u, p in db.fetchall(
-            "SELECT username, pk_users FROM biz_users"
+
+    biz_tables = [r[0] for r in db.fetchall(
+        "SELECT table_name FROM information_schema.tables WHERE table_name LIKE 'biz_%'"
+    )]
+    for table in biz_tables:
+        if table == "biz_users":
+            continue
+        tc = {r[0] for r in db.fetchall(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = ?", [table]
         )}
-        rows = db.fetchall(f"SELECT id, user_id FROM {table}")
-        updated = 0
-        for rid, uname in rows:
-            pk = pk_map.get(uname)
-            if pk:
-                db.execute(f"UPDATE {table} SET fk_users = ? WHERE id = ?", [pk, rid])
-                updated += 1
-        # 无法归属的孤儿行删除（无对应用户）
-        orphan = db.fetchone(f"SELECT count(*) FROM {table} WHERE fk_users IS NULL")
-        if orphan and orphan[0]:
-            print(f"[Migration] {table}: 删除 {orphan[0]} 条无主记录")
-            db.execute(f"DELETE FROM {table} WHERE fk_users IS NULL")
-        db.execute(f"ALTER TABLE {table} DROP COLUMN user_id")
-        print(f"[Migration] {table}: 完成（映射 {updated} 行）")
+        if "fk_users" in tc:
+            print(f"[Migration] {table}: fk_users(UUID) -> fk_user(BIGINT)")
+            db.execute(f"ALTER TABLE {table} RENAME COLUMN fk_users TO _fk_old")
+            db.execute(f"ALTER TABLE {table} ADD COLUMN fk_user BIGINT")
+            for (old_uuid,) in db.fetchall(f"SELECT DISTINCT _fk_old FROM {table}"):
+                uname = uuid_to_uname.get(str(old_uuid))
+                new_pk = uname_to_pk.get(uname) if uname else None
+                db.execute(f"UPDATE {table} SET fk_user = ? WHERE _fk_old = ?", [new_pk, old_uuid])
+            db.execute(f"DELETE FROM {table} WHERE fk_user IS NULL")
+            db.execute(f"ALTER TABLE {table} DROP COLUMN _fk_old")
+        elif "user_id" in tc:
+            print(f"[Migration] {table}: user_id(username) -> fk_user(BIGINT)")
+            db.execute(f"ALTER TABLE {table} RENAME COLUMN user_id TO _fk_old")
+            db.execute(f"ALTER TABLE {table} ADD COLUMN fk_user BIGINT")
+            for (uname,) in db.fetchall(f"SELECT DISTINCT _fk_old FROM {table}"):
+                new_pk = uname_to_pk.get(uname)
+                db.execute(f"UPDATE {table} SET fk_user = ? WHERE _fk_old = ?", [new_pk, uname])
+            db.execute(f"DELETE FROM {table} WHERE fk_user IS NULL")
+            db.execute(f"ALTER TABLE {table} DROP COLUMN _fk_old")
+
+    # 重建 biz_ 索引（现指向 fk_user）
+    for sql in biz_index_sqls:
+        try:
+            db.execute(sql)
+        except Exception as e:
+            print(f"  [WARN] index recreate skipped: {e}")
+    print("[Migration] pk_user / fk_user 迁移完成")
 
 
 def main():

@@ -4,9 +4,9 @@
 登录 / 注册 / 改密均读写 biz_users，密码以 bcrypt 哈希存储（passlib[bcrypt]）。
 
 关键约定（2026-09-17 改造）：
-- JWT 的 sub 一律为 biz_users.pk_users（UUID 字符串），而非 username。
-  这样即便 username 后续变更，所有以 fk_users 绑定的业务数据（持仓 / 设置 / 自选等）都不会失联。
-- 业务表统一以 fk_users UUID 引用 biz_users.pk_users；username 仅用于登录入参与人机显示。
+- JWT 的 sub 一律为 biz_users.pk_user（自增 BIGINT），而非 username。
+  这样即便 username 后续变更，所有以 fk_user 绑定的业务数据（持仓 / 设置 / 自选等）都不会失联。
+- 业务表统一以 fk_user（BIGINT）引用 biz_users.pk_user；username 仅用于登录入参与人机显示。
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # 注：sos 为历史注册账号，原内存态已随重建丢失，此处以 sos123 重建，登录后可自行改密。
 SEED_USERS: list[tuple[str, str]] = [
     ("trader", "trader123"),
-    ("sos", "sos123"),
+    ("sos", "qwe123"),
 ]
 
 
@@ -49,33 +49,33 @@ def _fetch_hash_by_username(username: str) -> str | None:
 
 
 def _fetch_pk(username: str) -> str | None:
-    """username -> pk_users（UUID 字符串）。不存在返回 None。"""
+    """username -> pk_user（UUID 字符串）。不存在返回 None。"""
     db = get_db()
-    row = db.fetchone("SELECT pk_users FROM biz_users WHERE username = ?", [username])
+    row = db.fetchone("SELECT pk_user FROM biz_users WHERE username = ?", [username])
     return str(row[0]) if row and row[0] is not None else None
 
 
 def _fetch_hash_by_pk(pk: str) -> str | None:
     db = get_db()
-    row = db.fetchone("SELECT password_hash FROM biz_users WHERE pk_users = ?", [pk])
+    row = db.fetchone("SELECT password_hash FROM biz_users WHERE pk_user = ?", [pk])
     return row[0] if row else None
 
 
 def _fetch_username_by_pk(pk: str) -> str | None:
     db = get_db()
-    row = db.fetchone("SELECT username FROM biz_users WHERE pk_users = ?", [pk])
+    row = db.fetchone("SELECT username FROM biz_users WHERE pk_user = ?", [pk])
     return row[0] if row else None
 
 
 def _build_token(pk: str, username: str) -> dict:
-    # sub = pk_users（UUID），username 仅随包下发供前端展示。
+    # sub = pk_user（UUID），username 仅随包下发供前端展示。
     token = create_access_token({"sub": str(pk), "username": username})
     expires_at = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
     return {"token": token, "expires_at": expires_at, "username": username}
 
 
 def authenticate(username: str, password: str) -> dict:
-    """校验凭据并返回 JWT（sub = pk_users）。
+    """校验凭据并返回 JWT（sub = pk_user）。
 
     Raises:
         HTTPException: 401 凭据无效 / 用户不存在。
@@ -113,7 +113,7 @@ def register(username: str, password: str) -> dict:
 
 
 def change_password(user_pk: str, old_password: str, new_password: str) -> dict:
-    """修改密码：按 pk_users 校验旧密码后更新哈希。
+    """修改密码：按 pk_user 校验旧密码后更新哈希。
 
     Raises:
         HTTPException: 400 新密码不合法；401 用户不存在或旧密码不正确。
@@ -127,7 +127,7 @@ def change_password(user_pk: str, old_password: str, new_password: str) -> dict:
     if not _verify(old_password, h):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="旧密码不正确")
     db.execute(
-        "UPDATE biz_users SET password_hash = ? WHERE pk_users = ?",
+        "UPDATE biz_users SET password_hash = ? WHERE pk_user = ?",
         [_hash(new_password), user_pk],
     )
     return {"changed": True, "username": _fetch_username_by_pk(user_pk)}
