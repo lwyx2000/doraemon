@@ -2,7 +2,8 @@
 defineOptions({ name: 'ClosedFunds' })
 import { h, ref, reactive, computed, onMounted } from 'vue'
 import { NButton, NDataTable, NIcon, NModal, NInput, NTag, useMessage } from 'naive-ui'
-import { TrendingUpOutline, TimerOutline, WarningOutline } from '@vicons/ionicons5'
+import type { PaginationProps } from 'naive-ui'
+import { TimerOutline, WarningOutline } from '@vicons/ionicons5'
 import { api, useAsyncData } from '../composables/useApi'
 import type { FundItem } from '../types'
 import { exportToCSV } from '../utils/export'
@@ -18,6 +19,19 @@ import { useFieldHelp } from '../composables/useFieldHelp'
 const message = useMessage()
 const { titleWithHelp } = useFieldHelp()
 const { data: funds, loading, error, execute: refetch } = useAsyncData(() => api.getClosedFundAnalysis())
+
+// 表格分页：每页默认 20 行，客户端分页
+const pagination = ref<PaginationProps>({
+  page: 1,
+  pageSize: 20,
+  showSizePicker: true,
+  pageSizes: [10, 20, 50, 100],
+  onChange: (page: number) => { pagination.value.page = page },
+  onUpdatePageSize: (pageSize: number) => {
+    pagination.value.pageSize = pageSize
+    pagination.value.page = 1
+  },
+})
 
 // 三维度分析映射 (code → ClosedFundAnalysis)
 const analysisMap = computed(() => {
@@ -158,14 +172,36 @@ function exportFunds() {
   message.success(`已导出 ${rows.length} 条封闭基金数据`)
 }
 
-const summaryStats = {
-  totalPnl: 1.24,
-  pnlToday: 2.4,
-  volatility: 14.2,
-  beta: 0.85,
-  maxDrawdown: -8.4,
-  avgDiscount: 12.5,
-}
+// 统计卡片：从实际基金数据动态计算（不再使用硬编码假数据）
+const summaryStats = computed(() => {
+  const list = funds.value ?? []
+  if (!list.length) {
+    return { avgDiscount: 0, avgDiscountStr: '—', avgAnnualized: 0, avgAnnualizedStr: '—', maxDiscount: 0, maxDiscountStr: '—', opportunityCount: 0, totalVolume: 0 }
+  }
+  // 折价率（premium_pct 负值=折价，取绝对值展示）
+  const discounts = list.map(f => Math.abs(f.premium_pct))
+  const avgDiscount = discounts.reduce((a, b) => a + b, 0) / list.length
+  const maxDiscount = Math.max(...discounts)
+  // 平均年化收益
+  const annualizedValues = list.map(f => f.annualized ?? 0).filter(v => v > 0)
+  const avgAnnualized = annualizedValues.length
+    ? annualizedValues.reduce((a, b) => a + b, 0) / annualizedValues.length
+    : 0
+  // 套利机会数（折价 > 5%）
+  const opportunityCount = list.filter(f => Math.abs(f.premium_pct) > 5).length
+  // 总成交额（万元）
+  const totalVolume = list.reduce((s, f) => s + (f.volume ?? 0), 0) / 10000
+  return {
+    avgDiscount,
+    avgDiscountStr: `${avgDiscount.toFixed(2)}%`,
+    avgAnnualized,
+    avgAnnualizedStr: `${avgAnnualized.toFixed(2)}%`,
+    maxDiscount,
+    maxDiscountStr: `${maxDiscount.toFixed(2)}%`,
+    opportunityCount,
+    totalVolume,
+  }
+})
 
 const columns = [
   {
@@ -350,50 +386,13 @@ const columns = [
 
     <GlossaryPanel page-key="closedFunds" />
 
-    <!-- Dashboard Cards -->
-    <div class="stat-grid cols-5">
-      <div class="dash-card">
-        <h3 class="dash-title">投资组合概览</h3>
-        <div class="portfolio-ring">
-          <svg class="ring-svg" viewBox="0 0 100 50">
-            <path d="M 10 50 A 40 40 0 0 1 90 50" fill="none" style="stroke: var(--border-default)" stroke-width="10" />
-            <path d="M 10 50 A 40 40 0 0 1 40 15" fill="none" style="stroke: var(--color-primary)" stroke-width="10" />
-            <path d="M 40 15 A 40 40 0 0 1 70 20" fill="none" stroke="#585e6c" stroke-width="10" />
-            <path d="M 70 20 A 40 40 0 0 1 90 50" fill="none" stroke="#864f00" stroke-width="10" />
-          </svg>
-          <div class="ring-center">
-            <span class="ring-total">{{ funds?.length ?? 0 }}</span>
-            <span class="ring-label">持仓</span>
-          </div>
-        </div>
-        <div class="legend-grid">
-          <div class="legend-item"><span class="dot" style="background: var(--color-primary)" />封闭基金 (60%)</div>
-          <div class="legend-item"><span class="dot" style="background:#585e6c" />LOF (25%)</div>
-          <div class="legend-item"><span class="dot" style="background:#864f00" />其他 (15%)</div>
-        </div>
-      </div>
-
-      <div class="dash-card">
-        <span class="dash-label">总盈亏</span>
-        <span class="dash-value" style="color: var(--color-success)">+¥{{ summaryStats.totalPnl }}M</span>
-        <div class="dash-trend">
-          <n-icon :component="TrendingUpOutline" size="16" />
-          {{ summaryStats.pnlToday }}% 今日
-        </div>
-        <div class="progress-bar">
-          <div class="progress-fill success" style="width: 75%" />
-        </div>
-      </div>
-
-      <StatCard label="波动率" :value="`${summaryStats.volatility}%`" :sub="`Beta: ${summaryStats.beta}`" tip="投资组合年化波动率，衡量净值波动幅度" />
-
-      <StatCard label="最大回撤" :value="`${summaryStats.maxDrawdown}%`" sub="近12月恢复期: 12天">
-        <div class="progress-bar">
-          <div class="progress-fill blue" style="width: 25%" />
-        </div>
-      </StatCard>
-
-      <StatCard label="平均折价" :value="`${summaryStats.avgDiscount}%`" color="#864f00" sub="目标: 15%" tip="持仓封闭基金的平均折价率，折价越深潜在收益越大但风险也越高" />
+    <!-- 统计卡片（动态计算） -->
+    <div class="stat-grid">
+      <StatCard label="基金总数" :value="funds?.length ?? 0" />
+      <StatCard label="平均折价" :value="summaryStats.avgDiscountStr" color="#864f00" :sub="`最大: ${summaryStats.maxDiscountStr}`" tip="全部封闭基金的平均折价率，折价越深潜在收益越大但风险也越高" />
+      <StatCard label="平均年化" :value="summaryStats.avgAnnualizedStr" color="var(--color-primary)" sub="到期年化收益均值" tip="全部封闭基金的年化收益率均值" />
+      <StatCard label="套利机会" :value="summaryStats.opportunityCount" color="var(--color-danger)" sub="折价 > 5%" tip="折价率超过5%的封闭基金数量，折价越深套利空间越大" />
+      <StatCard label="总成交额" :value="`${summaryStats.totalVolume.toFixed(0)}万`" color="var(--color-success)" sub="全市场" tip="全部封闭基金的场内成交额合计" />
     </div>
 
     <!-- Fund Table -->
@@ -405,6 +404,7 @@ const columns = [
         :bordered="false"
         :single-line="false"
         size="small"
+        :pagination="pagination"
         :row-props="(row: any) => ({ onClick: () => message.info(row.name) })"
       />
     </DataPanel>
@@ -598,126 +598,6 @@ const columns = [
   gap: 14px;
 }
 
-/* Kept: overview card (complex SVG ring + legend) */
-.dash-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border-default);
-  border-radius: 10px;
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  box-shadow: var(--shadow-card);
-}
-
-.dash-title {
-  font-family: 'Work Sans', sans-serif;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  color: var(--text-muted);
-  margin: 0;
-}
-
-/* Kept: 总盈亏 card has a trend indicator (custom content, not converted to StatCard) */
-.dash-label {
-  font-family: 'Work Sans', sans-serif;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-
-.dash-value {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 22px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.dash-trend {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 13px;
-  color: var(--color-success);
-}
-
-.dash-trend .n-icon { font-size: 16px; }
-
-.progress-bar {
-  height: 6px;
-  background: var(--border-default);
-  border-radius: 3px;
-  overflow: hidden;
-}
-
-.progress-fill {
-  height: 100%;
-  border-radius: 3px;
-  transition: width 0.3s;
-}
-
-.progress-fill.success { background: var(--color-success); }
-.progress-fill.blue { background: var(--color-primary); }
-
-/* Portfolio Ring */
-.portfolio-ring {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  position: relative;
-  height: 120px;
-}
-
-.ring-svg { width: 160px; height: 80px; }
-
-.ring-center {
-  position: absolute;
-  bottom: 10px;
-  text-align: center;
-}
-
-.ring-total {
-  display: block;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 30px;
-  font-weight: 700;
-  color: var(--text-primary);
-  line-height: 1;
-}
-
-.ring-label {
-  font-size: 11px;
-  color: var(--text-muted);
-  font-weight: 700;
-  letter-spacing: 0.05em;
-}
-
-.legend-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  border-top: 1px solid var(--border-default);
-  padding-top: 12px;
-}
-
-.legend-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
 /* Bottom Grid */
 .bottom-grid {
   display: grid;
@@ -874,6 +754,5 @@ const columns = [
 /* Responsive: collapse multi-column grids on smaller screens */
 @media (max-width: 768px) {
   .bottom-grid { grid-template-columns: 1fr; }
-  .legend-grid { grid-template-columns: 1fr; }
 }
 </style>

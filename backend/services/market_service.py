@@ -9,7 +9,7 @@ import json
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 import requests
 import time
@@ -314,9 +314,16 @@ def _calc_change(latest_price: float | None, chg_pct: float | None) -> float:
     return round(latest_price * chg_pct / (100 + chg_pct), 2)
 
 
+# 北京时区（UTC+8），A股交易时间以此为基准
+_CST = timezone(timedelta(hours=8))
+
+
 def _market_status(now: datetime | None = None) -> str:
-    """根据当前时间返回 A 股市场交易状态（不再硬编码"开盘中"）"""
-    now = now or datetime.now()
+    """根据当前时间返回 A 股市场交易状态。
+
+    始终使用北京时间（UTC+8）判断，避免服务器时区非 CST 导致状态错误。
+    """
+    now = now or datetime.now(_CST)
     if now.weekday() >= 5:  # 周六/周日
         return "休市"
     t = now.hour * 60 + now.minute
@@ -944,7 +951,7 @@ def get_market_overview_with_meta() -> tuple[dict, dict]:
             # pct 也为 None → 上游未提供变化数据，保持 None
         data = {
             "date": market_stats["date"],
-            "status": _market_status(),
+            "status": _market_status(),  # _market_status 内部已使用北京时间
             "indices": realtime_indices,
             "upCount": market_stats["upCount"],
             "downCount": market_stats["downCount"],
@@ -955,7 +962,7 @@ def get_market_overview_with_meta() -> tuple[dict, dict]:
         return data, _build_meta(False, f"AkShare WebAPI ({AKSHARE_HOST})")
     if realtime_indices:
         data = {
-            "date": datetime.now().strftime("%Y-%m-%d"),
+            "date": datetime.now(_CST).strftime("%Y-%m-%d"),
             "status": _market_status(),
             "indices": realtime_indices,
             "upCount": 0,
@@ -967,7 +974,7 @@ def get_market_overview_with_meta() -> tuple[dict, dict]:
         return data, _build_meta(False, "AkShare WebAPI (部分数据)")
     # 取数失败：返回空数据(绝不返回伪造数据)，前端走错误/空态
     return {
-        "date": datetime.now().strftime("%Y-%m-%d"),
+        "date": datetime.now(_CST).strftime("%Y-%m-%d"),
         "status": "数据获取中",
         "indices": [],
         "upCount": 0,

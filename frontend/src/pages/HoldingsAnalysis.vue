@@ -7,6 +7,7 @@ import {
   NRadioGroup, NRadioButton, NPopover, NCheckbox, NSwitch, NTooltip,
   useMessage, useDialog,
 } from 'naive-ui'
+import type { PaginationProps } from 'naive-ui'
 import { CloudUploadOutline, RefreshOutline, CameraOutline, ClipboardOutline, SettingsOutline, FilterOutline } from '@vicons/ionicons5'
 import { useAsyncData } from '../composables/useApi'
 import { api } from '../utils/api'
@@ -46,6 +47,19 @@ function typeColor(type: string) {
 
 const { data: view, loading, error, refresh } = useAsyncData<HoldingsView>(() => api.getHoldings())
 const { data: snapshots, refresh: refreshSnapshots } = useAsyncData<HoldingSnapshot[]>(() => api.getHoldingSnapshots())
+
+// 表格分页：每页默认 20 行，客户端分页
+const pagination = ref<PaginationProps>({
+  page: 1,
+  pageSize: 20,
+  showSizePicker: true,
+  pageSizes: [10, 20, 50, 100],
+  onChange: (page: number) => { pagination.value.page = page },
+  onUpdatePageSize: (pageSize: number) => {
+    pagination.value.pageSize = pageSize
+    pagination.value.page = 1
+  },
+})
 // 个人中心配置的券商列表（筛选/导入选用）
 const brokerAccounts = ref<BrokerAccount[]>([])
 async function loadBrokerAccounts() {
@@ -914,15 +928,16 @@ const snapshotColumns = [
           </n-button>
           <span class="panel-info">{{ summary?.quote_time ? `行情时间: ${new Date(summary.quote_time).toLocaleTimeString('zh-CN')}` : '暂无行情' }}</span>
         </template>
-        <n-data-table
-          :columns="columns"
-          :data="displayItems"
-          :row-key="(row: Holding) => row.id"
-          :row-class-name="(row: Holding) => row.alert_status === 'stop_loss' ? 'row-alert-stop-loss' : row.alert_status === 'take_profit' ? 'row-alert-take-profit' : ''"
-          :bordered="false"
-          :single-line="false"
-          size="small"
-          :scroll-x="1700"
+      <n-data-table
+        :columns="columns"
+        :data="displayItems"
+        :row-key="(row: Holding) => row.id"
+        :row-class-name="(row: Holding) => row.alert_status === 'stop_loss' ? 'row-alert-stop-loss' : row.alert_status === 'take_profit' ? 'row-alert-take-profit' : ''"
+        :bordered="false"
+        :single-line="false"
+        size="small"
+        :pagination="pagination"
+        :scroll-x="1700"
           max-height="480"
         />
         <!-- 过滤后汇总行 -->

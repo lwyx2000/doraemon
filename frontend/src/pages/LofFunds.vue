@@ -1,14 +1,13 @@
 <script setup lang="ts">
 defineOptions({ name: 'LofFunds' })
-import { ref, computed, h, onMounted } from 'vue'
+import { ref, computed, h, onMounted, watch } from 'vue'
 import { NDataTable, NButton, NIcon, useMessage } from 'naive-ui'
+import type { PaginationProps } from 'naive-ui'
 import {
   TrendingUp,
   WalletOutline,
   EarthOutline,
   LockClosedOutline,
-  ChevronBackOutline,
-  ChevronForwardOutline,
   PulseOutline,
 } from '@vicons/ionicons5'
 import { api, useAsyncData } from '../composables/useApi'
@@ -31,6 +30,22 @@ const { data: funds, loading, error, execute: refetch } = useAsyncData(() => api
 const activeTab = ref<string>('lof')
 const selectedCode = ref<string | null>(null)
 const scanning = ref(false)
+
+// 表格分页：每页默认 20 行，客户端分页（参考可转债页面）
+const pagination = ref<PaginationProps>({
+  page: 1,
+  pageSize: 20,
+  showSizePicker: true,
+  pageSizes: [10, 20, 50, 100],
+  onChange: (page: number) => { pagination.value.page = page },
+  onUpdatePageSize: (pageSize: number) => {
+    pagination.value.pageSize = pageSize
+    pagination.value.page = 1
+  },
+})
+
+// 切换 tab 时回到第一页
+watch(activeTab, () => { pagination.value.page = 1 })
 
 function scan() {
   scanning.value = true
@@ -98,6 +113,55 @@ const arbitrageAnalysisMap = computed(() => {
 
 // 兼容旧引用
 const qdiiAnalysisMap = arbitrageAnalysisMap
+
+// 市场统计卡片：从实际数据动态计算（不再使用硬编码假数据）
+const lofStats = computed(() => {
+  const list = funds.value ?? []
+  if (!list.length) {
+    return {
+      avgPremium: 0, avgPremiumStr: '—', maxDiscountStr: '—', opportunityCount: 0,
+      top5AvgPremium: 0, top5AvgPremiumStr: '—', sentimentBarWidth: '0%',
+      volumeSparkline: [] as number[], signals: [] as { id: string; text: string; dotClass: string }[],
+    }
+  }
+  // 平均溢价率
+  const avgPremium = list.reduce((s, f) => s + f.premium_pct, 0) / list.length
+  // 最大折价（premium_pct 最小值，负值=折价）
+  const maxDiscount = Math.min(...list.map(f => f.premium_pct))
+  // 套利机会数（折溢价绝对值 > 3%）
+  const opportunityCount = list.filter(f => Math.abs(f.premium_pct) > 3).length
+  // 前5平均溢价（按溢价率绝对值降序取前5）
+  const top5 = [...list].sort((a, b) => Math.abs(b.premium_pct) - Math.abs(a.premium_pct)).slice(0, 5)
+  const top5AvgPremium = top5.reduce((s, f) => s + f.premium_pct, 0) / (top5.length || 1)
+  // 情绪条宽度（|avgPremium| 归一化到 0-100%，上限 10%）
+  const sentimentBarWidth = `${Math.min(Math.abs(avgPremium) * 10, 100)}%`
+  // 成交量 sparkline：取前5按成交量降序，归一化为百分比高度
+  const top5Vol = [...list].sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0)).slice(0, 5)
+  const maxVol = Math.max(...top5Vol.map(f => f.volume ?? 0), 1)
+  const volumeSparkline = top5Vol.map(f => Math.round(((f.volume ?? 0) / maxVol) * 100))
+  // 实时信号：从实际数据生成
+  const signals: { id: string; text: string; dotClass: string }[] = []
+  list.filter(f => f.premium_pct > 5).slice(0, 3).forEach(f => {
+    signals.push({ id: `sig-${f.code}`, text: `${f.code} 溢价 ${f.premium_pct.toFixed(2)}%`, dotClass: 'pulse' })
+  })
+  list.filter(f => f.premium_pct < -5).slice(0, 2).forEach(f => {
+    signals.push({ id: `sig-${f.code}`, text: `${f.code} 折价 ${f.premium_pct.toFixed(2)}%`, dotClass: 'blue' })
+  })
+  list.filter(f => f.subscribe_limit && /限购|暂停/.test(f.subscribe_limit)).slice(0, 2).forEach(f => {
+    signals.push({ id: `sig-${f.code}`, text: `${f.code} ${f.subscribe_limit}`, dotClass: 'gray' })
+  })
+  return {
+    avgPremium,
+    avgPremiumStr: `${avgPremium >= 0 ? '+' : ''}${avgPremium.toFixed(2)}%`,
+    maxDiscountStr: `${maxDiscount.toFixed(2)}%`,
+    opportunityCount,
+    top5AvgPremium,
+    top5AvgPremiumStr: `${top5AvgPremium >= 0 ? '+' : ''}${top5AvgPremium.toFixed(2)}%`,
+    sentimentBarWidth,
+    volumeSparkline,
+    signals,
+  }
+})
 
 const tabs = [
   { key: 'lof', label: 'LOF基金', icon: WalletOutline },
@@ -329,11 +393,11 @@ const columns = computed(() => {
 
     <GlossaryPanel page-key="lofFunds" />
 
-    <!-- 市场统计 -->
+    <!-- 市场统计（动态计算） -->
     <div class="stat-grid">
-      <StatCard label="平均溢价" value="+3.85%" color="var(--color-danger)" :tip="getFieldTip('premium_pct')" />
-      <StatCard label="最大折价" value="-21.5%" color="var(--color-success)" :tip="getFieldTip('premium_pct')" />
-      <StatCard label="机会数" value="5" color="var(--color-primary)" tip="折溢价率绝对值超过3%的基金数量，通常存在套利空间" />
+      <StatCard label="平均溢价" :value="lofStats.avgPremiumStr" :color="lofStats.avgPremium >= 0 ? 'var(--color-danger)' : 'var(--color-success)'" :tip="getFieldTip('premium_pct')" />
+      <StatCard label="最大折价" :value="lofStats.maxDiscountStr" color="var(--color-success)" :tip="getFieldTip('premium_pct')" />
+      <StatCard label="套利机会" :value="lofStats.opportunityCount" color="var(--color-primary)" tip="折溢价率绝对值超过3%的基金数量，通常存在套利空间" />
       <StatCard label="基金总数" :value="funds?.length ?? 0" />
     </div>
 
@@ -349,6 +413,7 @@ const columns = computed(() => {
         :bordered="false"
         :single-line="false"
         size="small"
+        :pagination="pagination"
         :row-props="(row: any) => ({ onClick: () => onRowClick(row) })"
         :row-class-name="(row: any) => {
           const classes: string[] = []
@@ -362,32 +427,27 @@ const columns = computed(() => {
       />
       <!-- 表格底部 -->
       <div class="table-footer">
-        <span class="footer-info">总记录: {{ filteredFunds.length }} | 显示: 1-{{ Math.min(filteredFunds.length, 50) }}</span>
-        <div class="footer-pages">
-          <button class="page-btn"><n-icon :component="ChevronBackOutline" size="14" /></button>
-          <span class="page-current">第 1 / 1 页</span>
-          <button class="page-btn"><n-icon :component="ChevronForwardOutline" size="14" /></button>
-        </div>
+        <span class="footer-info">当前 {{ filteredFunds.length }} 条基金数据</span>
       </div>
     </DataPanel>
 
-    <!-- 底部面板 -->
+    <!-- 底部面板（动态计算） -->
     <div class="bottom-bento">
       <div class="bento-card">
         <span class="bento-label">市场情绪</span>
         <div class="bento-value-row">
-          <span class="sentiment-value text-red">+12.4%</span>
+          <span class="sentiment-value" :class="lofStats.top5AvgPremium >= 0 ? 'text-red' : 'text-green'">{{ lofStats.top5AvgPremiumStr }}</span>
           <span class="sentiment-sub">前5平均溢价</span>
         </div>
         <div class="sentiment-bar">
-          <div class="sentiment-fill" />
+          <div class="sentiment-fill" :style="{ width: lofStats.sentimentBarWidth }" />
         </div>
-        <span class="sentiment-note">近30天最高溢价压力</span>
+        <span class="sentiment-note">当前溢价/折价压力指标</span>
       </div>
       <div class="bento-card">
-        <span class="bento-label">成交量 vs 套利价差</span>
+        <span class="bento-label">成交量 Top 5</span>
         <div class="sparkline-bars">
-          <div v-for="(bar, i) in [60, 45, 80, 30, 20, 90, 50, 40]" :key="i"
+          <div v-for="(bar, i) in lofStats.volumeSparkline" :key="i"
             :class="['spark-bar', bar >= 50 ? 'hot' : 'cold']"
             :style="{ height: bar + '%' }" />
         </div>
@@ -399,18 +459,11 @@ const columns = computed(() => {
       <div class="bento-card">
         <span class="bento-label">实时信号</span>
         <div class="signal-list">
-          <div class="signal-item">
-            <span class="signal-dot pulse" />
-            <span class="signal-text">161129.SZ 溢价超过5%阈值</span>
+          <div v-for="sig in lofStats.signals" :key="sig.id" class="signal-item">
+            <span :class="['signal-dot', sig.dotClass]" />
+            <span class="signal-text">{{ sig.text }}</span>
           </div>
-          <div class="signal-item">
-            <span class="signal-dot blue" />
-            <span class="signal-text">160311.SH 发现新套利机会</span>
-          </div>
-          <div class="signal-item">
-            <span class="signal-dot gray" />
-            <span class="signal-text">QDII额度更新: E-Fund仍受限</span>
-          </div>
+          <div v-if="lofStats.signals.length === 0" class="empty-hint">暂无信号</div>
         </div>
       </div>
     </div>
@@ -543,36 +596,6 @@ const columns = computed(() => {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.05em;
-  color: var(--text-muted);
-}
-
-.footer-pages {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.page-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border: 1px solid var(--border-default);
-  background: var(--bg-card);
-  border-radius: 4px;
-  cursor: pointer;
-  color: var(--text-muted);
-  transition: all 0.15s;
-}
-
-.page-btn:hover { background: #e6e8ef; color: var(--text-primary); }
-.page-btn:active { background: #dde2f3; }
-
-.page-current {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  font-weight: 700;
   color: var(--text-muted);
 }
 
@@ -731,6 +754,12 @@ const columns = computed(() => {
   text-overflow: ellipsis;
 }
 
+.empty-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 .insight-bar {
   display: flex;
   align-items: center;
@@ -765,7 +794,6 @@ const columns = computed(() => {
 @media (max-width: 768px) {
   .bottom-bento { grid-template-columns: 1fr; height: auto; }
   .table-footer { flex-wrap: wrap; gap: 8px; }
-  .footer-pages { flex-wrap: wrap; }
   .insight-bar { flex-wrap: wrap; }
 }
 </style>

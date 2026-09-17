@@ -2,6 +2,7 @@
 defineOptions({ name: 'PortfolioWatchlist' })
 import { ref, computed, h, reactive, onMounted } from 'vue'
 import { NButton, NIcon, NDataTable, NModal, NInput, NSelect, useMessage } from 'naive-ui'
+import type { PaginationProps } from 'naive-ui'
 import { Add, Download, TrendingUpOutline, FilterOutline } from '@vicons/ionicons5'
 import { useAsyncData } from '../composables/useApi'
 import { api } from '../utils/api'
@@ -22,6 +23,19 @@ const { titleWithHelp } = useFieldHelp()
 const { data: funds, loading, error, refresh: refetch } = useAsyncData<FundItem[]>(() => api.getFunds())
 onMounted(refetch)
 const activeTab = ref<string>('index')
+
+// 表格分页：每页默认 20 行，客户端分页
+const pagination = ref<PaginationProps>({
+  page: 1,
+  pageSize: 20,
+  showSizePicker: true,
+  pageSizes: [10, 20, 50, 100],
+  onChange: (page: number) => { pagination.value.page = page },
+  onUpdatePageSize: (pageSize: number) => {
+    pagination.value.pageSize = pageSize
+    pagination.value.page = 1
+  },
+})
 
 // 添加标的弹窗
 const showAddModal = ref(false)
@@ -306,6 +320,7 @@ const convergenceChartOption = computed(() => ({
         :bordered="false"
         :single-line="false"
         size="small"
+        :pagination="pagination"
         :row-props="(row: any) => ({ onClick: () => message.info(row.name) })"
       />
     </DataPanel>
