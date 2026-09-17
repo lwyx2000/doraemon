@@ -358,7 +358,7 @@ TABLES = [
     """
     CREATE TABLE IF NOT EXISTS biz_holdings (
         id               VARCHAR PRIMARY KEY,
-        user_id          VARCHAR NOT NULL,
+        fk_users          UUID NOT NULL,
         code             VARCHAR(20) NOT NULL,
         name             VARCHAR(100) NOT NULL,
         type             VARCHAR(20) NOT NULL,
@@ -385,7 +385,7 @@ TABLES = [
     """
     CREATE TABLE IF NOT EXISTS biz_broker_accounts (
         id               VARCHAR PRIMARY KEY,
-        user_id          VARCHAR NOT NULL,
+        fk_users          UUID NOT NULL,
         broker           VARCHAR(50) NOT NULL,
         account          VARCHAR(50) DEFAULT '',
         created_at       VARCHAR,
@@ -397,7 +397,7 @@ TABLES = [
     """
     CREATE TABLE IF NOT EXISTS biz_account_names (
         id               VARCHAR PRIMARY KEY,
-        user_id          VARCHAR NOT NULL,
+        fk_users          UUID NOT NULL,
         name             VARCHAR(50) NOT NULL,
         created_at       VARCHAR,
         updated_at       VARCHAR
@@ -408,7 +408,7 @@ TABLES = [
     """
     CREATE TABLE IF NOT EXISTS biz_holding_snapshots (
         id                 VARCHAR PRIMARY KEY,
-        user_id            VARCHAR NOT NULL,
+        fk_users          UUID NOT NULL,
         snap_date          VARCHAR(10) NOT NULL,
         total_market_value DOUBLE,
         total_cost         DOUBLE,
@@ -425,7 +425,7 @@ TABLES = [
     """
     CREATE TABLE IF NOT EXISTS biz_strategies (
         id            VARCHAR PRIMARY KEY,
-        user_id       VARCHAR NOT NULL,
+        fk_users          UUID NOT NULL,
         name          VARCHAR(50) NOT NULL,
         target_asset  VARCHAR(10) NOT NULL,
         rules         JSON,
@@ -551,7 +551,12 @@ INDEXES = [
 
     "CREATE INDEX IF NOT EXISTS idx_fav_users ON biz_favorites(fk_users)",
     "CREATE INDEX IF NOT EXISTS idx_pi_portfolios ON biz_portfolio_items(fk_portfolios)",
-    "CREATE INDEX IF NOT EXISTS idx_strat_users ON biz_strategies(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_strat_users ON biz_strategies(fk_users)",
+    "CREATE INDEX IF NOT EXISTS idx_holdings_users ON biz_holdings(fk_users)",
+    "CREATE INDEX IF NOT EXISTS idx_broker_users ON biz_broker_accounts(fk_users)",
+    "CREATE INDEX IF NOT EXISTS idx_acctname_users ON biz_account_names(fk_users)",
+    "CREATE INDEX IF NOT EXISTS idx_snap_users ON biz_holding_snapshots(fk_users)",
+
     "CREATE INDEX IF NOT EXISTS idx_ar_users ON biz_alert_rules(fk_users)",
     "CREATE INDEX IF NOT EXISTS idx_ae_rule_time ON biz_alert_events(fk_alert_rules, triggered_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_air_users_date ON biz_ai_reports(fk_users, report_date DESC)",

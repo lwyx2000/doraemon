@@ -152,7 +152,7 @@ def _ensure_tables() -> None:
         """
         CREATE TABLE IF NOT EXISTS biz_strategies (
             id            VARCHAR PRIMARY KEY,
-            user_id       VARCHAR NOT NULL,
+            fk_users       UUID NOT NULL,
             name          VARCHAR(50) NOT NULL,
             target_asset  VARCHAR(10) NOT NULL,
             rules         JSON,
@@ -273,7 +273,7 @@ def get_strategies(user_id: str) -> list[dict]:
     rows = db.fetchall(
         "SELECT id, name, target_asset, rules, sort_by, sort_order, limit_count, "
         "active, ai_tracking, created_at "
-        "FROM biz_strategies WHERE user_id = ? ORDER BY created_at",
+        "FROM biz_strategies WHERE fk_users = ? ORDER BY created_at",
         [user_id],
     )
     return [_row_to_dict(r) for r in rows]
@@ -303,7 +303,7 @@ def create_strategy(
     db = get_db()
     db.execute(
         "INSERT INTO biz_strategies "
-        "(id, user_id, name, target_asset, rules, sort_by, sort_order, limit_count, active, ai_tracking, created_at) "
+        "(id, fk_users, name, target_asset, rules, sort_by, sort_order, limit_count, active, ai_tracking, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [strategy["id"], user_id, name, target_asset,
          json.dumps(rules), sort_by, sort_order, limit_count,
@@ -379,14 +379,14 @@ def update_strategy(
         params.append(strategy_id)
         params.append(user_id)
         db.execute(
-            f"UPDATE biz_strategies SET {', '.join(sets)} WHERE id = ? AND user_id = ?",
+            f"UPDATE biz_strategies SET {', '.join(sets)} WHERE id = ? AND fk_users = ?",
             params,
         )
     # 重新读取
     row = db.fetchone(
         "SELECT id, name, target_asset, rules, sort_by, sort_order, limit_count, "
         "active, ai_tracking, created_at "
-        "FROM biz_strategies WHERE id = ? AND user_id = ?",
+        "FROM biz_strategies WHERE id = ? AND fk_users = ?",
         [strategy_id, user_id],
     )
     return _row_to_dict(row) if row else None
@@ -403,7 +403,7 @@ def delete_strategy(user_id: str, strategy_id: str) -> bool:
     _ensure_tables()
     db = get_db()
     row = db.fetchone(
-        "SELECT count(*) FROM biz_strategies WHERE id = ? AND user_id = ?",
+        "SELECT count(*) FROM biz_strategies WHERE id = ? AND fk_users = ?",
         [strategy_id, user_id],
     )
     if not row or row[0] == 0:

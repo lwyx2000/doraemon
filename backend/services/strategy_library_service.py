@@ -468,7 +468,7 @@ def _ensure_tables() -> None:
         """
         CREATE TABLE IF NOT EXISTS biz_library_subscriptions (
             id VARCHAR PRIMARY KEY,
-            user_id VARCHAR,
+            fk_users UUID,
             library_id VARCHAR,
             params_json VARCHAR,
             created_at VARCHAR,
@@ -480,7 +480,7 @@ def _ensure_tables() -> None:
         """
         CREATE TABLE IF NOT EXISTS biz_library_snapshots (
             id VARCHAR PRIMARY KEY,
-            user_id VARCHAR,
+            fk_users UUID,
             library_id VARCHAR,
             snap_date VARCHAR,
             payload_json VARCHAR
@@ -494,7 +494,7 @@ def get_tracked(user_id: str) -> list[dict[str, Any]]:
     db = get_db()
     rows = db.fetchall(
         "SELECT id, library_id, params_json, created_at FROM biz_library_subscriptions "
-        "WHERE user_id = ? ORDER BY created_at DESC",
+        "WHERE fk_users = ? ORDER BY created_at DESC",
         [user_id],
     )
     out = []
@@ -525,7 +525,7 @@ def add_tracked(user_id: str, library_id: str, params: dict | None) -> dict[str,
     rec_id = str(uuid.uuid4())
     db = get_db()
     db.execute(
-        "INSERT INTO biz_library_subscriptions (id, user_id, library_id, params_json, created_at, updated_at) "
+        "INSERT INTO biz_library_subscriptions (id, fk_users, library_id, params_json, created_at, updated_at) "
         "VALUES (?, ?, ?, ?, ?, ?)",
         [rec_id, user_id, library_id, json.dumps(params or {}, ensure_ascii=False), now, now],
     )
@@ -536,11 +536,11 @@ def remove_tracked(user_id: str, rec_id: str) -> bool:
     _ensure_tables()
     db = get_db()
     db.execute(
-        "DELETE FROM biz_library_subscriptions WHERE id = ? AND user_id = ?",
+        "DELETE FROM biz_library_subscriptions WHERE id = ? AND fk_users = ?",
         [rec_id, user_id],
     )
     db.execute(
-        "DELETE FROM biz_library_snapshots WHERE id = ? AND user_id = ?",
+        "DELETE FROM biz_library_snapshots WHERE id = ? AND fk_users = ?",
         [rec_id, user_id],
     )
     return True
@@ -551,7 +551,7 @@ def _save_snapshot(user_id: str, rec_id: str, library_id: str, payload: dict) ->
     db = get_db()
     today = datetime.now().strftime("%Y-%m-%d")
     db.execute(
-        "INSERT OR REPLACE INTO biz_library_snapshots (id, user_id, library_id, snap_date, payload_json) "
+        "INSERT OR REPLACE INTO biz_library_snapshots (id, fk_users, library_id, snap_date, payload_json) "
         "VALUES (?, ?, ?, ?, ?)",
         [rec_id, user_id, library_id, today,
          json.dumps(payload, ensure_ascii=False)],
@@ -562,7 +562,7 @@ def _load_snapshot_history(user_id: str, rec_id: str, limit: int = 30) -> list[d
     db = get_db()
     rows = db.fetchall(
         "SELECT snap_date, payload_json FROM biz_library_snapshots "
-        "WHERE id = ? AND user_id = ? ORDER BY snap_date DESC LIMIT ?",
+        "WHERE id = ? AND fk_users = ? ORDER BY snap_date DESC LIMIT ?",
         [rec_id, user_id, limit],
     )
     out = []

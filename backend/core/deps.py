@@ -5,6 +5,7 @@ from typing import Optional
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
+import uuid
 from jose import JWTError, jwt
 
 from core.config import JWT_SECRET, JWT_ALGORITHM, JWT_EXPIRE_HOURS, USE_MOCK_DATA
@@ -17,6 +18,16 @@ DEMO_USER_ID = "00000000-0000-0000-0000-000000000001"
 from database.connection import get_db, Database
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"/api/v1/auth/login", auto_error=False)
+
+
+def _is_uuid(v) -> bool:
+    """JWT sub 必须为合法 UUID（pk_users），否则视为无效凭证。"""
+    try:
+        uuid.UUID(str(v))
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
@@ -61,7 +72,7 @@ def get_current_user(token: Optional[str] = Depends(oauth2_scheme)) -> str:
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         user_id = payload.get("sub")
-        if not user_id:
+        if not user_id or not _is_uuid(user_id):
             raise _unauthorized("无效的登录凭证")
         return user_id
     except JWTError:

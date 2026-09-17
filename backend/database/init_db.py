@@ -177,6 +177,66 @@ def init_database(
     print("Database initialization complete.")
 
 
+
+# ============================================================
+# 用户绑定迁移（2026-09-17）
+# 历史表以 user_id VARCHAR 存用户名；现统一改为 fk_users UUID 引用 biz_users.pk_users，
+# 使 username 后续可变更而不影响持仓 / 设置 / 自选等绑定。幂等：已迁移的表自动跳过。
+# ============================================================
+
+_USER_BINDING_TABLES = [
+    "biz_holdings",
+    "biz_broker_accounts",
+    "biz_account_names",
+    "biz_holding_snapshots",
+    "biz_strategies",
+    "biz_signal_subscriptions",
+    "biz_library_subscriptions",
+    "biz_library_snapshots",
+]
+
+
+def migrate_user_binding(db: Database) -> None:
+    """一次性幂等迁移：user_id(username) -> fk_users(pk_users UUID)。"""
+    for table in _USER_BINDING_TABLES:
+        exists = db.fetchone(
+            "SELECT 1 FROM information_schema.tables WHERE table_name = ?", [table]
+        )
+        if not exists:
+            continue
+        cols = {r[0] for r in db.fetchall(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = ?", [table]
+        )}
+        if "user_id" not in cols or "fk_users" in cols:
+            continue  # 已迁移或本来就用 fk_users
+        print(f"[Migration] {table}: user_id -> fk_users")
+        # 旧索引若依赖 user_id 需先删（仅 biz_strategies 有 idx_strat_users）
+        if table == "biz_strategies":
+            try:
+                db.execute("DROP INDEX IF EXISTS idx_strat_users")
+            except Exception:
+                pass
+        db.execute(f"ALTER TABLE {table} ADD COLUMN fk_users UUID")
+        # 经 biz_users 映射 username -> pk_users（pk 转字符串以写入 UUID 列）
+        pk_map = {u: str(p) for u, p in db.fetchall(
+            "SELECT username, pk_users FROM biz_users"
+        )}
+        rows = db.fetchall(f"SELECT id, user_id FROM {table}")
+        updated = 0
+        for rid, uname in rows:
+            pk = pk_map.get(uname)
+            if pk:
+                db.execute(f"UPDATE {table} SET fk_users = ? WHERE id = ?", [pk, rid])
+                updated += 1
+        # 无法归属的孤儿行删除（无对应用户）
+        orphan = db.fetchone(f"SELECT count(*) FROM {table} WHERE fk_users IS NULL")
+        if orphan and orphan[0]:
+            print(f"[Migration] {table}: 删除 {orphan[0]} 条无主记录")
+            db.execute(f"DELETE FROM {table} WHERE fk_users IS NULL")
+        db.execute(f"ALTER TABLE {table} DROP COLUMN user_id")
+        print(f"[Migration] {table}: 完成（映射 {updated} 行）")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Initialize QuantTerminal Pro DuckDB database")
     parser.add_argument(

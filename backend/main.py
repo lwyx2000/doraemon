@@ -37,6 +37,9 @@ async def lifespan(app: FastAPI):
         # 启动期幂等种子默认账号（trader / sos）到 biz_users，仅当不存在时插入
         from services.auth_service import ensure_seed_users
         ensure_seed_users(db)
+        # 用户绑定迁移：旧 user_id(username) -> fk_users(pk_users UUID)，幂等
+        from database.init_db import migrate_user_binding
+        migrate_user_binding(db)
         # 申万行业快照：定时收盘落库 + 首次启动自动回填历史
         from jobs.sw_snapshot_job import start_sw_snapshot_scheduler
 
