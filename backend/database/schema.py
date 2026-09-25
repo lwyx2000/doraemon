@@ -508,6 +508,15 @@ TABLES = [
         enabled           BOOLEAN DEFAULT FALSE
     )
     """,
+
+    # 26. 通用 KV 配置（监控缓存配置等，重启保留）
+    """
+    CREATE TABLE IF NOT EXISTS biz_config (
+        key         VARCHAR(64) NOT NULL PRIMARY KEY,
+        value_json  JSON,
+        updated_at  TIMESTAMP DEFAULT now()
+    )
+    """,
 ]
 
 # ============================================================

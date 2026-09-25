@@ -36,21 +36,21 @@ class AdminResetPasswordRequest(BaseModel):
 
 
 @router.post("/login", response_model=ApiResponse[LoginResponse])
-async def login(request: LoginRequest) -> ApiResponse[LoginResponse]:
+def login(request: LoginRequest) -> ApiResponse[LoginResponse]:
     """Authenticate user and return JWT token."""
     data = authenticate(request.username, request.password)
     return ApiResponse(data=LoginResponse(**data))
 
 
 @router.post("/register", response_model=ApiResponse[LoginResponse])
-async def register_endpoint(request: RegisterRequest) -> ApiResponse[LoginResponse]:
+def register_endpoint(request: RegisterRequest) -> ApiResponse[LoginResponse]:
     """Register a new user and return JWT token."""
     data = register(request.username, request.password)
     return ApiResponse(data=LoginResponse(**data))
 
 
 @router.put("/password", response_model=ApiResponse[dict])
-async def change_password_endpoint(
+def change_password_endpoint(
     body: ChangePasswordRequest,
     user_id: str = Depends(get_current_user),
 ) -> ApiResponse[dict]:
@@ -63,7 +63,7 @@ async def change_password_endpoint(
 
 
 @router.post("/admin/list-users", response_model=ApiResponse[AdminListUsersResponse])
-async def admin_list_users_endpoint(
+def admin_list_users_endpoint(
     _: str = Depends(require_admin),
 ) -> ApiResponse[AdminListUsersResponse]:
     """管理员：列出全部用户（不含密码哈希）。仅管理员可调用。"""
@@ -72,7 +72,7 @@ async def admin_list_users_endpoint(
 
 
 @router.post("/admin/reset-password", response_model=ApiResponse[dict])
-async def admin_reset_password_endpoint(
+def admin_reset_password_endpoint(
     body: AdminResetPasswordRequest,
     _: str = Depends(require_admin),
 ) -> ApiResponse[dict]:

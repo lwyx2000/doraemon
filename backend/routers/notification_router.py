@@ -15,14 +15,14 @@ router = APIRouter(prefix="/notifications", tags=["notifications"])
 
 
 @router.get("/config", response_model=ApiResponse[NotificationConfig])
-async def get_notification_config_endpoint(user_id: str = Depends(get_current_user)):
+def get_notification_config_endpoint(user_id: str = Depends(get_current_user)):
     """获取通知渠道配置。"""
     data = get_notification_config()
     return ApiResponse(data=data)
 
 
 @router.put("/config", response_model=ApiResponse[NotificationConfig])
-async def update_notification_config_endpoint(
+def update_notification_config_endpoint(
     body: NotificationConfig,
     user_id: str = Depends(get_current_user),
 ):
@@ -41,7 +41,7 @@ async def update_notification_config_endpoint(
 
 
 @router.post("/test", response_model=ApiResponse[dict])
-async def test_notification_endpoint(
+def test_notification_endpoint(
     body: dict,
     user_id: str = Depends(get_current_user),
 ):

@@ -15,12 +15,12 @@ router = APIRouter(prefix="/broker-accounts", tags=["broker-accounts"])
 
 
 @router.get("", response_model=ApiResponse[list[dict]])
-async def get_broker_accounts(user_id: str = Depends(get_current_user)):
+def get_broker_accounts(user_id: str = Depends(get_current_user)):
     return ApiResponse(data=list_broker_accounts(user_id))
 
 
 @router.post("", response_model=ApiResponse[dict])
-async def add_broker_account(
+def add_broker_account(
     body: BrokerAccountRequest,
     user_id: str = Depends(get_current_user),
 ):
@@ -31,7 +31,7 @@ async def add_broker_account(
 
 
 @router.put("/{account_id}", response_model=ApiResponse[dict])
-async def edit_broker_account(
+def edit_broker_account(
     account_id: str,
     body: BrokerAccountRequest,
     user_id: str = Depends(get_current_user),
@@ -43,7 +43,7 @@ async def edit_broker_account(
 
 
 @router.delete("/{account_id}", response_model=ApiResponse[dict])
-async def remove_broker_account(
+def remove_broker_account(
     account_id: str,
     user_id: str = Depends(get_current_user),
 ):

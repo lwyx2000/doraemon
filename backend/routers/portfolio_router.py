@@ -10,13 +10,13 @@ router = APIRouter(prefix="/portfolios", tags=["portfolios"])
 
 
 @router.get("", response_model=ApiResponse[list[Portfolio]])
-async def list_portfolios(user_id: str = Depends(get_current_user)):
+def list_portfolios(user_id: str = Depends(get_current_user)):
     data = get_portfolios(user_id)
     return ApiResponse(data=data)
 
 
 @router.post("/{portfolio_id}/items", response_model=ApiResponse[dict])
-async def add_portfolio_item_endpoint(
+def add_portfolio_item_endpoint(
     portfolio_id: str,
     item: PortfolioItemCreate,
     user_id: str = Depends(get_current_user),

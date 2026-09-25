@@ -47,6 +47,10 @@ async def lifespan(app: FastAPI):
         from jobs.sw_snapshot_job import start_sw_snapshot_scheduler
 
         start_sw_snapshot_scheduler()
+        # 监控缓存配置：从 biz_config 恢复（重启保留用户改过的配置）
+        from services.monitor_service import load_cache_config
+
+        load_cache_config()
 
     yield
 

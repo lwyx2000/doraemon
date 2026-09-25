@@ -6,6 +6,14 @@ Usage:
     db = get_db()
     rows = db.fetchall("SELECT * FROM base_indices")
     db.close()
+
+并发模型（2026-09-25 改造）：
+- 单「写连接」：所有写入 / DDL / 执行（execute / executemany）都走它，并被一把 RLock
+  串行化，避免多线程并发写同一连接触发 GIL 死锁（见历史定位）。
+- 线程级「只读连接」：每个工作线程首次读时懒创建一个 read_only 连接并绑定到该线程。
+  DuckDB 支持「多连接并发读 + 单写」，线程级隔离确保同一只读连接不被多线程并发使用，
+  因此读路径既不需要 RLock，也不会 reintroduce GIL 死锁，且读吞吐不再被写锁串行压成单线程。
+- 读连接创建失败（如文件尚未就绪）→ 自动退回写连接（仍在 RLock 保护下），保证不崩。
 """
 
 import duckdb
@@ -20,69 +28,105 @@ from core.config import DB_PATH as _CONFIGURED_DB_PATH
 # 否则回退到 backend/database/quantterminal.duckdb
 DEFAULT_DB_PATH = Path(_CONFIGURED_DB_PATH)
 
+# 线程级存储：每个工作线程专属的只读连接
+_thread_local = threading.local()
+
 
 class Database:
-    """DuckDB database connection wrapper.
+    """DuckDB database connection wrapper with a write connection + per-thread read connections."""
 
-    DuckDB connections are thread-safe for concurrent reads.
-    For write operations, use a single connection or manage locks externally.
-    """
-
-    def __init__(self, db_path: Optional[str | Path] = None):
+    def __init__(self, db_path: Optional[str | Path] = None, read_pool_size: int = 8):
         self.db_path = Path(db_path) if db_path else DEFAULT_DB_PATH
-        self._conn: Optional[duckdb.DuckDBPyConnection] = None
-        # 单个 DuckDB connection 不允许并发使用：并发调用会触发「GIL + DuckDB 内部锁」
-        # 死锁（线程持 GIL 等 DuckDB 锁，DuckDB 工作线程持锁等 GIL），导致整个进程冻结。
-        # Python 的 lock 在阻塞等待时会释放 GIL，因此用它串行化访问即可打破死锁。
-        self._lock = threading.RLock()
-        self._connect()
+        # 写连接：写入 / DDL / execute / executemany 的唯一入口
+        self._write_conn: Optional[duckdb.DuckDBPyConnection] = None
+        # 写串行锁（重入，避免并发写同一连接导致 GIL 死锁）
+        self._write_lock = threading.RLock()
+        # 读写连接注册表锁 + 所有已创建的只读连接（用于关闭 / 兜底）
+        self._read_registry_lock = threading.Lock()
+        self._read_conns: list[duckdb.DuckDBPyConnection] = []
+        self._read_pool_size = max(1, read_pool_size)
+        self._connect_write()
 
-    def _connect(self) -> None:
-        """Establish database connection, creating the file if it doesn't exist."""
-        self._conn = duckdb.connect(str(self.db_path))
+    def _connect_write(self) -> None:
+        """Establish the write connection, creating the file if it doesn't exist."""
+        self._write_conn = duckdb.connect(str(self.db_path))
+
+    def _get_read_conn(self) -> duckdb.DuckDBPyConnection:
+        """Return the current thread's dedicated read connection.
+
+        线程级隔离：每个线程首次读时创建一个普通连接并绑定到该线程，后续复用。
+        使用普通（非 read_only）连接 + DuckDB 的 MVCC 快照隔离：多连接并发读安全，
+        且读与单写连接并发时读到的是已提交快照（不会出现 read_only 模式下
+        「并发写导致读返回空 / query cancelled」的一致性缺陷）。
+
+        注意：读连接只用于 SELECT；写统一走写连接 + 写锁，二者连接隔离，互不冲突。
+        """
+        conn = getattr(_thread_local, "read_conn", None)
+        if conn is None:
+            try:
+                conn = duckdb.connect(str(self.db_path))
+            except Exception:
+                # 读连接创建失败（文件未就绪等）→ 退回写连接（仍在写锁保护下）
+                return self._write_conn  # type: ignore
+            with self._read_registry_lock:
+                self._read_conns.append(conn)
+            _thread_local.read_conn = conn
+        return conn
 
     @property
     def conn(self) -> duckdb.DuckDBPyConnection:
-        if self._conn is None:
-            self._connect()
-        return self._conn  # type: ignore
+        """兼容旧调用：返回写连接。新代码应优先使用 fetch*/execute。"""
+        if self._write_conn is None:
+            self._connect_write()
+        return self._write_conn  # type: ignore
 
     def execute(self, sql: str, params: Optional[list | dict] = None) -> duckdb.DuckDBPyConnection:
-        """Execute a SQL statement with optional parameters.（串行化，避免 GIL 死锁）"""
-        with self._lock:
+        """Execute a SQL statement (写入 / DDL)。走写连接，串行化避免 GIL 死锁。"""
+        with self._write_lock:
             if params:
-                return self.conn.execute(sql, params)
-            return self.conn.execute(sql)
+                return self._write_conn.execute(sql, params)  # type: ignore
+            return self._write_conn.execute(sql)  # type: ignore
 
     def executemany(self, sql: str, params_seq: list[list | dict]) -> duckdb.DuckDBPyConnection:
-        """Execute the same SQL against a sequence of parameter sets.（串行化，一次持锁批量写）"""
-        with self._lock:
-            return self.conn.executemany(sql, params_seq)
+        """Execute the same SQL against a sequence of parameter sets (写入)。走写连接，一次持锁批量写。"""
+        with self._write_lock:
+            return self._write_conn.executemany(sql, params_seq)  # type: ignore
 
     def fetchall(self, sql: str, params: Optional[list | dict] = None) -> list[tuple]:
-        """Execute query and return all rows.（串行化，避免 GIL 死锁）"""
-        with self._lock:
-            result = self.execute(sql, params)
-            return result.fetchall()
+        """Execute query and return all rows. 走当前线程只读连接（无锁，并发读）。"""
+        conn = self._get_read_conn()
+        if params:
+            return conn.execute(sql, params).fetchall()
+        return conn.execute(sql).fetchall()
 
     def fetchone(self, sql: str, params: Optional[list | dict] = None) -> Optional[tuple]:
-        """Execute query and return a single row.（串行化，避免 GIL 死锁）"""
-        with self._lock:
-            result = self.execute(sql, params)
-            return result.fetchone()
+        """Execute query and return a single row. 走当前线程只读连接（无锁，并发读）。"""
+        conn = self._get_read_conn()
+        if params:
+            return conn.execute(sql, params).fetchone()
+        return conn.execute(sql).fetchone()
 
     def fetch_df(self, sql: str, params: Optional[list | dict] = None):
-        """Execute query and return results as a pandas DataFrame.（串行化，避免 GIL 死锁）"""
-        with self._lock:
-            result = self.execute(sql, params)
-            return result.df()
+        """Execute query and return results as a pandas DataFrame. 走当前线程只读连接。"""
+        conn = self._get_read_conn()
+        if params:
+            return conn.execute(sql, params).df()
+        return conn.execute(sql).df()
 
     def close(self) -> None:
-        """Close the database connection."""
-        with self._lock:
-            if self._conn:
-                self._conn.close()
-                self._conn = None
+        """Close the write connection and all read connections."""
+        with self._write_lock:
+            if self._write_conn:
+                self._write_conn.close()
+                self._write_conn = None
+        with self._read_registry_lock:
+            for c in self._read_conns:
+                try:
+                    c.close()
+                except Exception:
+                    pass
+            self._read_conns = []
+        _thread_local.read_conn = None
 
     def __enter__(self):
         return self

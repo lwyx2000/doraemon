@@ -17,7 +17,7 @@ router = APIRouter(prefix="/ai", tags=["ai"])
 
 
 @router.get("/reports", response_model=ApiResponse[PaginatedData[AiReport]])
-async def list_ai_reports(
+def list_ai_reports(
     date: str | None = Query(None),
     page: int = Query(1, ge=1),
     user_id: str = Depends(get_current_user),
@@ -27,19 +27,19 @@ async def list_ai_reports(
 
 
 @router.post("/reports/generate", response_model=ApiResponse[AiReport])
-async def generate_ai_report_endpoint(user_id: str = Depends(get_current_user)):
+def generate_ai_report_endpoint(user_id: str = Depends(get_current_user)):
     data = generate_ai_report(user_id)
     return ApiResponse(data=data)
 
 
 @router.get("/config", response_model=ApiResponse[AiConfig])
-async def get_ai_config_endpoint(user_id: str = Depends(get_current_user)):
+def get_ai_config_endpoint(user_id: str = Depends(get_current_user)):
     data = get_ai_config(user_id)
     return ApiResponse(data=data)
 
 
 @router.put("/config", response_model=ApiResponse[AiConfig])
-async def update_ai_config_endpoint(body: AiConfig, user_id: str = Depends(get_current_user)):
+def update_ai_config_endpoint(body: AiConfig, user_id: str = Depends(get_current_user)):
     data = update_ai_config(
         user_id,
         body.provider,

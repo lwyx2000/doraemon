@@ -15,13 +15,13 @@ router = APIRouter(prefix="/account-names", tags=["account-names"])
 
 
 @router.get("")
-async def get_account_names(user_id: str = Depends(get_current_user)):
+def get_account_names(user_id: str = Depends(get_current_user)):
     """列出当前用户所有账户名。"""
     return {"data": list_account_names(user_id)}
 
 
 @router.post("")
-async def add_account_name(
+def add_account_name(
     body: AccountNameRequest,
     user_id: str = Depends(get_current_user),
 ):
@@ -33,7 +33,7 @@ async def add_account_name(
 
 
 @router.put("/{name_id}")
-async def edit_account_name(
+def edit_account_name(
     name_id: str,
     body: AccountNameRequest,
     user_id: str = Depends(get_current_user),
@@ -46,7 +46,7 @@ async def edit_account_name(
 
 
 @router.delete("/{name_id}")
-async def remove_account_name(
+def remove_account_name(
     name_id: str,
     user_id: str = Depends(get_current_user),
 ):

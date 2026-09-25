@@ -24,19 +24,19 @@ router = APIRouter(prefix="/alerts", tags=["alerts"])
 # ============================================================
 
 @router.get("/rules", response_model=ApiResponse[list[AlertRule]])
-async def list_alert_rules(user_id: str = Depends(get_current_user)):
+def list_alert_rules(user_id: str = Depends(get_current_user)):
     data = get_alert_rules(user_id)
     return ApiResponse(data=data)
 
 
 @router.post("/rules", response_model=ApiResponse[AlertRule])
-async def create_alert_rule_endpoint(body: AlertRuleCreate, user_id: str = Depends(get_current_user)):
+def create_alert_rule_endpoint(body: AlertRuleCreate, user_id: str = Depends(get_current_user)):
     data = create_alert_rule(user_id, body.name, body.type, body.target, body.condition, body.value, body.channels)
     return ApiResponse(data=data)
 
 
 @router.put("/rules/{rule_id}", response_model=ApiResponse[AlertRule])
-async def update_alert_rule_endpoint(rule_id: str, body: AlertRuleUpdate, user_id: str = Depends(get_current_user)):
+def update_alert_rule_endpoint(rule_id: str, body: AlertRuleUpdate, user_id: str = Depends(get_current_user)):
     data = update_alert_rule(
         user_id, rule_id,
         name=body.name,
@@ -53,7 +53,7 @@ async def update_alert_rule_endpoint(rule_id: str, body: AlertRuleUpdate, user_i
 
 
 @router.delete("/rules/{rule_id}", response_model=ApiResponse[dict])
-async def delete_alert_rule_endpoint(rule_id: str, user_id: str = Depends(get_current_user)):
+def delete_alert_rule_endpoint(rule_id: str, user_id: str = Depends(get_current_user)):
     deleted = delete_alert_rule(user_id, rule_id)
     if not deleted:
         return ApiResponse(code=404, message="Not found", data=None)
@@ -65,7 +65,7 @@ async def delete_alert_rule_endpoint(rule_id: str, user_id: str = Depends(get_cu
 # ============================================================
 
 @router.get("/events", response_model=ApiResponse[PaginatedData[AlertEvent]])
-async def list_alert_events(
+def list_alert_events(
     is_read: bool | None = Query(None),
     since: str | None = Query(None),
     page: int = Query(1, ge=1),
@@ -77,7 +77,7 @@ async def list_alert_events(
 
 
 @router.put("/events/{event_id}/read", response_model=ApiResponse[dict])
-async def mark_event_read_endpoint(event_id: int, user_id: str = Depends(get_current_user)):
+def mark_event_read_endpoint(event_id: int, user_id: str = Depends(get_current_user)):
     marked = mark_event_read(user_id, event_id)
     if not marked:
         return ApiResponse(code=404, message="Not found", data=None)
@@ -89,7 +89,7 @@ async def mark_event_read_endpoint(event_id: int, user_id: str = Depends(get_cur
 # ============================================================
 
 @router.post("/scan", response_model=ApiResponse[AlertScanResult])
-async def scan_alerts_endpoint(user_id: str = Depends(get_current_user)):
+def scan_alerts_endpoint(user_id: str = Depends(get_current_user)):
     """手动触发一次预警扫描，检查所有活跃规则。"""
     result = run_alert_scan(user_id)
     return ApiResponse(data=result)

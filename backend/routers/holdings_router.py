@@ -22,7 +22,7 @@ router = APIRouter(prefix="/holdings", tags=["holdings"])
 
 
 @router.get("", response_model=ApiResponse[dict])
-async def list_holdings(
+def list_holdings(
     type: str | None = None,
     broker: str | None = None,
     account: str | None = None,
@@ -36,7 +36,7 @@ async def list_holdings(
 
 
 @router.post("/import", response_model=ApiResponse[dict])
-async def import_holdings_endpoint(
+def import_holdings_endpoint(
     body: HoldingImportRequest,
     user_id: str = Depends(get_current_user),
 ):
@@ -127,7 +127,7 @@ async def import_holdings_csv(
 
 
 @router.put("/{holding_id}", response_model=ApiResponse[dict])
-async def update_holding_endpoint(
+def update_holding_endpoint(
     holding_id: str,
     body: HoldingUpdate,
     user_id: str = Depends(get_current_user),
@@ -141,7 +141,7 @@ async def update_holding_endpoint(
 
 
 @router.delete("/{holding_id}", response_model=ApiResponse[dict])
-async def delete_holding_endpoint(
+def delete_holding_endpoint(
     holding_id: str,
     user_id: str = Depends(get_current_user),
 ):
@@ -152,13 +152,13 @@ async def delete_holding_endpoint(
 
 
 @router.get("/snapshots", response_model=ApiResponse[list[dict]])
-async def list_snapshots(user_id: str = Depends(get_current_user)):
+def list_snapshots(user_id: str = Depends(get_current_user)):
     """历史每日快照（总市值/总盈亏），用于历史盈亏曲线。"""
     return ApiResponse(data=get_snapshots(user_id))
 
 
 @router.post("/snapshot", response_model=ApiResponse[dict])
-async def take_snapshot_endpoint(user_id: str = Depends(get_current_user)):
+def take_snapshot_endpoint(user_id: str = Depends(get_current_user)):
     """手动触发当日快照（重新抓取行情计算后落库）。"""
     snap = take_snapshot(user_id)
     if snap is None:

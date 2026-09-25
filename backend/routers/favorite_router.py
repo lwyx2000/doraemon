@@ -14,13 +14,13 @@ router = APIRouter(prefix="/favorites", tags=["favorites"])
 
 
 @router.get("", response_model=ApiResponse[list[FavoriteItem]])
-async def list_favorites(user_id: str = Depends(get_current_user)):
+def list_favorites(user_id: str = Depends(get_current_user)):
     data = get_favorites(user_id)
     return ApiResponse(data=data)
 
 
 @router.post("", response_model=ApiResponse[FavoriteItem])
-async def create_favorite(
+def create_favorite(
     item: FavoriteCreate,
     user_id: str = Depends(get_current_user),
 ):
@@ -29,7 +29,7 @@ async def create_favorite(
 
 
 @router.delete("/{favorite_id}", response_model=ApiResponse[dict])
-async def remove_favorite(
+def remove_favorite(
     favorite_id: str,
     user_id: str = Depends(get_current_user),
 ):
