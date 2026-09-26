@@ -28,7 +28,8 @@ from utils.convertible_bond import (
     CONVERSION_ORDER,
     VOL_SIGNAL_ORDER,
 )
-from core.config import USE_MOCK_DATA
+from core.config import USE_MOCK_DATA, AKSHARE_API_BASE
+from services.meta_utils import gateway_no_data_meta, real_meta_base, mock_meta
 import mock_data
 
 
@@ -248,14 +249,14 @@ def get_convertible_bonds(
     double_low_max: float | None = None,
     feasibility: str | None = None,
     vol_signal: str | None = None,
-) -> list[dict]:
-    """Return real convertible bonds filtered by the given criteria."""
+) -> tuple[list[dict], dict]:
+    """Return (real convertible bonds, meta) filtered by the given criteria."""
     if USE_MOCK_DATA:
-        return [_attach_analyses(dict(b)) for b in mock_data.MOCK_CONVERTIBLE_BONDS]
+        return [_attach_analyses(dict(b)) for b in mock_data.MOCK_CONVERTIBLE_BONDS], mock_meta()
     raw = _fetch_raw()
     if not raw:
         print("[CB Service] 取数失败，返回空列表")
-        return []
+        return [], gateway_no_data_meta()
 
     results = [_attach_analyses(_map_bond(_norm_row(row))) for row in raw]
     # 补全近似 YTM（东方财富主源无此字段；集思录兜底的真实值已在 _norm_row 中保留）
@@ -288,7 +289,7 @@ def get_convertible_bonds(
                 continue
         filtered.append(item)
 
-    return filtered
+    return filtered, real_meta_base(AKSHARE_API_BASE)
 
 
 def get_convertible_bond_detail(code: str) -> dict | None:

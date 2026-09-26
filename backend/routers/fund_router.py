@@ -16,17 +16,17 @@ def funds(
     date: str | None = Query(default=None),
 ) -> ApiResponse[list[FundItem]]:
     """Return funds with arbitrage analysis."""
-    data = get_funds(
+    data, meta = get_funds(
         fund_type=type,
         min_premium=min_premium,
         feasibility=feasibility,
         date=date,
     )
-    return ApiResponse(data=data)
+    return ApiResponse(data=data, meta=meta)
 
 
 @router.get("/funds/closed/analysis", response_model=ApiResponse[list[ClosedFundAnalysis]])
 def closed_fund_analysis() -> ApiResponse[list[ClosedFundAnalysis]]:
     """Return closed-end fund analysis sorted by score."""
-    data = get_closed_fund_analysis()
-    return ApiResponse(data=data)
+    data, meta = get_closed_fund_analysis()
+    return ApiResponse(data=data, meta=meta)

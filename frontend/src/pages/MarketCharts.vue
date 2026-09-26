@@ -1,9 +1,9 @@
 <script setup lang="ts">
 defineOptions({ name: 'MarketCharts' })
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { NButton, NEmpty, NTag, NSpin, useMessage } from 'naive-ui'
-import { RefreshOutline } from '@vicons/ionicons5'
-import { chartsApi } from '../utils/api'
+import { NButton, NEmpty, NTag, NSpin, NIcon, useMessage } from 'naive-ui'
+import { RefreshOutline, CloudOfflineOutline } from '@vicons/ionicons5'
+import { chartsApi, isGatewayNoData } from '../utils/api'
 import type { MarketChart, ChartPanel, ChartSourceMeta } from '../utils/api'
 import BaseChart from '../components/BaseChart.vue'
 import DataPanel from '../components/DataPanel.vue'
@@ -152,9 +152,10 @@ const loadingCount = computed(
   () => charts.value.filter((c) => !c.primary?.dates?.length).length,
 )
 
-// 新鲜度标签：根据后端 meta 的 stale / ageMinutes / breakerOpen / updateTime 判别"活的"还是"旧的"
+// 新鲜度标签：根据后端 meta 的 stale / ageMinutes / breakerOpen / gatewayEmpty / updateTime 判别"活的"还是"旧的"
 function staleText(m: ChartSourceMeta | undefined): string {
   if (!m) return ''
+  if (m.gatewayEmpty) return '网关无数据'
   if (m.breakerOpen) return '网关熔断 · 回退缓存'
   if (m.updateTime == null) return '数据缺失'
   if (m.stale) return `缓存较旧（约 ${m.ageMinutes ?? '?'} 分钟前更新）`
@@ -163,7 +164,7 @@ function staleText(m: ChartSourceMeta | undefined): string {
 }
 function staleType(m: ChartSourceMeta | undefined): 'success' | 'warning' | 'error' | 'default' {
   if (!m) return 'default'
-  if (m.breakerOpen || m.updateTime == null) return 'error'
+  if (m.gatewayEmpty || m.breakerOpen || m.updateTime == null) return 'error'
   if (m.stale) return 'warning'
   return 'success'
 }
@@ -202,6 +203,14 @@ function staleType(m: ChartSourceMeta | undefined): 'success' | 'warning' | 'err
           <template v-if="chart.primary?.dates?.length">
             <BaseChart :option="buildOption(chart.primary, 240)" :height="240" />
           </template>
+          <div v-else-if="isGatewayNoData(chart.meta)" class="chart-gateway-empty">
+            <n-icon :component="CloudOfflineOutline" size="28" class="gw-icon" />
+            <span>网关无数据（上游未返回该图表数据）</span>
+            <n-button size="tiny" type="primary" ghost @click="refresh">
+              <template #icon><n-icon :component="RefreshOutline" /></template>
+              重试
+            </n-button>
+          </div>
           <div v-else class="chart-loading">
             <n-spin size="small" />
             <span>数据后台刷新中…（首次加载需数分钟，请稍候或点刷新）</span>
@@ -280,6 +289,22 @@ function staleType(m: ChartSourceMeta | undefined): 'success' | 'warning' | 'err
   color: var(--text-muted);
   border: 1px dashed var(--border-default);
   border-radius: 6px;
+}
+.chart-gateway-empty {
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--tag-orange-text, #874d00);
+  background: #fff7e6;
+  border: 1px dashed #ffd591;
+  border-radius: 6px;
+}
+.chart-gateway-empty .gw-icon {
+  color: var(--tag-orange-text, #d46b08);
 }
 .signal-note {
   margin-top: 4px;

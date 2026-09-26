@@ -5,7 +5,7 @@ import { NButton, NDataTable, NIcon, NTag, useMessage } from 'naive-ui'
 import type { PaginationProps } from 'naive-ui'
 import { WarningOutline } from '@vicons/ionicons5'
 import { useAsyncData } from '../composables/useApi'
-import { api } from '../utils/api'
+import { api, isGatewayNoData } from '../utils/api'
 import type { ReitItem } from '../types'
 import { exportToCSV } from '../utils/export'
 import { analyzeReitsBatch } from '../utils/reits'
@@ -14,12 +14,14 @@ import PageHeader from '../components/PageHeader.vue'
 import StatCard from '../components/StatCard.vue'
 import DataPanel from '../components/DataPanel.vue'
 import LoadingState from '../components/LoadingState.vue'
+import SectionFallback from '../components/SectionFallback.vue'
 import GlossaryPanel from '../components/GlossaryPanel.vue'
 import { useFieldHelp } from '../composables/useFieldHelp'
 
 const message = useMessage()
 const { titleWithHelp } = useFieldHelp()
-const { data: reits, loading, error, refresh: refetch } = useAsyncData<ReitItem[]>(() => api.getReits())
+const { data: reits, loading, error, meta, refresh: refetch } = useAsyncData<ReitItem[]>(() => api.getReits())
+const gatewayEmpty = computed(() => isGatewayNoData(meta.value))
 onMounted(refetch)
 const refreshing = ref(false)
 
@@ -262,7 +264,8 @@ const columns = [
     text="正在加载REITs数据..."
     @retry="refetch"
   >
-    <div v-if="reits" class="reits-page">
+    <SectionFallback v-if="gatewayEmpty" :gateway-empty="true" :min-height="480" @retry="refetch" />
+    <div v-else-if="reits" class="reits-page">
     <PageHeader title="公募REITs中心" subtitle="公募REITs 深度价值分析 - 底层资产评估与分红率跟踪" helpKey="reits">
       <template #actions>
         <n-button size="small" :loading="refreshing" @click="refresh">刷新</n-button>

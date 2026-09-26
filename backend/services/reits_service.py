@@ -18,7 +18,8 @@ import requests
 
 from services.akshare_client import akshare_request
 from utils.reits import analyze_reits
-from core.config import USE_MOCK_DATA
+from core.config import USE_MOCK_DATA, AKSHARE_API_BASE
+from services.meta_utils import gateway_no_data_meta, real_meta_base, mock_meta
 import mock_data
 
 # 腾讯财经行情源(qt.gtimg.cn)兜底清单：53 上的东财源 reits_realtime_em 被掐，
@@ -157,13 +158,14 @@ def get_reits(
     min_dividend: float | None = None,
     nav_level: str | None = None,
     sustainability: str | None = None,
-) -> list[dict]:
-    """Return real REITs (实时行情) filtered by the given criteria.
+) -> tuple[list[dict], dict]:
+    """Return (real REITs, meta) (实时行情) filtered by the given criteria.
 
     每个 REIT 经 analyze_reits 深度分析后合并分析结果再过滤。取数失败返回空列表。
 
     数据源策略：优先 53 东财 reits_realtime_em；失败（53→东财连接被掐）后降级到
     腾讯 qt.gtimg.cn 实时行情，并进入冷却期直连腾讯以避开每次 15s 超时。
+    meta.gatewayEmpty=True 当且仅当东财源与腾讯源均未取到任何数据。
     """
     global _EASTMONEY_REITS_DEAD_UNTIL
     if USE_MOCK_DATA:
@@ -173,7 +175,7 @@ def get_reits(
             analysis = analyze_reits(item)
             item.update(analysis)
             results.append(item)
-        return results
+        return results, mock_meta()
 
     now = time.time()
     if now > _EASTMONEY_REITS_DEAD_UNTIL:
@@ -191,7 +193,7 @@ def get_reits(
 
     if not items:
         print("[REITs Service] 取数失败，返回空列表")
-        return []
+        return [], gateway_no_data_meta()
 
     results: list[dict] = []
     for item in items:
@@ -211,4 +213,4 @@ def get_reits(
             continue
         filtered.append(item)
 
-    return filtered
+    return filtered, real_meta_base(AKSHARE_API_BASE)

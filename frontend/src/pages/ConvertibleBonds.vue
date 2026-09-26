@@ -6,7 +6,7 @@ import type { PaginationProps } from 'naive-ui'
 import { DownloadOutline, FilterOutline, WarningOutline, SwapHorizontalOutline, StatsChartOutline, WalletOutline, ConstructOutline } from '@vicons/ionicons5'
 import type { Component } from 'vue'
 import { useAsyncData } from '../composables/useApi'
-import { api } from '../utils/api'
+import { api, isGatewayNoData } from '../utils/api'
 import type { ConvertibleBond } from '../types'
 import { exportToCSV } from '../utils/export'
 import { analyzeConversionBatch, analyzeVolatilityBatch, CONVERSION_ORDER, VOL_SIGNAL_ORDER } from '../utils/convertibleBond'
@@ -14,12 +14,14 @@ import type { ConversionArbitrage, VolatilityAnalysis } from '../utils/convertib
 import PageHeader from '../components/PageHeader.vue'
 import DataPanel from '../components/DataPanel.vue'
 import LoadingState from '../components/LoadingState.vue'
+import SectionFallback from '../components/SectionFallback.vue'
 import GlossaryPanel from '../components/GlossaryPanel.vue'
 import { useFieldHelp } from '../composables/useFieldHelp'
 
 const message = useMessage()
 const { titleWithHelp } = useFieldHelp()
-const { data: bonds, loading, error, refresh: refetch } = useAsyncData<ConvertibleBond[]>(() => api.getConvertibleBonds())
+const { data: bonds, loading, error, meta, refresh: refetch } = useAsyncData<ConvertibleBond[]>(() => api.getConvertibleBonds())
+const gatewayEmpty = computed(() => isGatewayNoData(meta.value))
 onMounted(refetch)
 
 // 转股套利可行性分析映射
@@ -469,7 +471,8 @@ function exportBonds() {
     text="正在加载可转债数据..."
     @retry="refetch"
   >
-    <div v-if="bonds" class="cb-page">
+    <SectionFallback v-if="gatewayEmpty" :gateway-empty="true" :min-height="480" @retry="refetch" />
+    <div v-else-if="bonds" class="cb-page">
     <!-- Page Header -->
     <PageHeader title="可转债扫描器" subtitle="可转债多因子扫描 - 实时监控强赎、双低、折价机会" helpKey="convertibleBonds" />
     <GlossaryPanel page-key="convertibleBonds" />

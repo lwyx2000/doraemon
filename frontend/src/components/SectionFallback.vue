@@ -1,7 +1,7 @@
 <script setup lang="ts">
-// 分区级兜底：加载失败（带重试）/ 加载成功但无数据（空态）
+// 分区级兜底：网关无数据 / 加载失败（带重试）/ 加载成功但无数据（空态）
 import { NIcon, NButton } from 'naive-ui'
-import { AlertCircleOutline, RefreshOutline } from '@vicons/ionicons5'
+import { AlertCircleOutline, RefreshOutline, CloudOfflineOutline } from '@vicons/ionicons5'
 
 withDefaults(
   defineProps<{
@@ -11,11 +11,14 @@ withDefaults(
     minHeight?: number
     /** 空态文案 */
     emptyText?: string
+    /** 网关无数据：真实模式下上游未返回任何数据（区别于正常空） */
+    gatewayEmpty?: boolean
   }>(),
   {
     error: null,
     minHeight: 160,
     emptyText: '暂无数据',
+    gatewayEmpty: false,
   },
 )
 
@@ -24,7 +27,15 @@ const emit = defineEmits<{ (e: 'retry'): void }>()
 
 <template>
   <div class="section-fallback" :style="{ minHeight: `${minHeight}px` }">
-    <template v-if="error">
+    <template v-if="gatewayEmpty">
+      <n-icon :component="CloudOfflineOutline" size="28" class="sf-icon sf-gateway" />
+      <span class="sf-text sf-gateway">网关无数据</span>
+      <n-button size="small" type="primary" ghost @click="emit('retry')">
+        <template #icon><n-icon :component="RefreshOutline" /></template>
+        重试
+      </n-button>
+    </template>
+    <template v-else-if="error">
       <n-icon :component="AlertCircleOutline" size="28" class="sf-icon" />
       <span class="sf-text">{{ error }}</span>
       <n-button size="small" type="primary" ghost @click="emit('retry')">
@@ -54,6 +65,10 @@ const emit = defineEmits<{ (e: 'retry'): void }>()
 
 .sf-icon {
   color: var(--color-danger);
+}
+
+.sf-gateway {
+  color: var(--tag-orange-text, #d46b08);
 }
 
 .sf-text {

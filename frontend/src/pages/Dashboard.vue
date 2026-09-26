@@ -363,7 +363,7 @@ function handleCheckedChange(keys: (string | number)[]) {
     <Transition name="fade" mode="out-in">
       <SectionSkeleton v-if="sectionLoading.overview" key="skeleton" variant="overview" />
       <MarketOverview v-else-if="marketOverview" key="content" :overview="marketOverview" />
-      <SectionFallback v-else key="fallback" :error="sectionError.overview ? '加载失败，请点击重试' : null" :min-height="200" @retry="retrySection('overview')" />
+      <SectionFallback v-else key="fallback" :error="sectionError.overview ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.overview?.isMock && sectionSources.overview?.gatewayEmpty" :min-height="200" @retry="retrySection('overview')" />
     </Transition>
 
     <!-- 新布局：板块 + 资金 + 涨跌停 + 龙虎榜 -->
@@ -378,7 +378,7 @@ function handleCheckedChange(keys: (string | number)[]) {
           title="板块涨幅排行"
           :max-items="6"
         />
-        <SectionFallback v-else key="fallback" :error="sectionError.boardSectors ? '加载失败，请点击重试' : null" :min-height="160" @retry="retrySection('boardSectors')" />
+        <SectionFallback v-else key="fallback" :error="sectionError.boardSectors ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.boardSectors?.isMock && sectionSources.boardSectors?.gatewayEmpty" :min-height="160" @retry="retrySection('boardSectors')" />
       </Transition>
 
       <!-- 资金流向 -->
@@ -390,7 +390,7 @@ function handleCheckedChange(keys: (string | number)[]) {
           :fund-flows="fundFlows"
           title="资金流向"
         />
-        <SectionFallback v-else key="fallback" :error="sectionError.fundFlows ? '加载失败，请点击重试' : null" :min-height="160" @retry="retrySection('fundFlows')" />
+        <SectionFallback v-else key="fallback" :error="sectionError.fundFlows ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.fundFlows?.isMock && sectionSources.fundFlows?.gatewayEmpty" :min-height="160" @retry="retrySection('fundFlows')" />
       </Transition>
 
       <!-- 涨跌停统计 -->
@@ -402,7 +402,7 @@ function handleCheckedChange(keys: (string | number)[]) {
           :zt-stats="ztStats"
           title="涨跌停统计"
         />
-        <SectionFallback v-else key="fallback" :error="sectionError.ztStats ? '加载失败，请点击重试' : null" :min-height="160" @retry="retrySection('ztStats')" />
+        <SectionFallback v-else key="fallback" :error="sectionError.ztStats ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.ztStats?.isMock && sectionSources.ztStats?.gatewayEmpty" :min-height="160" @retry="retrySection('ztStats')" />
       </Transition>
 
       <!-- 基金涨跌排行 -->
@@ -415,7 +415,7 @@ function handleCheckedChange(keys: (string | number)[]) {
           title="基金涨跌排行"
           :max-items="6"
         />
-        <SectionFallback v-else key="fallback" :error="sectionError.fundRanking ? '加载失败，请点击重试' : null" :min-height="160" @retry="retrySection('fundRanking')" />
+        <SectionFallback v-else key="fallback" :error="sectionError.fundRanking ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.fundRanking?.isMock && sectionSources.fundRanking?.gatewayEmpty" :min-height="160" @retry="retrySection('fundRanking')" />
       </Transition>
     </div>
 
@@ -428,7 +428,7 @@ function handleCheckedChange(keys: (string | number)[]) {
         :sectors="swSectors"
         title="A股行业热力图（申万一级）"
       />
-      <SectionFallback v-else key="fallback" :error="sectionError.swSectors ? '加载失败，请点击重试' : null" :min-height="160" @retry="retrySection('swSectors')" />
+      <SectionFallback v-else key="fallback" :error="sectionError.swSectors ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.swSectors?.isMock && sectionSources.swSectors?.gatewayEmpty" :min-height="160" @retry="retrySection('swSectors')" />
     </Transition>
 
     <!-- 跨市场指数估值（默认收起） -->
@@ -529,7 +529,7 @@ function handleCheckedChange(keys: (string | number)[]) {
           :row-class-name="() => 'data-row'"
           @update:checked-row-keys="handleCheckedChange"
           />
-          <SectionFallback v-else key="fallback" :error="sectionError.indices ? '加载失败，请点击重试' : null" :min-height="240" :empty-text="filteredIndices.length === 0 ? '当前市场暂无指数数据' : '暂无数据'" @retry="retrySection('indices')" />
+          <SectionFallback v-else key="fallback" :error="sectionError.indices ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.indicators?.isMock && sectionSources.indicators?.gatewayEmpty" :min-height="240" :empty-text="filteredIndices.length === 0 ? '当前市场暂无指数数据' : '暂无数据'" @retry="retrySection('indices')" />
         </Transition>
       </DataPanel>
       </div>

@@ -318,7 +318,7 @@ def cb_double_low_portfolio(params: dict | None) -> dict[str, Any]:
         kwargs["price_max"] = float(price_max)
     if dl_max:
         kwargs["double_low_max"] = float(dl_max)
-    bonds = get_convertible_bonds(**kwargs)
+    bonds, _ = get_convertible_bonds(**kwargs)
     if not bonds:
         return {"error": "可转债实时数据获取失败（数据源不可用）"}
 

@@ -172,7 +172,7 @@ def run_alert_scan(user_id: str = "demo-user") -> dict[str, Any]:
         try:
             if rule_type in ("premium", "discount", "price") and (category or _match_target(target, "", "")):
                 # 基金类 (LOF/QDII/封闭)
-                funds = get_funds()
+                funds, _ = get_funds()
                 fund_items = [
                     {"name": f.get("name", ""), "code": f.get("code", ""),
                      "premium_pct": f.get("premium_pct"), "price": f.get("price")}
@@ -194,7 +194,7 @@ def run_alert_scan(user_id: str = "demo-user") -> dict[str, Any]:
 
             elif rule_type == "ytm" or category == "cb":
                 # 可转债
-                bonds = get_convertible_bonds()
+                bonds, _ = get_convertible_bonds()
                 cb_items = [
                     {"name": b.get("name", ""), "code": b.get("code", ""),
                      "price": b.get("price"), "ytm": b.get("ytm"),
@@ -210,7 +210,7 @@ def run_alert_scan(user_id: str = "demo-user") -> dict[str, Any]:
 
             elif category == "reit":
                 # REITs
-                reits = get_reits()
+                reits, _ = get_reits()
                 reit_items = [
                     {"name": r.get("name", ""), "code": r.get("code", ""),
                      "price": r.get("market_price"),

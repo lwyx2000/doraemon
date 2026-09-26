@@ -10,7 +10,7 @@ import {
   LockClosedOutline,
   PulseOutline,
 } from '@vicons/ionicons5'
-import { api, useAsyncData } from '../composables/useApi'
+import { api, useAsyncData, isGatewayNoData } from '../composables/useApi'
 import type { FundItem } from '../types'
 import { exportToCSV } from '../utils/export'
 import { analyzeArbitrageBatch, FEASIBILITY_ORDER } from '../utils/arbitrage'
@@ -20,13 +20,15 @@ import DataPanel from '../components/DataPanel.vue'
 import StatCard from '../components/StatCard.vue'
 import TabBar from '../components/TabBar.vue'
 import LoadingState from '../components/LoadingState.vue'
+import SectionFallback from '../components/SectionFallback.vue'
 import GlossaryPanel from '../components/GlossaryPanel.vue'
 import { useFieldHelp } from '../composables/useFieldHelp'
 import { getFieldTip } from '../composables/helpContent'
 
 const message = useMessage()
 const { titleWithHelp } = useFieldHelp()
-const { data: funds, loading, error, execute: refetch } = useAsyncData(() => api.getFunds('lof'))
+const { data: funds, loading, error, meta, execute: refetch } = useAsyncData(() => api.getFunds('lof'))
+const gatewayEmpty = computed(() => isGatewayNoData(meta.value))
 const activeTab = ref<string>('lof')
 const selectedCode = ref<string | null>(null)
 const scanning = ref(false)
@@ -380,7 +382,8 @@ const columns = computed(() => {
     text="正在加载LOF基金数据..."
     @retry="refetch"
   >
-    <div v-if="funds" class="lof-page">
+    <SectionFallback v-if="gatewayEmpty" :gateway-empty="true" :min-height="520" @retry="refetch" />
+    <div v-else-if="funds" class="lof-page">
     <PageHeader title="基金套利扫描" subtitle="场内基金估值与套利扫描 - 实时监控折溢价机会" helpKey="lofFunds">
       <template #actions>
         <n-button size="small" @click="exportFunds">导出</n-button>

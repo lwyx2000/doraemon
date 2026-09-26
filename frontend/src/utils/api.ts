@@ -64,6 +64,15 @@ async function requestWithMeta<T>(
   return { data: json.data ?? json, meta: json.meta }
 }
 
+/**
+ * 判断某区块/图表是否「网关无数据」：真实模式（非 mock）下，上游数据源未返回任何数据。
+ * 与「本就该为空」（如用户无持仓、筛选无匹配）区分开——后者 gatewayEmpty 为 false。
+ */
+export function isGatewayNoData(meta?: SectionSourceMeta | ChartSourceMeta | null): boolean {
+  if (!meta) return false
+  return !meta.isMock && meta.gatewayEmpty === true
+}
+
 async function request<T>(
   path: string,
   params?: Record<string, string | number | undefined | null>,
@@ -147,18 +156,18 @@ export const api = {
   // 基金数据（LOF / ETF / 封基）
   // ============================================================
   getFunds: (type?: string, min_premium?: number, feasibility?: string) =>
-    request<FundItem[]>('/api/v1/funds', { type, min_premium, feasibility }),
+    requestWithMeta<FundItem[]>('/api/v1/funds', { type, min_premium, feasibility }),
 
   getClosedFundAnalysis: () =>
-    request<FundItem[]>('/api/v1/funds/closed/analysis'),
+    requestWithMeta<FundItem[]>('/api/v1/funds/closed/analysis'),
 
   // ---- Convertible Bonds ----
   getConvertibleBonds: () =>
-    request<ConvertibleBond[]>('/api/v1/cb/convertible-bonds'),
+    requestWithMeta<ConvertibleBond[]>('/api/v1/cb/convertible-bonds'),
 
   // ---- REITs ----
   getReits: () =>
-    request<ReitItem[]>('/api/v1/reits/reits'),
+    requestWithMeta<ReitItem[]>('/api/v1/reits/reits'),
 
   // ============================================================
   // 预警中心（AlertCenter）
@@ -554,6 +563,7 @@ export interface ChartSourceMeta {
   ageMinutes?: number | null
   lastOkTime?: string | null
   breakerOpen?: boolean
+  gatewayEmpty?: boolean
 }
 export interface MarketChart {
   id: string

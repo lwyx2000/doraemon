@@ -15,6 +15,7 @@ import requests
 import time
 
 from core.config import AKSHARE_API_BASE, USE_MOCK_DATA
+from services.meta_utils import gateway_no_data_meta
 import mock_data
 
 # 上游地址的 host 部分（用于前端"数据来源"横幅展示，随配置自动变化）
@@ -921,7 +922,7 @@ def get_macro_indicators_with_meta() -> tuple[dict, dict]:
         result["erp_percentile_10y"] = p10
 
     if not result:
-        return {}, _build_meta(False, "无可用数据(取数失败)")
+        return {}, gateway_no_data_meta()
 
     # ERP 缺失多半是 10Y 历史尚未就绪，用短 TTL 让它尽快重试
     ttl = _MACRO_TTL if result.get("erp") is not None else _MACRO_TTL_INCOMPLETE
@@ -982,7 +983,7 @@ def get_market_overview_with_meta() -> tuple[dict, dict]:
         "flatCount": 0,
         "totalVolume": 0,
         "volumeChange": 0,
-    }, _build_meta(False, "无可用数据(取数失败)")
+    }, gateway_no_data_meta()
 
 
 def get_sw_sectors() -> tuple[list[dict], dict]:
@@ -1522,7 +1523,7 @@ def get_board_sectors_with_meta() -> tuple[list, dict]:
     sectors = get_board_sectors_real()
     if sectors:
         return sectors, _build_meta(False, f"AkShare WebAPI ({AKSHARE_HOST})")
-    return [], _build_meta(False, "无可用数据(取数失败)")
+    return [], gateway_no_data_meta()
 
 
 def get_fund_flows_with_meta() -> tuple[dict, dict]:
@@ -1544,7 +1545,7 @@ def get_fund_flows_with_meta() -> tuple[dict, dict]:
         "mediumInflow": 0, "mediumInflowPct": 0,
         "smallInflow": 0, "smallInflowPct": 0,
         "industryFlows": [],
-    }, _build_meta(False, "无可用数据(取数失败)")
+    }, gateway_no_data_meta()
 
 
 def get_zt_stats_with_meta() -> tuple[dict, dict]:
@@ -1559,7 +1560,7 @@ def get_zt_stats_with_meta() -> tuple[dict, dict]:
         "ztCount": 0, "dtCount": 0,
         "prevZTPerformance": {"avgChange": 0.0, "topPerformer": "", "topPerformerChange": 0.0},
         "ztList": [], "dtList": [],
-    }, _build_meta(False, "无可用数据(取数失败)")
+    }, gateway_no_data_meta()
 
 
 def get_fund_ranking_with_meta() -> tuple[list, dict]:
@@ -1569,7 +1570,7 @@ def get_fund_ranking_with_meta() -> tuple[list, dict]:
     ranking = get_fund_ranking_real()
     if ranking:
         return ranking, _build_meta(False, f"AkShare WebAPI ({AKSHARE_HOST})")
-    return [], _build_meta(False, "无可用数据(取数失败)")
+    return [], gateway_no_data_meta()
 
 
 def _is_a_share_index(item: dict) -> bool:
@@ -1775,7 +1776,7 @@ def get_indices_with_meta(category: str | None = None, date: str | None = None) 
         return indices, _build_meta(False, f"AkShare WebAPI ({AKSHARE_HOST})")
 
     print("[Indices] 获取失败，返回空列表(不再使用 mock 数据)")
-    return [], _build_meta(False, "无可用数据(取数失败)")
+    return [], gateway_no_data_meta()
 
 
 def _index_sina_symbol(code: str) -> str:
@@ -1915,7 +1916,7 @@ def get_precious_metals_with_meta() -> tuple[dict, dict]:
         with _PRECIOUS_CACHE["lock"]:
             if _PRECIOUS_CACHE["data"] is not None:
                 return _PRECIOUS_CACHE["data"], _build_meta(False, f"AkShare WebAPI ({AKSHARE_HOST}) (旧缓存)")
-        return {"available": False}, _build_meta(False, "无可用数据(取数失败)")
+        return {"available": False}, gateway_no_data_meta()
 
     # --- 黄金 (元/克) ---
     g_last = gold_rows[-1]

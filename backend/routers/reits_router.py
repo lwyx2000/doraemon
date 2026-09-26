@@ -21,10 +21,10 @@ def list_reits(
         None, description="Dividend sustainability: sustainable, watch, at_risk"
     ),
 ):
-    data = get_reits(
+    data, meta = get_reits(
         asset_type=asset_type,
         min_dividend=min_dividend,
         nav_level=nav_level,
         sustainability=sustainability,
     )
-    return ApiResponse(data=data)
+    return ApiResponse(data=data, meta=meta)

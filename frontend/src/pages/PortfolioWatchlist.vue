@@ -5,7 +5,7 @@ import { NButton, NIcon, NDataTable, NModal, NInput, NSelect, useMessage } from 
 import type { PaginationProps } from 'naive-ui'
 import { Add, Download, TrendingUpOutline, FilterOutline } from '@vicons/ionicons5'
 import { useAsyncData } from '../composables/useApi'
-import { api } from '../utils/api'
+import { api, isGatewayNoData } from '../utils/api'
 import type { FundItem } from '../types'
 import { exportToCSV } from '../utils/export'
 import PageHeader from '../components/PageHeader.vue'
@@ -13,6 +13,7 @@ import StatCard from '../components/StatCard.vue'
 import DataPanel from '../components/DataPanel.vue'
 import TabBar from '../components/TabBar.vue'
 import LoadingState from '../components/LoadingState.vue'
+import SectionFallback from '../components/SectionFallback.vue'
 import BaseChart from '../components/BaseChart.vue'
 import GlossaryPanel from '../components/GlossaryPanel.vue'
 import { useFieldHelp } from '../composables/useFieldHelp'
@@ -20,7 +21,8 @@ import { getFieldTip } from '../composables/helpContent'
 
 const message = useMessage()
 const { titleWithHelp } = useFieldHelp()
-const { data: funds, loading, error, refresh: refetch } = useAsyncData<FundItem[]>(() => api.getFunds())
+const { data: funds, loading, error, meta, refresh: refetch } = useAsyncData<FundItem[]>(() => api.getFunds())
+const gatewayEmpty = computed(() => isGatewayNoData(meta.value))
 onMounted(refetch)
 const activeTab = ref<string>('index')
 
@@ -243,7 +245,8 @@ const convergenceChartOption = computed(() => ({
     text="正在加载投资组合数据..."
     @retry="refetch"
   >
-    <div v-if="funds" class="watchlist-page">
+    <SectionFallback v-if="gatewayEmpty" :gateway-empty="true" :min-height="520" @retry="refetch" />
+    <div v-else-if="funds" class="watchlist-page">
     <!-- Header -->
     <PageHeader title="投资组合看板" :subtitle="`监控 ${funds?.length ?? 0} 个高置信度资产，覆盖4个资产类别 · 盯住折溢价机会，跟踪组合盈亏、折价收敛趋势与相关性风险，支持添加标的与导出 CSV`" help-key="portfolioWatchlist">
       <template #actions>

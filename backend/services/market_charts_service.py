@@ -35,11 +35,12 @@ _AKSHARE_HOST = AKSHARE_API_BASE.rstrip("/").split("://")[-1]
 _DATA_SOURCE = f"AkShare WebAPI ({_AKSHARE_HOST})"
 
 
-def _build_meta(ok: bool, note: str = "") -> dict:
+def _build_meta(ok: bool, note: str = "", gateway_empty: bool = False) -> dict:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return {
         "isMock": False,
-        "dataSource": _DATA_SOURCE,
+        "dataSource": "网关无数据" if gateway_empty else _DATA_SOURCE,
+        "gatewayEmpty": gateway_empty,
         "updateTime": now if ok else None,
         "note": note or None,
     }
@@ -426,7 +427,7 @@ def _empty(title: str, note: str) -> dict:
         "description": "",
         "layout": "single",
         "primary": {"dates": [], "series": []},
-        "meta": _build_meta(False, note),
+        "meta": _build_meta(False, note, gateway_empty=True),
     }
 
 

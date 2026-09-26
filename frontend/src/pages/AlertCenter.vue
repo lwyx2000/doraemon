@@ -13,10 +13,11 @@ import {
   EyeOutline,
   SearchOutline,
   RefreshOutline,
+  CloudOfflineOutline,
 } from '@vicons/ionicons5'
 import type { ConvertibleBond, FundItem, ReitItem, AlertEvent } from '../types'
 import { useAsyncData } from '../composables/useApi'
-import { api } from '../utils/api'
+import { api, isGatewayNoData } from '../utils/api'
 import { analyzeArbitrageBatch } from '../utils/arbitrage'
 import { analyzeConversionBatch, analyzeVolatilityBatch } from '../utils/convertibleBond'
 import { analyzeClosedFundBatch } from '../utils/closedFund'
@@ -32,9 +33,13 @@ const message = useMessage()
 const dialog = useDialog()
 const { data: alertRules, loading, error, refresh: refetch } = useAsyncData<AlertRule[]>(() => api.getAlertRules())
 // 实时信号基于 53 上 AkShare 的真实数据（可转债 / 基金 / REITs），不再使用前端 mock
-const { data: bonds, execute: executeBonds } = useAsyncData<ConvertibleBond[]>(() => api.getConvertibleBonds())
-const { data: funds, execute: executeFunds } = useAsyncData<FundItem[]>(() => api.getFunds())
-const { data: reits, execute: executeReits } = useAsyncData<ReitItem[]>(() => api.getReits())
+const { data: bonds, meta: bondsMeta, execute: executeBonds } = useAsyncData<ConvertibleBond[]>(() => api.getConvertibleBonds())
+const { data: funds, meta: fundsMeta, execute: executeFunds } = useAsyncData<FundItem[]>(() => api.getFunds())
+const { data: reits, meta: reitsMeta, execute: executeReits } = useAsyncData<ReitItem[]>(() => api.getReits())
+// 实时信号依赖 53 网关数据；网关无数据时给出明确提示（不阻断本地预警规则/历史）
+const gatewayEmpty = computed(
+  () => isGatewayNoData(bondsMeta.value) || isGatewayNoData(fundsMeta.value) || isGatewayNoData(reitsMeta.value),
+)
 onMounted(() => {
   refetch()
   executeBonds()
@@ -520,6 +525,12 @@ const filteredHistory = computed(() => {
     </PageHeader>
     <GlossaryPanel page-key="alertCenter" />
 
+    <!-- 网关无数据提示：实时信号依赖 53 网关，网关缺失时明确告知，不阻断本地预警 -->
+    <div v-if="gatewayEmpty" class="gateway-empty-banner">
+      <n-icon :component="CloudOfflineOutline" size="18" />
+      <span>实时信号数据源「网关无数据」：套利 / 转股 / REITs 实时信号暂不可用，预警规则与历史不受影响。</span>
+    </div>
+
     <!-- Top Row: Summary Stats -->
     <div class="stat-grid stat-grid-signals">
       <StatCard label="高危信号" :value="highSignalCount" sub="需立即关注" color="#ba1a1a" />
@@ -730,6 +741,22 @@ const filteredHistory = computed(() => {
 
 <style scoped>
 .alert-page { display: flex; flex-direction: column; gap: 14px; }
+
+/* 网关无数据横幅 */
+.gateway-empty-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: #fff7e6;
+  border: 1px solid #ffd591;
+  border-left: 3px solid var(--tag-orange-text, #d46b08);
+  border-radius: 6px;
+  font-size: 12px;
+  color: #874d00;
+  line-height: 1.6;
+}
+.gateway-empty-banner .n-icon { color: var(--tag-orange-text, #d46b08); flex-shrink: 0; }
 
 /* Stat grid override for 6 severity/summary cards */
 .stat-grid-signals { grid-template-columns: repeat(6, 1fr); }

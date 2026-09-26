@@ -28,7 +28,7 @@ def list_convertible_bonds(
         description="Volatility signal: undervalued, overvalued, fair, n/a",
     ),
 ):
-    data = get_convertible_bonds(
+    data, meta = get_convertible_bonds(
         price_min=price_min,
         price_max=price_max,
         premium_max=premium_max,
@@ -38,7 +38,7 @@ def list_convertible_bonds(
         feasibility=feasibility,
         vol_signal=vol_signal,
     )
-    return ApiResponse(data=data)
+    return ApiResponse(data=data, meta=meta)
 
 
 @router.get("/convertible-bonds/{code}", response_model=ApiResponse[ConvertibleBond])

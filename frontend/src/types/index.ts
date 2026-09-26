@@ -606,6 +606,8 @@ export interface SectionSourceMeta {
   dataSource?: string
   mockTime?: string | null
   updateTime?: string | null
+  gatewayEmpty?: boolean
+  note?: string | null
 }
 
 // 市场概况（三大指数、涨跌家数、成交额）

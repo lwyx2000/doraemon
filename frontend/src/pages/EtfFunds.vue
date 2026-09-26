@@ -15,8 +15,7 @@ import {
   ChevronUpOutline,
 } from '@vicons/ionicons5'
 import { NCollapseTransition } from 'naive-ui'
-import { api } from '../composables/useApi'
-import { useAsyncData } from '../composables/useApi'
+import { api, useAsyncData, isGatewayNoData } from '../composables/useApi'
 import type { EtfFund } from '../types'
 import { exportToCSV } from '../utils/export'
 import { analyzeArbitrageBatch, FEASIBILITY_ORDER } from '../utils/arbitrage'
@@ -27,14 +26,16 @@ import StatCard from '../components/StatCard.vue'
 import TabBar from '../components/TabBar.vue'
 import PercentileIndicator from '../components/PercentileIndicator.vue'
 import LoadingState from '../components/LoadingState.vue'
+import SectionFallback from '../components/SectionFallback.vue'
 import GlossaryPanel from '../components/GlossaryPanel.vue'
 import { useFieldHelp } from '../composables/useFieldHelp'
 
 const message = useMessage()
 const { titleWithHelp } = useFieldHelp()
-const { data: etfs, loading, error, execute: refetch } = useAsyncData<EtfFund[]>(
+const { data: etfs, loading, error, meta, execute: refetch } = useAsyncData<EtfFund[]>(
   () => api.getFunds('etf') as unknown as Promise<EtfFund[]>,
 )
+const gatewayEmpty = computed(() => isGatewayNoData(meta.value))
 const activeTab = ref<string>('arbitrage')
 const scanning = ref(false)
 
@@ -464,7 +465,8 @@ function exportEtf() {
     text="正在加载 ETF 基金数据..."
     @retry="refetch"
   >
-    <div v-if="etfs" class="etf-page">
+    <SectionFallback v-if="gatewayEmpty" :gateway-empty="true" :min-height="520" @retry="refetch" />
+    <div v-else-if="etfs" class="etf-page">
       <PageHeader title="ETF 基金策略" subtitle="集思录 ETF 策略汇总：折溢价套利 / 网格交易 / 行业轮动 / 估值定投" helpKey="etfFunds">
         <template #actions>
           <n-button size="small" :loading="scanning" @click="scan">

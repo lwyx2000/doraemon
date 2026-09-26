@@ -27,6 +27,7 @@ from datetime import date, datetime, timedelta
 import requests
 
 from core.config import AKSHARE_API_BASE, USE_MOCK_DATA
+from services.meta_utils import gateway_no_data_meta, real_meta_base, mock_meta
 from utils.arbitrage import analyze_arbitrage
 from utils.closed_fund import analyze_closed_fund
 import mock_data
@@ -408,8 +409,8 @@ def get_funds(
     feasibility: str | None = None,
     date: str | None = None,
     use_api: bool = True,
-) -> list[dict]:
-    """Return funds with attached arbitrage analysis (真实数据优先).
+) -> tuple[list[dict], dict]:
+    """Return (funds, meta) with attached arbitrage analysis (真实数据优先).
 
     Filters:
         fund_type:   match ``fund["type"]`` (etf/lof/qdii/closed).
@@ -417,6 +418,8 @@ def get_funds(
         feasibility: match ``arbitrage_analysis["feasibility"]``.
         date:        accepted for API compatibility (no-op).
         use_api:     保留参数以兼容旧调用；始终尝试真实取数。
+
+    meta.gatewayEmpty=True 当且仅当上游数据源本身未返回任何数据（区别于过滤后为空）。
     """
     if USE_MOCK_DATA:
         funds_data = mock_data.MOCK_FUNDS
@@ -430,7 +433,7 @@ def get_funds(
             if feasibility and analysis["feasibility"] != feasibility:
                 continue
             result.append({**fund, "arbitrage_analysis": analysis})
-        return result
+        return result, mock_meta()
 
     subtype_map = {
         "etf": "etf",
@@ -446,6 +449,9 @@ def get_funds(
         subtype = subtype_map.get(fund_type, "all")
         funds_data = get_funds_from_api(subtype) if use_api else []
 
+    # 上游数据源本身无数据 → 网关无数据；有数据但过滤后为空 → 正常空（gatewayEmpty=False）
+    gateway_empty = len(funds_data) == 0
+
     # 应用过滤和分析
     result: list[dict] = []
     for fund in funds_data:
@@ -459,7 +465,9 @@ def get_funds(
         item = {**fund, "arbitrage_analysis": analysis}
         result.append(item)
 
-    return result
+    if gateway_empty:
+        return result, gateway_no_data_meta()
+    return result, real_meta_base(AKSHARE_API_BASE)
 
 
 def _get_closed_quotes_tencent(codes: list[str]) -> dict[str, dict]:
@@ -763,16 +771,17 @@ def get_closed_funds_real() -> list[dict]:
     return _build_closed_funds_from_rank()
 
 
-def get_closed_fund_analysis(use_api: bool = True) -> list[dict]:
-    """Return closed-end fund analysis, sorted by score descending (真实数据优先)."""
+def get_closed_fund_analysis(use_api: bool = True) -> tuple[list[dict], dict]:
+    """Return (closed-end fund analysis, meta), sorted by score descending (真实数据优先)."""
     if USE_MOCK_DATA:
         funds_data = [f for f in mock_data.MOCK_FUNDS if f.get("type") == "closed"]
         result: list[dict] = []
         for fund in funds_data:
             result.append(analyze_closed_fund(fund))
         result.sort(key=lambda x: x.get("score", 0), reverse=True)
-        return result
+        return result, mock_meta()
     funds_data = get_closed_funds_real() if use_api else []
+    gateway_empty = len(funds_data) == 0
 
     result: list[dict] = []
     for fund in funds_data:
@@ -780,4 +789,6 @@ def get_closed_fund_analysis(use_api: bool = True) -> list[dict]:
         result.append(analysis)
 
     result.sort(key=lambda x: x.get("score", 0), reverse=True)
-    return result
+    if gateway_empty:
+        return result, gateway_no_data_meta()
+    return result, real_meta_base(AKSHARE_API_BASE)

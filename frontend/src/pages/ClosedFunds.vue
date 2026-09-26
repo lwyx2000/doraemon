@@ -4,7 +4,7 @@ import { h, ref, reactive, computed, onMounted } from 'vue'
 import { NButton, NDataTable, NIcon, NModal, NInput, NTag, useMessage } from 'naive-ui'
 import type { PaginationProps } from 'naive-ui'
 import { TimerOutline, WarningOutline } from '@vicons/ionicons5'
-import { api, useAsyncData } from '../composables/useApi'
+import { api, useAsyncData, isGatewayNoData } from '../composables/useApi'
 import type { FundItem } from '../types'
 import { exportToCSV } from '../utils/export'
 import { analyzeClosedFundBatch, parseRemainingDays } from '../utils/closedFund'
@@ -13,12 +13,14 @@ import PageHeader from '../components/PageHeader.vue'
 import StatCard from '../components/StatCard.vue'
 import DataPanel from '../components/DataPanel.vue'
 import LoadingState from '../components/LoadingState.vue'
+import SectionFallback from '../components/SectionFallback.vue'
 import GlossaryPanel from '../components/GlossaryPanel.vue'
 import { useFieldHelp } from '../composables/useFieldHelp'
 
 const message = useMessage()
 const { titleWithHelp } = useFieldHelp()
-const { data: funds, loading, error, execute: refetch } = useAsyncData(() => api.getClosedFundAnalysis())
+const { data: funds, loading, error, meta, execute: refetch } = useAsyncData(() => api.getClosedFundAnalysis())
+const gatewayEmpty = computed(() => isGatewayNoData(meta.value))
 
 // 表格分页：每页默认 20 行，客户端分页
 const pagination = ref<PaginationProps>({
@@ -376,7 +378,8 @@ const columns = [
     text="正在加载封闭基金数据..."
     @retry="refetch"
   >
-    <div v-if="funds" class="closed-page">
+    <SectionFallback v-if="gatewayEmpty" :gateway-empty="true" :min-height="520" @retry="refetch" />
+    <div v-else-if="funds" class="closed-page">
     <PageHeader title="封闭基金分析" subtitle="封闭基金折价率监控与到期套利分析" helpKey="closedFunds">
       <template #actions>
         <n-button size="small" @click="openAddModal">添加</n-button>
