@@ -12,6 +12,8 @@
 - **强缓存 + 后台刷新**：网关仅 2 个 worker，慢的 akshare 调用会占满 worker 导致连接超时；
   故每个图表结果缓存 6 小时，未命中时**后台线程**刷新、本次先返回已有（可能为空）数据，绝不阻塞请求线程。
 - **取数失败返回空 + meta 标记**：绝不伪造数值。
+- **网关熔断器 + 新鲜度标注（行情源韧性）**：所有取数经 ``_gw`` 封装，连续失败达阈值后整体熔断，
+  熔断期间停止打网关、改回退历史好数据并标记 ``stale``；served 数据附 ``stale/ageMinutes/lastOkTime/breakerOpen``，前端可判别"活的"还是"旧的"。
 
 计算均为纯 Python（后端运行环境不保证有 pandas），保证可移植。
 """
@@ -41,6 +43,65 @@ def _build_meta(ok: bool, note: str = "") -> dict:
         "updateTime": now if ok else None,
         "note": note or None,
     }
+
+
+# ---------------------------------------------------------------------------
+# 网关级熔断器（行情源韧性 P2）
+# ---------------------------------------------------------------------------
+class _GatewayBreaker:
+    """网关整体熔断：连续失败达阈值后，短时间内停止打网关、改走缓存/空态，避免雪崩。
+
+    - 所有图表共用一个网关(AKSHARE_API_BASE)，故用一个全局熔断器即可。
+    - 熔断开启期间：取数层直接返回 None（快失败），get_chart 对有历史好数据的图表改回退旧数据(标 stale)。
+    - 熔断在 open_seconds 后自动半开，下一次成功即复位。
+    """
+
+    def __init__(self, threshold: int = 5, open_seconds: int = 60):
+        self.threshold = threshold
+        self.open_seconds = open_seconds
+        self._lock = threading.Lock()
+        self._failures = 0
+        self._open_until = 0.0
+
+    def allow(self) -> bool:
+        with self._lock:
+            return time.time() >= self._open_until
+
+    def success(self) -> None:
+        with self._lock:
+            self._failures = 0
+
+    def failure(self) -> None:
+        with self._lock:
+            self._failures += 1
+            if self._failures >= self.threshold:
+                self._open_until = time.time() + self.open_seconds
+                print(f"[MarketCharts] 网关熔断器开启，{self.open_seconds}s 内停止打网关")
+
+    @property
+    def open(self) -> bool:
+        with self._lock:
+            return time.time() < self._open_until
+
+
+_BREAKER = _GatewayBreaker(threshold=5, open_seconds=60)
+
+
+def _gw(method: str, params: dict | None = None, retries: int = 1, timeout: int = 8):
+    """经熔断器的网关调用封装：成功复位、失败计数；熔断中直接返回 None（快失败）。"""
+    if not _BREAKER.allow():
+        print(f"[MarketCharts] 网关熔断中，跳过 {method}")
+        return None
+    try:
+        data = akshare_request(method, params, retries=retries, timeout=timeout)
+    except Exception as e:  # noqa: BLE001
+        print(f"[MarketCharts] {method} 网关异常: {e}")
+        data = None
+    if data is None:
+        _BREAKER.failure()
+    else:
+        _BREAKER.success()
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -116,39 +177,39 @@ def _index_csindex(symbol: str, start: str, end: str | None = None, timeout: int
     p = {"symbol": symbol, "start_date": start}
     if end:
         p["end_date"] = end
-    return akshare_request("stock_zh_index_hist_csindex", p, retries=2, timeout=timeout)
+    return _gw("stock_zh_index_hist_csindex", p, retries=2, timeout=timeout)
 
 
 def _index_zh_a(symbol: str, start: str, end: str | None = None, timeout: int = 30):
     p = {"symbol": symbol, "period": "daily", "start_date": start}
     if end:
         p["end_date"] = end
-    return akshare_request("index_zh_a_hist", p, retries=2, timeout=timeout)
+    return _gw("index_zh_a_hist", p, retries=2, timeout=timeout)
 
 
 def _index_cni(symbol: str, start: str, end: str | None = None, timeout: int = 30):
     p = {"symbol": symbol, "start_date": start}
     if end:
         p["end_date"] = end
-    return akshare_request("index_hist_cni", p, retries=2, timeout=timeout)
+    return _gw("index_hist_cni", p, retries=2, timeout=timeout)
 
 
 def _fund_nav(symbol: str, start: str, end: str | None = None, timeout: int = 30):
     p = {"symbol": symbol, "start_date": start}
     if end:
         p["end_date"] = end
-    return akshare_request("fund_open_fund_daily_em", p, retries=2, timeout=timeout)
+    return _gw("fund_open_fund_daily_em", p, retries=2, timeout=timeout)
 
 
 def _hk_index(symbol: str, start: str, end: str | None = None, timeout: int = 30):
     p = {"symbol": symbol, "start_date": start}
     if end:
         p["end_date"] = end
-    return akshare_request("stock_hk_index_daily_em", p, retries=2, timeout=timeout)
+    return _gw("stock_hk_index_daily_em", p, retries=2, timeout=timeout)
 
 
 def _index_pe(symbol: str, timeout: int = 35) -> list[tuple[str, float]]:
-    rows = akshare_request("stock_index_pe_lg", {"symbol": symbol}, retries=2, timeout=timeout)
+    rows = _gw("stock_index_pe_lg", {"symbol": symbol}, retries=2, timeout=timeout)
     return _normalize(rows, _PE_KEYS)
 
 
@@ -157,7 +218,7 @@ def _index_dividend(symbol: str, timeout: int = 35) -> list[tuple[str, float]]:
 
     该接口在不同 akshare 版本下结构不一（可能为 dict 当前值，或含历史序列），做容错解析。
     """
-    raw = akshare_request("stock_zh_index_value_csindex", {"symbol": symbol}, retries=2, timeout=timeout)
+    raw = _gw("stock_zh_index_value_csindex", {"symbol": symbol}, retries=2, timeout=timeout)
     if not raw:
         return []
     # 情况1：list[dict] 时间序列，含 股息率 / dividend_yield 列
@@ -197,7 +258,7 @@ def _china_10y_history() -> dict[str, float]:
             while cur < end and attempts < 11:
                 attempts += 1
                 nxt = min(cur.replace(year=cur.year + 1), end)
-                df = akshare_request(
+                df = _gw(
                     "bond_china_yield",
                     {"start_date": cur.strftime("%Y%m%d"), "end_date": nxt.strftime("%Y%m%d")},
                     retries=1, timeout=25,
@@ -226,7 +287,7 @@ def _china_10y_history() -> dict[str, float]:
 
 def _us_10y_history() -> dict[str, float]:
     """美债 10Y 历史（单次调用，失败时返回空）。"""
-    df = akshare_request("bond_zh_us_rate", {}, retries=2, timeout=35)
+    df = _gw("bond_zh_us_rate", {}, retries=2, timeout=35)
     result: dict[str, float] = {}
     if isinstance(df, list):
         for row in df:
@@ -767,6 +828,22 @@ def _compute(chart: dict) -> dict:
         return _empty(chart["title"], f"计算异常: {e}")
 
 
+def _serve(entry: dict, now: float) -> dict:
+    """返回带新鲜度标注的图表数据副本（不修改缓存本体）。"""
+    data = entry.get("data") or _empty("", "无数据")
+    last = entry.get("last_ok_ts")
+    age_min = int((now - last) / 60) if last else None
+    stale = last is not None and (now - last) > _CACHE_TTL
+    meta = dict(data.get("meta") or {})
+    meta["stale"] = bool(stale)
+    meta["ageMinutes"] = age_min
+    meta["lastOkTime"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last)) if last else None
+    meta["breakerOpen"] = _BREAKER.open
+    out = dict(data)
+    out["meta"] = meta
+    return out
+
+
 def get_chart(chart_id: str, force: bool = False) -> dict | None:
     chart = next((c for c in CHARTS if c["id"] == chart_id), None)
     if not chart:
@@ -775,19 +852,32 @@ def get_chart(chart_id: str, force: bool = False) -> dict | None:
     with _CACHE_LOCK:
         entry = _CACHE.get(chart_id)
         if entry and not force and (now - entry["ts"]) < _CACHE_TTL:
-            return entry["data"]
+            return _serve(entry, now)
         if entry and entry.get("loading"):
-            return entry["data"]  # 刷新中，返回已有（可能为空）
-        # 触发后台刷新
-        _CACHE[chart_id] = {"data": (entry["data"] if entry else _empty(chart["title"], "刷新中")),
-                            "ts": entry["ts"] if entry else 0, "loading": True}
+            return _serve(entry, now)  # 刷新中，返回已有（可能为空）
+        # 熔断中且有历史好数据：直接回退旧数据(标 stale)，不再打网关
+        if not _BREAKER.allow() and entry and entry.get("last_ok_ts"):
+            return _serve(entry, now)
+        # 触发后台刷新（携带旧 last_ok_ts，刷新失败也不丢历史新鲜度基准）
+        _CACHE[chart_id] = {
+            "data": (entry["data"] if entry else _empty(chart["title"], "刷新中")),
+            "ts": entry["ts"] if entry else 0,
+            "loading": True,
+            "last_ok_ts": entry.get("last_ok_ts") if entry else None,
+        }
 
     def _bg():
         try:
             with _REFRESH_SEM:
                 data = _compute(chart)
             with _CACHE_LOCK:
-                _CACHE[chart_id] = {"data": data, "ts": time.time(), "loading": False}
+                ok = bool((data.get("meta") or {}).get("updateTime"))
+                _CACHE[chart_id] = {
+                    "data": data,
+                    "ts": time.time(),
+                    "loading": False,
+                    "last_ok_ts": time.time() if ok else (entry.get("last_ok_ts") if entry else None),
+                }
         except Exception as e:  # noqa: BLE001
             print(f"[MarketCharts] {chart_id} 后台刷新异常: {e}")
             with _CACHE_LOCK:
@@ -796,7 +886,7 @@ def get_chart(chart_id: str, force: bool = False) -> dict | None:
 
     threading.Thread(target=_bg, daemon=True).start()
     with _CACHE_LOCK:
-        return _CACHE[chart_id]["data"]
+        return _serve(_CACHE[chart_id], now)
 
 
 def get_all_charts(force: bool = False) -> list[dict]:

@@ -4,7 +4,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { NButton, NEmpty, NTag, NSpin, useMessage } from 'naive-ui'
 import { RefreshOutline } from '@vicons/ionicons5'
 import { chartsApi } from '../utils/api'
-import type { MarketChart, ChartPanel } from '../utils/api'
+import type { MarketChart, ChartPanel, ChartSourceMeta } from '../utils/api'
 import BaseChart from '../components/BaseChart.vue'
 import DataPanel from '../components/DataPanel.vue'
 import PageHeader from '../components/PageHeader.vue'
@@ -151,6 +151,22 @@ function buildOption(panel: ChartPanel, height: number) {
 const loadingCount = computed(
   () => charts.value.filter((c) => !c.primary?.dates?.length).length,
 )
+
+// 新鲜度标签：根据后端 meta 的 stale / ageMinutes / breakerOpen / updateTime 判别"活的"还是"旧的"
+function staleText(m: ChartSourceMeta | undefined): string {
+  if (!m) return ''
+  if (m.breakerOpen) return '网关熔断 · 回退缓存'
+  if (m.updateTime == null) return '数据缺失'
+  if (m.stale) return `缓存较旧（约 ${m.ageMinutes ?? '?'} 分钟前更新）`
+  if (m.ageMinutes != null) return `数据正常（${m.ageMinutes} 分钟前更新）`
+  return '数据正常'
+}
+function staleType(m: ChartSourceMeta | undefined): 'success' | 'warning' | 'error' | 'default' {
+  if (!m) return 'default'
+  if (m.breakerOpen || m.updateTime == null) return 'error'
+  if (m.stale) return 'warning'
+  return 'success'
+}
 </script>
 
 <template>
@@ -178,6 +194,9 @@ const loadingCount = computed(
         :meta="chart.meta?.note || chart.description"
       >
         <div class="chart-body">
+          <n-tag v-if="chart.meta" size="small" :bordered="false" :type="staleType(chart.meta)">
+            {{ staleText(chart.meta) }}
+          </n-tag>
           <p class="chart-desc">{{ chart.description }}</p>
 
           <template v-if="chart.primary?.dates?.length">

@@ -545,6 +545,16 @@ export interface ChartPanel {
   bands?: ChartSeries[]
   thresholds?: { yAxis: number; label: string; color: string }[]
 }
+export interface ChartSourceMeta {
+  isMock: boolean
+  dataSource?: string | null
+  updateTime?: string | null
+  note?: string | null
+  stale?: boolean
+  ageMinutes?: number | null
+  lastOkTime?: string | null
+  breakerOpen?: boolean
+}
 export interface MarketChart {
   id: string
   title: string
@@ -552,7 +562,7 @@ export interface MarketChart {
   layout: 'single' | 'prism'
   primary: ChartPanel
   secondary?: ChartPanel
-  meta?: Record<string, any>
+  meta?: ChartSourceMeta
 }
 export interface ChartMeta {
   id: string
