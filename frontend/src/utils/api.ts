@@ -533,6 +533,41 @@ export const libraryApi = {
     request<TrackedLibrary[]>('/api/v1/strategy-library/tracked/refresh'),
 }
 
+// ---- 市场复盘图表（MarketCharts）----
+export interface ChartSeries {
+  name: string
+  data: (number | null)[]
+  color?: string
+}
+export interface ChartPanel {
+  dates: string[]
+  series: ChartSeries[]
+  bands?: ChartSeries[]
+  thresholds?: { yAxis: number; label: string; color: string }[]
+}
+export interface MarketChart {
+  id: string
+  title: string
+  description: string
+  layout: 'single' | 'prism'
+  primary: ChartPanel
+  secondary?: ChartPanel
+  meta?: Record<string, any>
+}
+export interface ChartMeta {
+  id: string
+  title: string
+  description: string
+}
+
+export const chartsApi = {
+  list: () => requestWithMeta<ChartMeta[]>('/api/v1/charts'),
+  all: (force?: boolean) =>
+    requestWithMeta<MarketChart[]>('/api/v1/charts/all', force ? { force: '1' } : undefined),
+  get: (id: string, force?: boolean) =>
+    requestWithMeta<MarketChart>(`/api/v1/charts/${id}`, force ? { force: '1' } : undefined),
+}
+
 // ---- Type imports for API ----
 import type {
   MacroIndicators,

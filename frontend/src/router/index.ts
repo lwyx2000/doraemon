@@ -109,6 +109,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '系统设置', icon: 'settings' },
   },
   {
+    path: '/market-charts',
+    name: 'MarketCharts',
+    component: () => import('../pages/MarketCharts.vue'),
+    meta: { title: '市场复盘图表', icon: 'bar_chart' },
+  },
+  {
     path: '/login',
     name: 'Login',
     component: () => import('../pages/Login.vue'),

@@ -22,6 +22,7 @@ WalletOutline,
   DiamondOutline,
   FlashOutline,
   PeopleOutline,
+  BarChartOutline,
 } from '@vicons/ionicons5'
 import { useSidebar } from '../composables/useSidebar'
 import { useTabs } from '../composables/useTabs'
@@ -83,6 +84,7 @@ const navItems: NavItem[] = [
   { name: 'AlertCenter', path: '/alert-center', icon: Notifications, label: '预警中心' },
   { name: 'DataSources', path: '/data-sources', icon: ServerOutline, label: '数据来源' },
   { name: 'PreciousMetals', path: '/precious-metals', icon: DiamondOutline, label: '贵金属' },
+  { name: 'MarketCharts', path: '/market-charts', icon: BarChartOutline, label: '市场复盘' },
   { name: 'SystemSettings', path: '/system-settings', icon: SettingsOutline, label: '系统设置' },
 ]
 

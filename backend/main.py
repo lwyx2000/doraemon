@@ -113,6 +113,7 @@ from routers.account_name_router import router as account_name_router
 from routers.signal_router import router as signal_router
 from routers.strategy_library_router import router as strategy_library_router
 from routers.valuation_router import router as valuation_router
+from routers.charts_router import router as charts_router
 
 app.include_router(auth_router, prefix=f"{API_PREFIX}/auth")
 app.include_router(broker_account_router, prefix=API_PREFIX)
@@ -133,6 +134,7 @@ app.include_router(notification_router, prefix=API_PREFIX)
 app.include_router(signal_router, prefix=f"{API_PREFIX}/signals")
 app.include_router(strategy_library_router, prefix=f"{API_PREFIX}/strategy-library")
 app.include_router(valuation_router, prefix=f"{API_PREFIX}/valuation")
+app.include_router(charts_router, prefix=f"{API_PREFIX}/charts")
 
 
 # ============================================================
