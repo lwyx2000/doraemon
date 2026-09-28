@@ -137,6 +137,26 @@ const columns: DataTableColumns<BroadIndexValuation> = [
     ]),
   },
   {
+    title: 'PE分位',
+    key: 'pe_percentile',
+    width: 140,
+    align: 'center',
+    render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
+      h(PercentileIndicator, { value: row.pe_percentile, width: 60 }),
+      h(NTag, { type: percentileColor(row.pe_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pe_percentile)),
+    ]),
+  },
+  {
+    title: 'PB分位',
+    key: 'pb_percentile',
+    width: 140,
+    align: 'center',
+    render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
+      h(PercentileIndicator, { value: row.pb_percentile, width: 60 }),
+      h(NTag, { type: percentileColor(row.pb_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pb_percentile)),
+    ]),
+  },
+  {
     title: '拥挤度',
     key: 'crowding',
     width: 140,
@@ -393,7 +413,8 @@ const macroParams = computed(() => {
             :bordered="false"
             :single-line="false"
             size="small"
-            :scroll-x="850"
+            :max-height="560"
+            :scroll-x="1130"
           />
           <n-empty v-else-if="!loading" description="暂无数据，请确保后端服务正常运行" style="padding: 60px 0" />
         </n-spin>
