@@ -564,6 +564,12 @@ const macroParams = computed(() => {
       </template>
     </PageHeader>
 
+    <!-- 页面顶部说明：估值方法说明（公众号方法论）+ 缩写词典，均为可折叠、默认隐藏 -->
+    <div class="top-guides">
+      <MethodologyGuide />
+      <GlossaryPanel page-key="indexValuation" />
+    </div>
+
     <!-- 全A整体估值分位（头条：文章方法论的「总开关」） -->
     <div v-if="overall" class="overall-card">
       <div class="overall-head">
@@ -686,12 +692,6 @@ const macroParams = computed(() => {
         </n-spin>
       </n-tab-pane>
     </n-tabs>
-
-    <!-- 估值方法说明：公众号方法论（与缩写词典同款可折叠样式，默认隐藏） -->
-    <MethodologyGuide />
-
-    <!-- 名词字典：估值术语释义（与指数分析页缩写词典同款） -->
-    <GlossaryPanel page-key="indexValuation" />
 
     <!-- 详情弹窗：点击行 / 操作列「详情」打开 -->
     <n-modal
@@ -835,6 +835,14 @@ const macroParams = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.top-guides {
+  display: flex;
+  flex-direction: column;
+}
+.top-guides > :last-child {
+  margin-bottom: 0;
 }
 
 .macro-params {
