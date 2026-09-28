@@ -351,10 +351,8 @@ pipeline {
             }
         }
         always {
-            // checkout 失败时 agent 上下文已释放，deleteDir 需重新包一层 node
-            node {
-                deleteDir()
-            }
+            // agent any 已为整条流水线(含 post)分配节点，直接清理本节点工作区即可
+            deleteDir()
         }
     }
 }
