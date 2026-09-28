@@ -96,7 +96,7 @@ function downsample(
   return { dates: d, series: s }
 }
 
-function buildOption(panel: ChartPanel, height: number) {
+function buildOption(panel: ChartPanel) {
   const ds = downsample(panel.dates, panel.series)
   const dates = ds.dates
   const series = (ds.series as any[]).map((s, i) => {
@@ -201,7 +201,7 @@ function staleType(m: ChartSourceMeta | undefined): 'success' | 'warning' | 'err
           <p class="chart-desc">{{ chart.description }}</p>
 
           <template v-if="chart.primary?.dates?.length">
-            <BaseChart :option="buildOption(chart.primary, 240)" :height="240" />
+            <BaseChart :option="buildOption(chart.primary)" :height="240" />
           </template>
           <div v-else-if="isGatewayNoData(chart.meta)" class="chart-gateway-empty">
             <n-icon :component="CloudOfflineOutline" size="28" class="gw-icon" />
@@ -218,7 +218,7 @@ function staleType(m: ChartSourceMeta | undefined): 'success' | 'warning' | 'err
 
           <template v-if="chart.layout === 'prism' && chart.secondary?.dates?.length">
             <div class="sub-title">40日收益差（轮动信号二）</div>
-            <BaseChart :option="buildOption(chart.secondary, 180)" :height="180" />
+            <BaseChart :option="buildOption(chart.secondary)" :height="180" />
           </template>
 
           <div v-if="chart.meta?.note && chart.primary?.dates?.length" class="signal-note">
