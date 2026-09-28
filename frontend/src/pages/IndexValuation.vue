@@ -8,6 +8,8 @@ import type { BroadIndexValuation, IndustryValuation, SectionSourceMeta, SpreadH
 import PageHeader from '../components/PageHeader.vue'
 import PercentileIndicator from '../components/PercentileIndicator.vue'
 import BaseChart from '../components/BaseChart.vue'
+import GlossaryPanel from '../components/GlossaryPanel.vue'
+import MethodologyGuide from '../components/MethodologyGuide.vue'
 
 const message = useMessage()
 const loading = ref(false)
@@ -684,6 +686,9 @@ const macroParams = computed(() => {
         </n-spin>
       </n-tab-pane>
     </n-tabs>
+
+    <!-- 估值方法说明：公众号方法论（与缩写词典同款可折叠样式，默认隐藏） -->
+    <MethodologyGuide />
 
     <!-- 名词字典：估值术语释义（与指数分析页缩写词典同款） -->
     <GlossaryPanel page-key="indexValuation" />
