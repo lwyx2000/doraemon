@@ -116,7 +116,25 @@ pipeline {
                             ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${DEPLOY_SERVER} '''
                                 rm -rf ${DEPLOY_PATH}
                                 mkdir -p ${DEPLOY_PATH}
-                                git clone ${repo} ${DEPLOY_PATH} -b ${params.GIT_BRANCH}
+
+                                # GitHub 直连不稳，clone 失败自动重试 3 次
+                                CLONE_OK=0
+                                for i in 1 2 3; do
+                                    if git clone ${repo} ${DEPLOY_PATH} -b ${params.GIT_BRANCH}; then
+                                        echo "clone 成功 (第 \${i} 次尝试)"
+                                        CLONE_OK=1
+                                        break
+                                    fi
+                                    echo "clone 失败 (第 \${i} 次)，10s 后重试..."
+                                    rm -rf ${DEPLOY_PATH}
+                                    mkdir -p ${DEPLOY_PATH}
+                                    sleep 10
+                                done
+
+                                if [ "\$CLONE_OK" != "1" ]; then
+                                    echo "错误: GitHub clone 连续 3 次失败，疑似网络不稳定，请检查宿主机到 github.com 的连通性"
+                                    exit 1
+                                fi
                             '''
                         """
 
@@ -318,7 +336,7 @@ pipeline {
         failure {
             script {
                 echo "部署失败! 查看日志..."
-                withCredentials([sshUserPrivateKey(credentialsId: SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY')]) {
+                withCredentials([sshUserPrivateKey(credentialsId: env.SSH_CREDENTIALS_ID, keyFileVariable: 'SSH_KEY')]) {
                     sh """
                         chmod 600 ${SSH_KEY}
                         ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${DEPLOY_SERVER} '
@@ -333,7 +351,10 @@ pipeline {
             }
         }
         always {
-            deleteDir()
+            // checkout 失败时 agent 上下文已释放，deleteDir 需重新包一层 node
+            node {
+                deleteDir()
+            }
         }
     }
 }
