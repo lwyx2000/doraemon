@@ -98,7 +98,19 @@ const columns: DataTableColumns<BroadIndexValuation> = [
     key: 'name',
     width: 110,
     fixed: 'left',
-    render: (row) => row.name + (row.is_benchmark ? ' ★' : ''),
+    render: (row) => {
+      const label = row.name + (row.is_benchmark ? ' ★' : '')
+      if (!row.insufficient_history) return label
+      // 历史样本不足（如科创50 网关仅回填数月）：标注出来，避免用户误以为接口出错
+      return h(
+        'span',
+        {
+          title: `历史样本仅 ${row.history_samples ?? 0} 个月（不足 24 个月），为保证统计意义，估值分位 / PE·PB分位 / 拥挤度未计算`,
+          style: 'color: #f59e0b; cursor: help;',
+        },
+        label + ' ⚠',
+      )
+    },
   },
   {
     title: 'PB',

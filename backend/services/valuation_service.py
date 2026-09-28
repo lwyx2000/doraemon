@@ -47,6 +47,13 @@ BROAD_INDEX_LIST: list[dict] = [
     {"name": "上证红利", "code": "000015"},
     {"name": "中证100",  "code": "000903"},
     {"name": "中证800",  "code": "000906"},
+    # ---- 新增宽基：网关 index_pbpe_service.INDEX_UNIVERSE 已覆盖，历史数据实测可用 ----
+    # 创业板指(399006)：PB/PE 自 2015-12 起（约 10 年）
+    {"name": "创业板指", "code": "399006"},
+    # 科创50(000688)：网关当前仅 6 个月历史，分位会被 MIN_HISTORY_SAMPLES 守卫置空
+    {"name": "科创50",   "code": "000688"},
+    # 中证A500(000510)：PB/PE 自 2005-01 起（21 年，全史）
+    {"name": "中证A500", "code": "000510"},
 ]
 
 # 基准指数：用「中证全指(000985)」作为万得全A代理。
@@ -58,6 +65,11 @@ BENCHMARK_CODE = "000985"  # 中证全指（万得全A代理）
 # 避免单次网关失败就让整个估值返回空。
 BENCHMARK_FALLBACKS = ["中证800", "沪深300", "上证50"]
 BENCHMARK_FALLBACK_CODES = ["000906", "000300", "000016"]
+
+#: 计算「历史分位 / 拥挤度」所需的最小月度样本数（默认 24 个月 = 2 年）。
+#: 低于此阈值的指数（如网关尚未充分回填历史的科创50，仅 6 个月）分位结果会被置空，
+#: 避免用极少数样本算出误导性的百分位读数。
+MIN_HISTORY_SAMPLES = 24
 
 # ROE 均值计算窗口（近5-7年，取5年=60个月）
 ROE_WINDOW_MONTHS = 60
@@ -485,6 +497,18 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
                 current_ratio = current_pb / current_bench_pb
                 crowding = _percentile(current_ratio, ratio_history)
 
+        # ---- 最小样本守卫 ----
+        # 网关对新纳入的指数（如科创50 当前仅 6 个月）尚未回填足够历史，
+        # 若照常按个位数样本算百分位会得到毫无统计意义的读数，故统一置空，
+        # 由前端展示「—」+ 历史样本不足提示。
+        history_samples = len(pb_data)
+        insufficient_history = history_samples < MIN_HISTORY_SAMPLES
+        if insufficient_history:
+            valuation_percentile = None
+            pb_percentile = None
+            pe_percentile = None
+            crowding = None
+
         # PB 历史数据（完整序列，前端按时间窗口自行截取；默认窗口=全部即展示 2005 起全史）
         pb_history = pb_data
 
@@ -514,6 +538,8 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
             "pe_percentile": pe_percentile,
             "pb_percentile": pb_percentile,
             "crowding": crowding,
+            "insufficient_history": insufficient_history,
+            "history_samples": history_samples,
             "yield_10y": yield_10y,
             "cpi_yoy": cpi_yoy,
             "pb_history": pb_history,

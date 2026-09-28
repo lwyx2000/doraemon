@@ -210,6 +210,8 @@ export interface BroadIndexValuation {
   pe_percentile: number | null    // PE 历史分位 0-100, 高=贵
   pb_percentile: number | null    // PB 历史分位 0-100, 高=贵
   crowding: number | null        // 拥挤度 0-100, 越小相对越便宜
+  insufficient_history?: boolean  // 历史样本不足（< MIN_HISTORY_SAMPLES），分位已置空
+  history_samples?: number | null // 可用的 PB 历史月度样本数
   yield_10y: number | null       // 10年期国债收益率 (%)
   cpi_yoy: number | null         // CPI同比 (%)
   is_benchmark: boolean
