@@ -1865,19 +1865,43 @@ def get_kline(
     type: str | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
+    count: int = 50,
 ) -> list[dict]:
-    """个股/ETF K 线(真实数据, 东财 stock_zh_a_hist)"""
+    """个股/ETF/可转债 K 线(真实数据)
+
+    股票/ETF: 东财 stock_zh_a_hist, adjust="qfq" 前复权——分红除息造成的价格跳空
+    被平滑，技术指标(MA/RSI/布林)与历史胜率统计必须基于复权价，否则失真。
+    前复权以最新价为锚，当前价格显示不受影响。
+
+    可转债(代码 11/12 开头 6 位，或显式 type="cb")：东财股票接口不支持转债，
+    走新浪 bond_zh_hs_daily 全量历史（转债不分红除息，价格序列天然连续无需复权），
+    再按日期区间过滤。默认窗口与股票一致(近 365 天)。
+
+    count: 保留最近 N 根 K 线；传 0 返回区间内全部。
+    """
     today = datetime.now()
     start = start_date.replace("-", "") if start_date else (today - timedelta(days=365)).strftime("%Y%m%d")
     end = end_date.replace("-", "") if end_date else today.strftime("%Y%m%d")
+
+    # 转债路由：SH 转债 110/111/113/118，SZ 转债 123/127/128 → 前缀 11=sh / 12=sz
+    if type == "cb" or (len(code) == 6 and code[:2] in {"11", "12"}):
+        prefix = "sh" if code.startswith("11") else "sz"
+        points = _fetch_real_kline("bond_zh_hs_daily", {"symbol": f"{prefix}{code}"}, count=0)
+        points = _filter_by_date_range(
+            points,
+            start_date or (today - timedelta(days=365)).strftime("%Y-%m-%d"),
+            end_date or today.strftime("%Y-%m-%d"),
+        )
+        return points[-count:] if count else points
+
     params = {
         "symbol": code,
         "period": "daily",
         "start_date": start,
         "end_date": end,
-        "adjust": "",
+        "adjust": "qfq",
     }
-    points = _fetch_real_kline("stock_zh_a_hist", params)
+    points = _fetch_real_kline("stock_zh_a_hist", params, count=count)
     return _filter_by_date_range(points, start_date, end_date)
 
 

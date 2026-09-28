@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -247,6 +249,33 @@ def _eval_rsi(klines, closes, params):
     return position, _transitions(klines, position, buy_reason, sell_reason)
 
 
+def _eval_bias(klines, closes, params):
+    """均线偏离度(BIAS)：BIAS = (close − MA_n) / MA_n × 100，低于阈值为超卖。"""
+    n = int(params.get("bias_n", 20))
+    threshold = float(params.get("bias_threshold", -3.0))
+    ma = _sma(closes, n)
+    position = []
+    for i in range(len(klines)):
+        if ma[i] in (None, 0):
+            position.append("flat")
+            continue
+        bias = (closes[i] - ma[i]) / ma[i] * 100
+        position.append("long" if bias <= threshold else "flat")
+
+    def buy_reason(i):
+        bias = (closes[i] - ma[i]) / ma[i] * 100
+        return (f"价格 {closes[i]:.2f} 低于 MA{n}({ma[i]:.2f})，"
+                f"偏离度 {bias:.2f}% ≤ 阈值 {threshold}%，负偏离超卖，触发买入")
+
+    def sell_reason(i):
+        if ma[i] in (None, 0):
+            return "偏离度修复，超卖状态解除，触发卖出"
+        bias = (closes[i] - ma[i]) / ma[i] * 100
+        return f"偏离度修复至 {bias:.2f}%（高于阈值 {threshold}%），超卖状态解除，触发卖出"
+
+    return position, _transitions(klines, position, buy_reason, sell_reason)
+
+
 def _eval_grid(klines, closes, params):
     gl = float(params.get("grid_lower", 0))
     gu = float(params.get("grid_upper", 0))
@@ -301,6 +330,7 @@ EVALUATORS = {
     "macd": _eval_macd,
     "boll": _eval_boll,
     "rsi": _eval_rsi,
+    "bias": _eval_bias,
     "grid": _eval_grid,
 }
 
@@ -343,6 +373,14 @@ STRATEGY_CATALOG = [
             {"key": "rsi_n", "label": "RSI 周期", "type": "number", "default": 14, "min": 2, "max": 60},
             {"key": "rsi_low", "label": "超卖线", "type": "number", "default": 30, "min": 5, "max": 50},
             {"key": "rsi_high", "label": "超买线", "type": "number", "default": 70, "min": 50, "max": 95},
+        ],
+    },
+    {
+        "id": "bias", "name": "均线偏离度", "category": "均值回归",
+        "desc": "价格相对 MA 均线的偏离度(BIAS)低于阈值时买入（超卖负偏离），偏离修复后卖出。适合急跌反弹场景。",
+        "params": [
+            {"key": "bias_n", "label": "均线周期", "type": "number", "default": 20, "min": 5, "max": 120},
+            {"key": "bias_threshold", "label": "偏离阈值%", "type": "number", "default": -3, "step": 0.5, "min": -30, "max": 0},
         ],
     },
     {
@@ -534,3 +572,71 @@ def compute_tracked_signals(user_id: str) -> list[dict]:
             "error": sig.get("error"),
         })
     return result
+
+
+# ============================================================
+# 批量战术信号快照（ETF 页「战术信号」Tab）
+# 返回纯数据快照，"超卖/超买"等信号标签由前端根据阈值渲染。
+# ============================================================
+
+_TACTICAL_CACHE: dict[str, tuple[str, dict]] = {}
+_TACTICAL_LOCK = threading.Lock()
+
+
+def _tactical_snapshot(symbol: str) -> dict:
+    """单只标的战术快照：MA20 偏离度 / RSI14 / 布林位置(0=下轨, 100=上轨)。
+
+    基于 qfq 前复权日线；50 根 K 线足够 BIAS20 / RSI14 / BOLL(20,2) 计算与预热。
+    """
+    try:
+        klines = get_kline(symbol)
+        closes = [k["close"] for k in klines]
+        if len(closes) < 21:
+            return {"symbol": symbol, "price": None, "bias_20": None, "rsi_14": None,
+                    "boll_pos": None, "ma_20": None,
+                    "date": klines[-1]["date"] if klines else None,
+                    "error": "K线数据不足（至少21根）" if klines else "未获取到行情数据"}
+
+        price = closes[-1]
+        ma20 = _sma(closes, 20)[-1]
+        bias = round((price - ma20) / ma20 * 100, 2) if ma20 else None
+        rsi = _rsi(closes, 14)[-1]
+        sd = _stddev(closes, 20)[-1]
+        upper = ma20 + 2.0 * sd if (ma20 is not None and sd is not None) else None
+        lower = ma20 - 2.0 * sd if (ma20 is not None and sd is not None) else None
+        boll_pos = None
+        if upper is not None and lower is not None and upper > lower:
+            boll_pos = round((price - lower) / (upper - lower) * 100, 1)
+        return {
+            "symbol": symbol, "price": round(price, 3),
+            "bias_20": bias, "rsi_14": rsi, "boll_pos": boll_pos,
+            "ma_20": round(ma20, 3) if ma20 is not None else None,
+            "date": klines[-1]["date"], "error": None,
+        }
+    except Exception as e:
+        return {"symbol": symbol, "price": None, "bias_20": None, "rsi_14": None,
+                "boll_pos": None, "ma_20": None, "date": None, "error": str(e)}
+
+
+def tactical_batch(symbols: list[str]) -> list[dict]:
+    """批量战术信号快照。当日缓存（一天只算一次），行情并发拉取。"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    out: list[dict] = []
+    pending: list[str] = []
+    with _TACTICAL_LOCK:
+        for s in symbols:
+            hit = _TACTICAL_CACHE.get(s)
+            if hit and hit[0] == today:
+                out.append(hit[1])
+            else:
+                pending.append(s)
+    if pending:
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            results = list(ex.map(_tactical_snapshot, pending))
+        with _TACTICAL_LOCK:
+            for r in results:
+                _TACTICAL_CACHE[r["symbol"]] = (today, r)
+        out.extend(results)
+    order = {s: i for i, s in enumerate(symbols)}
+    out.sort(key=lambda r: order.get(r["symbol"], 1 << 30))
+    return out

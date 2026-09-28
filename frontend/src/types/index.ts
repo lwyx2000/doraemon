@@ -813,6 +813,69 @@ export interface SignalResult {
   kline_count: number
 }
 
+/** 战术信号快照（批量接口，基于 qfq 前复权日线） */
+export interface TacticalSignal {
+  symbol: string
+  price: number | null
+  /** MA20 偏离度(%)：(close − MA20) / MA20 × 100 */
+  bias_20: number | null
+  rsi_14: number | null
+  /** 布林位置：0=下轨, 100=上轨 */
+  boll_pos: number | null
+  ma_20: number | null
+  date: string | null
+  error: string | null
+}
+
+/** 单持有期胜率统计（次日收盘买入、持有N日收盘卖出、已扣成本） */
+export interface WinrateStats {
+  samples: number
+  win_rate: number | null
+  avg_gain: number | null
+  avg_loss: number | null
+  /** 赔率 = 平均盈利 / |平均亏损|；无亏损样本为 null */
+  payoff: number | null
+  /** 凯利 f*（封顶20%，负期望=0），单位 % */
+  kelly: number | null
+  /** 半凯利 = f* 的一半，建议仓位 */
+  half_kelly: number | null
+  // 以下为 P3 防过拟合字段（v2 扫描结构），旧缓存可能缺失 → 全部可选
+  /** 样本内（前 70% 时段）样本数 */
+  is_samples?: number
+  /** 样本内胜率 (%) */
+  is_win_rate?: number | null
+  /** 样本外（后 30% 时段，策略没见过的验证段）样本数 */
+  oos_samples?: number
+  /** 样本外胜率 (%) */
+  oos_win_rate?: number | null
+}
+
+/** 分年度胜率项（10日持有期口径） */
+export interface WinrateYearlyItem {
+  year: string
+  samples: number
+  win_rate: number | null
+}
+
+/** 单只标的胜率扫描结果 */
+export interface WinrateScanItem {
+  symbol: string
+  error: string | null
+  triggers: number
+  stats_5d: WinrateStats | null
+  stats_10d: WinrateStats | null
+  stats_20d: WinrateStats | null
+  /** 近 3 年分年度胜率（10日口径）；数据不足/出错时为 null */
+  yearly_10d?: WinrateYearlyItem[] | null
+}
+
+/** 胜率扫描响应 */
+export interface WinrateScanResult {
+  scan_date: string
+  from_cache: boolean
+  results: WinrateScanItem[]
+}
+
 export interface TrackedSignal {
   id: string
   symbol: string

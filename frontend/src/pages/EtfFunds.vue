@@ -1,13 +1,15 @@
 <script setup lang="ts">
 defineOptions({ name: 'EtfFunds' })
 import { ref, computed, h, onMounted, watch } from 'vue'
-import { NDataTable, NButton, NIcon, NTag, useMessage } from 'naive-ui'
+import { NDataTable, NButton, NIcon, NTag, NSelect, NInputNumber, useMessage } from 'naive-ui'
 import type { PaginationProps } from 'naive-ui'
 import {
   SwapHorizontalOutline,
   GridOutline,
   TrendingUpOutline,
   BarChartOutline,
+  FlashOutline,
+  StatsChartOutline,
   Download,
   RefreshOutline,
   WarningOutline,
@@ -16,6 +18,13 @@ import {
 } from '@vicons/ionicons5'
 import { NCollapseTransition } from 'naive-ui'
 import { api, useAsyncData, isGatewayNoData } from '../composables/useApi'
+import { useSignalScan } from '../composables/useSignalScan'
+import {
+  buildTacticalSignalColumns,
+  buildWinrateColumns,
+  tacticalStateOf as tacticalState,
+  winrateExportCells,
+} from '../utils/signalDisplay'
 import type { EtfFund } from '../types'
 import { exportToCSV } from '../utils/export'
 import { analyzeArbitrageBatch, FEASIBILITY_ORDER } from '../utils/arbitrage'
@@ -48,7 +57,25 @@ const tabs = [
   { key: 'grid', label: '网格交易', icon: GridOutline },
   { key: 'rotation', label: '行业轮动', icon: TrendingUpOutline },
   { key: 'valuation', label: '估值定投', icon: BarChartOutline },
+  { key: 'tactical', label: '战术信号', icon: FlashOutline },
 ]
+
+// ---- 战术信号 + 胜率扫描（Tab 懒加载，后端当日缓存；共享逻辑见 useSignalScan）----
+const TACTICAL_LIMIT = 100
+const {
+  selectedStrategyId, selectedParams, strategyOptions, strategyParams, loadStrategies,
+  tacticalMap, tacticalLoading, tacticalLoaded, loadTactical,
+  winrateMap, winrateLoading, winrateLoaded, winrateMeta, scanWinrate, statsOf,
+} = useSignalScan(
+  // 按成交额取前 100 只（流动性优先），批量计算偏离度/RSI/布林位置
+  () => [...(etfs.value ?? [])].sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0)).map(e => e.code),
+  { onError: msg => message.error(msg), notify: msg => message.success(msg), limit: TACTICAL_LIMIT },
+)
+
+watch(activeTab, tab => {
+  if (tab === 'tactical' && !tacticalLoaded.value) loadTactical()
+  if (tab === 'tactical') loadStrategies()
+})
 
 // 套利可行性分析映射 (code → ArbitrageAnalysis)
 const arbitrageAnalysisMap = computed(() => {
@@ -126,7 +153,7 @@ const avgCrossBorderPremium = computed(() => {
   return cb.reduce((s, e) => s + e.premium_pct, 0) / cb.length
 })
 
-// 动态统计卡片 — 套利tab显示可行性分级
+// 动态统计卡片 — 套利tab显示可行性分级，战术tab显示信号分布
 const statCards = computed(() => {
   if (activeTab.value === 'arbitrage') {
     return [
@@ -134,6 +161,19 @@ const statCards = computed(() => {
       { label: '有风险', value: riskyCount.value, sub: 'T+N敞口或资金受限', color: 'var(--color-warning)', tip: 'T+N敞口或资金受限，套利收益存在不确定性的标的数量' },
       { label: '不可行', value: infeasibleCount.value, sub: '限购/停牌/暂停', color: 'var(--color-danger)', tip: '限购/停牌/暂停导致无法执行的套利标的数量' },
       { label: '跨境溢价均值', value: `${avgCrossBorderPremium.value.toFixed(2)}%`, sub: 'QDII ETF 平均', color: 'var(--color-primary)', tip: 'QDII跨境ETF的平均折溢价率，正值=溢价，负值=折价' },
+    ]
+  }
+  if (activeTab.value === 'tactical') {
+    const list = [...tacticalMap.value.values()].filter(t => !t.error)
+    const oversold = list.filter(t => tacticalState(t) === 'oversold').length
+    const overbought = list.filter(t => tacticalState(t) === 'overbought').length
+    const nearLower = list.filter(t => t.boll_pos != null && t.boll_pos <= 10).length
+    const avgBias = list.length ? list.reduce((s, t) => s + (t.bias_20 ?? 0), 0) / list.length : 0
+    return [
+      { label: '超卖·关注', value: oversold, sub: '偏离度/RSI/布林触发', color: 'var(--color-success)', tip: 'MA20偏离度≤-3%、RSI≤30或触及布林下轨的标的数量，可能出现超卖反弹' },
+      { label: '超买·谨慎', value: overbought, sub: 'RSI/布林触发', color: 'var(--color-danger)', tip: 'RSI≥70或触及布林上轨的标的数量，短期回调风险' },
+      { label: '贴下轨', value: nearLower, sub: '布林位置 ≤ 10%', color: 'var(--color-warning)', tip: '价格位于布林带下部10%区域的标的数量' },
+      { label: '平均偏离度', value: `${avgBias.toFixed(2)}%`, sub: 'MA20 BIAS 均值', color: 'var(--color-primary)', tip: '样本ETF相对MA20偏离度的平均值，负值表示整体处于均线下方' },
     ]
   }
   return [
@@ -165,6 +205,12 @@ const displayEtfs = computed(() => {
   }
   if (activeTab.value === 'rotation') {
     return [...etfs.value].filter(e => e.category === 'industry' || e.category === 'theme').sort((a, b) => (b.momentum_score ?? 0) - (a.momentum_score ?? 0))
+  }
+  if (activeTab.value === 'tactical') {
+    // 仅显示已计算出战术信号的标的，偏离度最负（超卖最深）在前
+    return etfs.value
+      .filter(e => tacticalMap.value.has(e.code))
+      .sort((a, b) => (tacticalMap.value.get(a.code)?.bias_20 ?? 99) - (tacticalMap.value.get(b.code)?.bias_20 ?? 99))
   }
   // valuation
   return etfs.value.filter(e => e.category === 'broad' || e.category === 'theme').sort((a, b) => (a.pe_percentile ?? 99) - (b.pe_percentile ?? 99))
@@ -356,10 +402,40 @@ const valuationColumns = [
   },
 ]
 
+// 战术信号列：身份三列（名称/代码/现价）+ 共享信号四列（偏离度/RSI/布林/信号）
+const tacticalColumns = [
+  { title: '基金名称', key: 'name', render: (row: EtfFund) => h('span', { class: 'etf-name' }, row.name) },
+  { title: '代码', key: 'code', render: (row: EtfFund) => h('span', { class: 'etf-code' }, row.code) },
+  {
+    title: titleWithHelp('现价', 'price_qfq'), key: 'price', align: 'right' as const,
+    render: (row: EtfFund) => {
+      const t = tacticalMap.value.get(row.code)
+      if (!t || t.error || t.price == null) return '-'
+      return t.price.toFixed(3)
+    },
+  },
+  ...buildTacticalSignalColumns<EtfFund>({
+    titleWithHelp,
+    getSignal: code => tacticalMap.value.get(code),
+    symbolOf: row => row.code,
+  }),
+]
+
+// ---- 胜率/凯利列（扫描完成后追加到战术信号表，列定义共享于 signalDisplay）----
+const winrateColumns = buildWinrateColumns<EtfFund>({
+  titleWithHelp,
+  statsOf,
+  getScanItem: code => winrateMap.value.get(code),
+  symbolOf: row => row.code,
+})
+
 const columns = computed(() => {
   if (activeTab.value === 'arbitrage') return arbitrageColumns
   if (activeTab.value === 'grid') return gridColumns
   if (activeTab.value === 'rotation') return rotationColumns
+  if (activeTab.value === 'tactical') {
+    return winrateLoaded.value ? [...tacticalColumns, ...winrateColumns] : tacticalColumns
+  }
   return valuationColumns
 })
 
@@ -380,6 +456,10 @@ const strategyNotes: Record<string, { title: string; desc: string }> = {
   valuation: {
     title: '估值定投策略',
     desc: '基于宽基 ETF 的 PE/PB 历史百分位调节定投金额：低估加倍、合理正常、高估暂停。比无脑定投收益更高，适合长期投资者。沪深300、中证500、红利 ETF 是核心配置标的。',
+  },
+  tactical: {
+    title: '战术信号（偏离度 / RSI / 布林 + 胜率扫描）',
+    desc: '基于前复权日线的战术层工具。①战术快照：MA20偏离度(BIAS)衡量价格偏离均线的程度，负值=超卖；RSI(14)衡量涨跌动能，≤30超卖、≥70超买；布林位置表示价格在布林带中的相对位置（0%=下轨、100%=上轨）。三者同向时信号更可靠。②胜率扫描：选定策略与参数后，统计全市场 ETF 历史上每次信号触发后"次日收盘买入、持有N个交易日后收盘卖出"的胜率与赔率，已扣双边佣金0.06%+冲击0.05%；凯利 f* = 胜率 − (1−胜率)/赔率，建议仓位一律取半凯利且封顶20%，f*≤0 为负期望（不建议参与），样本<20 不下结论。③防过拟合：将历史按时间拆为样本内（前70%）与样本外（后30%）两段，样本外是策略"没见过"的验证段，样本外胜率明显劣于样本内时提示过拟合风险（样本外样本<5 不下结论）；分年度胜率（10日口径，近3年）用于观察策略在不同市场环境下的稳定性。战略配置为主、战术偏离为辅。',
   },
 }
 
@@ -430,11 +510,21 @@ const pagination = ref<PaginationProps>({
 watch(activeTab, () => { pagination.value.page = 1 })
 
 function exportEtf() {
+  if (activeTab.value === 'tactical' && !tacticalLoaded.value) {
+    message.warning('战术信号尚未计算完成，请稍后再导出')
+    return
+  }
   const headersMap: Record<string, string[]> = {
     arbitrage: ['基金名称', '代码', '折溢价率', '溢价百分位', '收益下限%', '收益上限%', '资金容量', 'T+N', '敞口风险%', '可行性', '陷阱', '成交量'],
     grid: ['基金名称', '子类', '现价', '网格下限', '网格上限', '间距', '预估年化', '成交量', '估值百分位'],
     rotation: ['排名', '基金名称', '子类', '动量得分', '估值百分位', 'PE', '成交量'],
     valuation: ['基金名称', '代码', '估值分类', 'PE', 'PE百分位', '股息率', '现价', '定投建议'],
+    tactical: ['基金名称', '代码', '现价', 'MA20偏离度%', 'RSI14', '布林位置%', '当前信号'],
+  }
+  const headers = [...headersMap[activeTab.value]]
+  if (activeTab.value === 'tactical' && winrateLoaded.value) {
+    headers.push('触发次数', '5日胜率%', '10日胜率%', '20日胜率%', '赔率(10日)', '半凯利%(10日)', '凯利%(10日)',
+      '样本内胜率%(10日)', '样本外胜率%(10日)', '分年度胜率%(10日)')
   }
   const rows = displayEtfs.value.map(e => {
     const a = arbitrageAnalysisMap.value.get(e.code)
@@ -446,12 +536,22 @@ function exportEtf() {
         a.traps.join('; '), e.volume ?? '',
       ]
     }
+    if (activeTab.value === 'tactical') {
+      const t = tacticalMap.value.get(e.code)
+      const state = tacticalState(t)
+      const stateText = state === 'oversold' ? '超卖·关注' : state === 'overbought' ? '超买·谨慎' : state === 'neutral' ? '中性' : ''
+      const base = [e.name, e.code, t?.price ?? '', t?.bias_20 ?? '', t?.rsi_14 ?? '', t?.boll_pos ?? '', stateText]
+      if (winrateLoaded.value) {
+        base.push(...winrateExportCells(winrateMap.value.get(e.code)))
+      }
+      return base
+    }
     return [
       e.name, e.code, e.price, e.iopv, e.premium_pct, e.premium_percentile ?? '',
       e.net_arbitrage_yield, e.subscribe_limit ?? '', e.volume ?? '',
     ]
   })
-  exportToCSV(`etf_${activeTab.value}_${new Date().toISOString().slice(0, 10)}`, headersMap[activeTab.value], rows)
+  exportToCSV(`etf_${activeTab.value}_${new Date().toISOString().slice(0, 10)}`, headers, rows)
   message.success(`已导出 ${rows.length} 条 ETF 数据`)
 }
 </script>
@@ -513,6 +613,32 @@ function exportEtf() {
         <template #actions>
           <TabBar v-model="activeTab" :tabs="tabs" />
         </template>
+        <!-- 胜率扫描工具栏（仅战术信号Tab） -->
+        <div v-if="activeTab === 'tactical'" class="tactical-toolbar">
+          <n-select
+            v-model="selectedStrategyId"
+            :options="strategyOptions"
+            size="small"
+            placeholder="选择策略"
+            style="width: 200px"
+          />
+          <div v-for="p in strategyParams" :key="p.key" class="param-field">
+            <span class="param-label">{{ p.label }}</span>
+            <n-input-number
+              v-model="selectedParams[p.key]"
+              size="small"
+              style="width: 110px"
+              :min="p.min"
+              :max="p.max"
+              :step="p.step ?? 1"
+            />
+          </div>
+          <n-button size="small" type="primary" :loading="winrateLoading" :disabled="!tacticalLoaded" @click="scanWinrate">
+            <template #icon><n-icon :component="StatsChartOutline" /></template>
+            扫描胜率
+          </n-button>
+          <span v-if="winrateMeta" class="scan-meta">{{ winrateMeta }}</span>
+        </div>
         <n-data-table
           :columns="columns"
           :data="displayEtfs"
@@ -529,7 +655,12 @@ function exportEtf() {
           :row-props="(row: EtfFund) => ({ onClick: () => message.info(`${row.name} 详情`), style: 'cursor: pointer' })"
         />
         <div class="table-footer">
-          <span class="footer-info">当前 {{ displayEtfs.length }} 条 ETF 数据</span>
+          <span v-if="activeTab === 'tactical'" class="footer-info">
+            {{ tacticalLoading
+              ? '战术信号计算中（首次约需数十秒，当日缓存）...'
+              : `已计算 ${tacticalMap.size} 只（按成交额取前 ${TACTICAL_LIMIT} 只，基于前复权日线）` }}
+          </span>
+          <span v-else class="footer-info">当前 {{ displayEtfs.length }} 条 ETF 数据</span>
         </div>
       </DataPanel>
 
@@ -679,6 +810,18 @@ function exportEtf() {
 
 <style scoped>
 .etf-page { display: flex; flex-direction: column; gap: 14px; }
+
+/* === 战术信号 · 胜率扫描工具栏 === */
+.tactical-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.param-field { display: inline-flex; align-items: center; gap: 4px; }
+.param-label { font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
+.scan-meta { font-size: 11px; color: var(--text-muted); }
 
 .stat-grid {
   display: grid;

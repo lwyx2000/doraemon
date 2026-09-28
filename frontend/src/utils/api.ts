@@ -518,6 +518,18 @@ export const signalApi = {
     request<{ ok: boolean }>(`/api/v1/signals/tracked/${id}`, undefined, { method: 'DELETE' }),
   refreshTracked: () =>
     request<TrackedSignal[]>('/api/v1/signals/tracked/refresh'),
+  /** 批量战术信号快照（MA20偏离度 / RSI14 / 布林位置），当日缓存 */
+  tacticalBatch: (symbols: string[]) =>
+    request<TacticalSignal[]>('/api/v1/signals/tactical/batch', undefined, {
+      method: 'POST',
+      body: JSON.stringify({ symbols }),
+    }),
+  /** 胜率扫描：次日收盘买入、持有N日收盘卖出、扣成本；当日+同参数缓存 */
+  winrateScan: (symbols: string[], strategyId: string, params?: Record<string, any>) =>
+    request<WinrateScanResult>('/api/v1/signals/winrate/scan', undefined, {
+      method: 'POST',
+      body: JSON.stringify({ symbols, strategy_id: strategyId, params: params || {} }),
+    }),
 }
 
 // ---- 策略中心 · 经典实盘策略库 ----
@@ -629,6 +641,8 @@ import type {
   AccountName,
   StrategyDef,
   SignalResult,
+  TacticalSignal,
+  WinrateScanResult,
   TrackedSignal,
   LibraryStrategy,
   LibraryBacktestResult,

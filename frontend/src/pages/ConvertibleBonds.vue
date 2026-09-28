@@ -1,12 +1,19 @@
 <script setup lang="ts">
 defineOptions({ name: 'ConvertibleBonds' })
 import { ref, computed, h, onMounted, watch } from 'vue'
-import { NDataTable, NInput, NSelect, NIcon, NModal, NButton, useMessage } from 'naive-ui'
+import { NDataTable, NInput, NSelect, NInputNumber, NIcon, NModal, NButton, useMessage } from 'naive-ui'
 import type { PaginationProps } from 'naive-ui'
-import { DownloadOutline, FilterOutline, WarningOutline, SwapHorizontalOutline, StatsChartOutline, WalletOutline, ConstructOutline } from '@vicons/ionicons5'
+import { DownloadOutline, FilterOutline, WarningOutline, SwapHorizontalOutline, StatsChartOutline, WalletOutline, ConstructOutline, FlashOutline } from '@vicons/ionicons5'
 import type { Component } from 'vue'
 import { useAsyncData } from '../composables/useApi'
 import { api, isGatewayNoData } from '../utils/api'
+import { useSignalScan } from '../composables/useSignalScan'
+import {
+  buildTacticalSignalColumns,
+  buildWinrateColumns,
+  tacticalStateOf as tacticalState,
+  winrateExportCells,
+} from '../utils/signalDisplay'
 import type { ConvertibleBond } from '../types'
 import { exportToCSV } from '../utils/export'
 import { analyzeConversionBatch, analyzeVolatilityBatch, CONVERSION_ORDER, VOL_SIGNAL_ORDER } from '../utils/convertibleBond'
@@ -22,7 +29,10 @@ const message = useMessage()
 const { titleWithHelp } = useFieldHelp()
 const { data: bonds, loading, error, meta, refresh: refetch } = useAsyncData<ConvertibleBond[]>(() => api.getConvertibleBonds())
 const gatewayEmpty = computed(() => isGatewayNoData(meta.value))
-onMounted(refetch)
+onMounted(() => {
+  refetch()
+  loadStrategies()
+})
 
 // 转股套利可行性分析映射
 const conversionMap = computed(() => {
@@ -369,6 +379,37 @@ const rowProps = (row: ConvertibleBond) => ({
   onClick: () => message.info(row.name),
 })
 
+// ---- 战术信号 + 胜率扫描（共享逻辑见 useSignalScan；转债无成交额字段，
+//      按"当前筛选结果"顺序取前 100 只——先用筛选缩小范围再扫描）----
+const CB_SCAN_LIMIT = 100
+const {
+  selectedStrategyId, selectedParams, strategyOptions, strategyParams, loadStrategies,
+  tacticalMap, tacticalLoading, tacticalLoaded, loadTactical,
+  winrateMap, winrateLoading, winrateLoaded, winrateMeta, scanWinrate, statsOf,
+} = useSignalScan(
+  () => filteredBonds.value.map(b => b.code),
+  { onError: msg => message.error(msg), notify: msg => message.success(msg), limit: CB_SCAN_LIMIT },
+)
+
+// 战术/胜率列（计算完成后追加到主表，列定义共享于 signalDisplay）
+const tacticalAppendColumns = buildTacticalSignalColumns<ConvertibleBond>({
+  titleWithHelp,
+  getSignal: code => tacticalMap.value.get(code),
+  symbolOf: row => row.code,
+})
+const winrateAppendColumns = buildWinrateColumns<ConvertibleBond>({
+  titleWithHelp,
+  statsOf,
+  getScanItem: code => winrateMap.value.get(code),
+  symbolOf: row => row.code,
+})
+const tableColumns = computed(() => {
+  if (!tacticalLoaded.value) return columns
+  return winrateLoaded.value
+    ? [...columns, ...tacticalAppendColumns, ...winrateAppendColumns]
+    : [...columns, ...tacticalAppendColumns]
+})
+
 const topDoubleLow = computed(() =>
   bonds.value
     ? [...bonds.value]
@@ -438,10 +479,19 @@ function exportBonds() {
     '到期收益', '剩余年限', '评级', '强赎进度', '回售进度', '下修进度',
     'Altman Z', '质押率%', 'ST风险', '正股名称', '正股代码', '标签',
   ]
+  if (tacticalLoaded.value) {
+    headers.push('MA20偏离度%', 'RSI14', '布林位置%', '当前信号')
+  }
+  if (winrateLoaded.value) {
+    headers.push('触发次数', '5日胜率%', '10日胜率%', '20日胜率%', '赔率(10日)', '半凯利%(10日)', '凯利%(10日)',
+      '样本内胜率%(10日)', '样本外胜率%(10日)', '分年度胜率%(10日)')
+  }
   const rows = filteredBonds.value.map(b => {
     const v = volatilityMap.value.get(b.code)
     const a = conversionMap.value.get(b.code)
-    return [
+    const t = tacticalMap.value.get(b.code)
+    const state = tacticalState(t)
+    const base = [
       b.name, b.code, b.price.toFixed(3), b.change_pct, b.conv_value.toFixed(2),
       b.premium_pct,
       v?.iv ?? '', v?.hv ?? '', v?.signalLabel ?? '',
@@ -456,6 +506,18 @@ function exportBonds() {
       b.stock_name ?? '', b.stock_code ?? '',
       b.tag,
     ]
+    if (tacticalLoaded.value) {
+      base.push(
+        t && !t.error ? (t.bias_20 ?? '') : '',
+        t && !t.error ? (t.rsi_14 ?? '') : '',
+        t && !t.error ? (t.boll_pos ?? '') : '',
+        state === 'oversold' ? '超卖·关注' : state === 'overbought' ? '超买·谨慎' : state === 'neutral' ? '中性' : '',
+      )
+    }
+    if (winrateLoaded.value) {
+      base.push(...winrateExportCells(winrateMap.value.get(b.code)))
+    }
+    return base
   })
   exportToCSV(`convertible_bonds_${new Date().toISOString().slice(0, 10)}`, headers, rows)
   message.success(`已导出 ${rows.length} 条可转债数据`)
@@ -554,8 +616,38 @@ function exportBonds() {
           {{ activeStrategy.desc }} · 匹配 {{ filteredBonds.length }} 只
         </div>
       </div>
+      <!-- 战术信号 + 胜率扫描工具栏（对当前筛选结果生效，最多前 100 只） -->
+      <div class="tactical-toolbar">
+        <n-select
+          v-model="selectedStrategyId"
+          :options="strategyOptions"
+          size="small"
+          placeholder="选择策略"
+          style="width: 200px"
+        />
+        <div v-for="p in strategyParams" :key="p.key" class="param-field">
+          <span class="param-label">{{ p.label }}</span>
+          <n-input-number
+            v-model="selectedParams[p.key]"
+            size="small"
+            style="width: 110px"
+            :min="p.min"
+            :max="p.max"
+            :step="p.step ?? 1"
+          />
+        </div>
+        <n-button size="small" :loading="tacticalLoading" @click="loadTactical">
+          <template #icon><n-icon :component="FlashOutline" /></template>
+          战术信号
+        </n-button>
+        <n-button size="small" type="primary" :loading="winrateLoading" :disabled="!tacticalLoaded" @click="scanWinrate">
+          <template #icon><n-icon :component="StatsChartOutline" /></template>
+          扫描胜率
+        </n-button>
+        <span v-if="winrateMeta" class="scan-meta">{{ winrateMeta }}</span>
+      </div>
       <n-data-table
-        :columns="columns"
+        :columns="tableColumns"
         :data="filteredBonds"
         :row-key="(row: any) => row.code"
         :bordered="false"
@@ -768,6 +860,18 @@ function exportBonds() {
 .vol-signal.undervalued { background: var(--tag-green-bg); color: var(--tag-green-text); }
 .vol-signal.overvalued { background: var(--tag-red-bg); color: var(--tag-red-text); }
 .vol-signal.fair { background: var(--bg-subtle); color: var(--text-muted); }
+
+/* 战术信号 + 胜率扫描工具栏（与 ETF 页一致） */
+.tactical-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.param-field { display: inline-flex; align-items: center; gap: 4px; }
+.param-label { font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
+.scan-meta { font-size: 11px; color: var(--text-muted); }
 
 /* 转股套利 cell (table, h()-rendered) */
 .conv-cell { display: flex; flex-direction: column; gap: 3px; align-items: center; }
