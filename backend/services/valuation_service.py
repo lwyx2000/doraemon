@@ -488,6 +488,18 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
         # PB 历史数据（精简，只返回最近120个月给前端画图）
         pb_history = pb_data[-120:] if len(pb_data) > 120 else pb_data
 
+        # PE 历史与指数点数历史（精简，最近120个月，供详情弹窗画图）
+        pe_src = pe_data[-120:] if len(pe_data) > 120 else pe_data
+        pe_history = [
+            {"date": r["date"], "pe_ttm": r.get("pe_ttm"), "pe_static": r.get("pe_static")}
+            for r in pe_src if r.get("pe_ttm") is not None or r.get("pe_static") is not None
+        ]
+        price_src = pb_data[-120:] if len(pb_data) > 120 else pb_data
+        price_history = [
+            {"date": r["date"], "value": r.get("index_value")}
+            for r in price_src if r.get("index_value") is not None
+        ]
+
         # 利差历史（精简，最近120个月）
         spread_hist_short = spread_history[-120:] if len(spread_history) > 120 else spread_history
 
@@ -505,6 +517,8 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
             "yield_10y": yield_10y,
             "cpi_yoy": cpi_yoy,
             "pb_history": pb_history,
+            "pe_history": pe_history,
+            "price_history": price_history,
             "spread_history": spread_hist_short,
             "is_benchmark": idx_name == benchmark_used,
         }

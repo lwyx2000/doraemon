@@ -13,17 +13,13 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '大类资产配置看板', icon: 'dashboard' },
   },
   {
-    path: '/index-analysis',
-    name: 'IndexAnalysis',
-    component: () => import('../pages/IndexAnalysis.vue'),
-    meta: { title: '指数估值分析', icon: 'analytics' },
-  },
-  {
     path: '/index-valuation',
     name: 'IndexValuation',
     component: () => import('../pages/IndexValuation.vue'),
     meta: { title: '宽基估值分位', icon: 'trending_up' },
   },
+  // 原指数分析页已并入宽基估值分位页（2026-09-28 合并），旧地址重定向
+  { path: '/index-analysis', redirect: '/index-valuation' },
   {
     path: '/lof-funds',
     name: 'LofFunds',

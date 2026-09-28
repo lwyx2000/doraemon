@@ -103,9 +103,9 @@ const pageDataReqs: PageDataReq[] = [
   { page: '大类资产配置看板', route: '/dashboard', category: '宏观/指数', fields: 'ERP、ERP分位数(3/5/10Y)、DR007、GC001', frequency: 'daily', method: 'api', purpose: '股权风险溢价 + 银行间流动性监控' },
   { page: '大类资产配置看板', route: '/dashboard', category: '指数估值', fields: '6大指数PE/PB + 分位数 + 3月涨跌 + 胜率', frequency: 'daily', method: 'api', purpose: '宽基指数估值定投信号' },
   // 指数分析
-  { page: '指数估值分析', route: '/index-analysis', category: '指数行情', fields: '日K线收盘价、开高低、成交量', frequency: 'daily', method: 'api', purpose: 'K线图表绘制 + 技术分析' },
-  { page: '指数估值分析', route: '/index-analysis', category: '指数估值', fields: 'PE、PB、股息率、历史分位数', frequency: 'daily', method: 'api', purpose: '估值百分位 + 定投信号' },
-  { page: '指数估值分析', route: '/index-analysis', category: '宏观流动性', fields: 'DR007、GC001、十年国债', frequency: 'daily', method: 'api', purpose: '资金面松紧判断' },
+  { page: '宽基估值分位', route: '/index-valuation', category: '指数行情', fields: '日K线收盘价、开高低、成交量', frequency: 'daily', method: 'api', purpose: 'K线图表绘制 + 技术分析' },
+  { page: '宽基估值分位', route: '/index-valuation', category: '指数估值', fields: 'PE、PB、股息率、历史分位数', frequency: 'daily', method: 'api', purpose: '估值百分位 + 定投信号' },
+  { page: '宽基估值分位', route: '/index-valuation', category: '宏观流动性', fields: 'DR007、GC001、十年国债', frequency: 'daily', method: 'api', purpose: '资金面松紧判断' },
   // LOF基金
   { page: 'LOF基金套利扫描', route: '/lof-funds', category: '基金行情', fields: '二级市场价格、IOPV、折溢价率', frequency: 'daily', method: 'api', purpose: '折溢价套利信号' },
   { page: 'LOF基金套利扫描', route: '/lof-funds', category: '申赎信息', fields: '申购限额、暂停状态', frequency: 'daily', method: 'api', purpose: '资金容量分级(A/B/C) + 限购陷阱识别' },

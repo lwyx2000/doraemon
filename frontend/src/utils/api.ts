@@ -84,7 +84,7 @@ async function request<T>(
 
 export const api = {
   // ============================================================
-  // 大盘宏观数据（Dashboard / IndexAnalysis 分区接口）
+  // 大盘宏观数据（Dashboard / IndexValuation 分区接口）
   // ============================================================
   // 宏观指标（ERP / DR007 / GC001）
   getMacroIndicators: () =>

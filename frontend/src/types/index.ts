@@ -214,6 +214,8 @@ export interface BroadIndexValuation {
   cpi_yoy: number | null         // CPI同比 (%)
   is_benchmark: boolean
   pb_history: ValuationHistPoint[]
+  pe_history: PeHistPoint[]
+  price_history: PriceHistPoint[]
   spread_history: SpreadHistPoint[]
 }
 
@@ -221,6 +223,17 @@ export interface ValuationHistPoint {
   date: string
   pb: number | null
   index_value: number | null
+}
+
+export interface PeHistPoint {
+  date: string
+  pe_ttm: number | null
+  pe_static: number | null
+}
+
+export interface PriceHistPoint {
+  date: string
+  value: number
 }
 
 export interface SpreadHistPoint {

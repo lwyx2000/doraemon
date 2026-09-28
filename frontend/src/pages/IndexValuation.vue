@@ -1,10 +1,10 @@
 <script setup lang="ts">
 defineOptions({ name: 'IndexValuation' })
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { NDataTable, NTag, NSpin, NEmpty, NModal, NButton, NAlert, NTabs, NTabPane, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { api } from '../utils/api'
-import type { BroadIndexValuation, IndustryValuation, SectionSourceMeta } from '../types'
+import type { BroadIndexValuation, IndustryValuation, SectionSourceMeta, SpreadHistoryPoint } from '../types'
 import PageHeader from '../components/PageHeader.vue'
 import PercentileIndicator from '../components/PercentileIndicator.vue'
 import BaseChart from '../components/BaseChart.vue'
@@ -246,24 +246,217 @@ const industryColumns: DataTableColumns<IndustryValuation> = [
 
 import { h } from 'vue'
 
+// 行点击直接打开详情弹窗
+const rowProps = (row: BroadIndexValuation) => ({
+  style: 'cursor: pointer',
+  onClick: () => openDetail(row),
+})
+
+// 导出宽基估值 CSV（原指数分析页功能）
+function exportCSV() {
+  const headers = ['指数', 'PB', 'PE(TTM)', 'ROE均值(%)', '股债利差(%)', '估值分位(%)', 'PE分位(%)', 'PB分位(%)', '拥挤度(%)']
+  const rows = data.value.map(idx => [
+    idx.name, idx.pb ?? '', idx.pe_ttm ?? '', idx.roe_mean ?? '',
+    idx.spread ?? '', idx.valuation_percentile ?? '',
+    idx.pe_percentile ?? '', idx.pb_percentile ?? '', idx.crowding ?? '',
+  ])
+  const csv = [headers, ...rows].map(r => r.join(',')).join('\n')
+  const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `index_valuation_${new Date().toISOString().slice(0, 10)}.csv`
+  link.click()
+  URL.revokeObjectURL(url)
+  message.success(`已导出 ${rows.length} 条指数数据`)
+}
+
 // ==================== 详情弹窗 ====================
 const detailVisible = ref(false)
 const selectedItem = ref<BroadIndexValuation | null>(null)
+
+// 全量股债利差历史（打开弹窗时异步拉取，区别于行内自带的 120 月截断）
+const spreadHist = ref<SpreadHistoryPoint[]>([])
+const histLoading = ref(false)
 
 function openDetail(row: BroadIndexValuation) {
   selectedItem.value = row
   detailVisible.value = true
 }
 
-// PB 历史走势图
+watch(
+  () => selectedItem.value?.name,
+  async (name) => {
+    if (!name) {
+      spreadHist.value = []
+      return
+    }
+    histLoading.value = true
+    try {
+      const r = await api.getIndexSpreadHistory(name)
+      spreadHist.value = r.data ?? []
+    } catch {
+      spreadHist.value = []
+    } finally {
+      histLoading.value = false
+    }
+  },
+  { immediate: true },
+)
+
+// 时间窗口：全量序列前端截取
+const timeWindow = ref('3Y')
+const timeWindows = ['1Y', '3Y', '5Y', '10Y', '全部']
+const winLabel = computed(() => (timeWindow.value === '全部' ? '全部历史' : `近${timeWindow.value.replace('Y', '')}年`))
+
+const windowedHist = computed(() => {
+  const list = spreadHist.value
+  if (!list.length || timeWindow.value === '全部') return list
+  const years = timeWindow.value === '1Y' ? 1 : timeWindow.value === '3Y' ? 3 : timeWindow.value === '5Y' ? 5 : 10
+  const cutoff = new Date()
+  cutoff.setFullYear(cutoff.getFullYear() - years)
+  const cutoffStr = cutoff.toISOString().slice(0, 10)
+  return list.filter(p => p.date >= cutoffStr)
+})
+
+function quantile(sorted: number[], q: number): number {
+  const pos = (sorted.length - 1) * q
+  const base = Math.floor(pos)
+  const rest = pos - base
+  return sorted[base + 1] !== undefined ? sorted[base] + rest * (sorted[base + 1] - sorted[base]) : sorted[base]
+}
+
+// 窗口内利差统计 + 估值分位（100 − 升序百分位，与列表口径一致）
+const bandStats = computed(() => {
+  const values = windowedHist.value.map(p => p.spread)
+  if (values.length < 2) return null
+  const sorted = [...values].sort((a, b) => a - b)
+  const current = values[values.length - 1]
+  const below = sorted.filter(v => v <= current).length
+  const r2 = (n: number) => Math.round(n * 100) / 100
+  return {
+    current: r2(current),
+    min: r2(sorted[0]),
+    max: r2(sorted[sorted.length - 1]),
+    avg: r2(values.reduce((s, v) => s + v, 0) / values.length),
+    p90: r2(quantile(sorted, 0.9)),
+    p70: r2(quantile(sorted, 0.7)),
+    p50: r2(quantile(sorted, 0.5)),
+    p10: r2(quantile(sorted, 0.1)),
+    valuationPercentile: Math.round((1 - below / sorted.length) * 1000) / 10,
+    count: values.length,
+    firstDate: windowedHist.value[0].date,
+    lastDate: windowedHist.value[windowedHist.value.length - 1].date,
+  }
+})
+
+// 股债利差估值带：历史序列 + 90/70/50/10 分位线（月频降采样 ≤200 点）
+const spreadBandOption = computed(() => {
+  const stats = bandStats.value
+  const pts = windowedHist.value
+  if (!stats || pts.length < 2) return {}
+  const step = Math.max(1, Math.floor(pts.length / 200))
+  const sampled = pts.filter((_, i) => i % step === 0 || i === pts.length - 1)
+  return {
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params: any) => {
+        const p = params[0]
+        return `${p.axisValue}<br/>股债利差: <b>${p.value}%</b>`
+      },
+    },
+    grid: { top: 16, right: 52, bottom: 28, left: 44 },
+    xAxis: {
+      type: 'category',
+      data: sampled.map(p => p.date),
+      axisTick: { show: false },
+      axisLine: { lineStyle: { color: '#c1c6d7' } },
+      axisLabel: { fontSize: 10, color: '#717782' },
+    },
+    yAxis: {
+      type: 'value',
+      name: '利差(%)',
+      nameTextStyle: { fontSize: 10, color: '#717782' },
+      scale: true,
+      axisLabel: { fontSize: 10, color: '#717782', formatter: '{value}%' },
+      splitLine: { lineStyle: { type: 'dashed', color: 'rgba(0,0,0,0.06)' } },
+    },
+    series: [
+      {
+        type: 'line',
+        smooth: false,
+        showSymbol: false,
+        data: sampled.map(p => p.spread),
+        lineStyle: { width: 2, color: '#005ea1' },
+        itemStyle: { color: '#005ea1' },
+        areaStyle: {
+          opacity: 0.1,
+          color: {
+            type: 'linear',
+            x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [
+              { offset: 0, color: 'rgba(0, 94, 161, 0.35)' },
+              { offset: 1, color: 'rgba(0, 94, 161, 0)' },
+            ],
+          },
+        },
+        markLine: {
+          symbol: 'none',
+          silent: true,
+          lineStyle: { type: 'dashed', width: 1 },
+          data: [
+            { yAxis: stats.p90, lineStyle: { color: 'rgba(220,38,38,0.5)' }, label: { formatter: '90%', position: 'end', fontSize: 9, color: '#dc2626' } },
+            { yAxis: stats.p70, lineStyle: { color: 'rgba(249,115,22,0.5)' }, label: { formatter: '70%', position: 'end', fontSize: 9, color: '#f97316' } },
+            { yAxis: stats.p50, lineStyle: { color: 'rgba(107,114,128,0.5)' }, label: { formatter: '50%', position: 'end', fontSize: 9, color: '#6b7280' } },
+            { yAxis: stats.p10, lineStyle: { color: 'rgba(59,130,246,0.5)' }, label: { formatter: '10%', position: 'end', fontSize: 9, color: '#3b82f6' } },
+          ],
+        },
+      },
+    ],
+  }
+})
+
+// 估值评估文字（与文章方法论一致的五档判断）
+const valAnalysis = computed(() => {
+  const idx = selectedItem.value
+  if (!idx || !bandStats.value) return null
+  const stats = bandStats.value
+  const pct = stats.valuationPercentile
+  const name = idx.name
+  const scope = `${winLabel.value}股债利差序列（${stats.count}个样本，${stats.firstDate} ~ ${stats.lastDate}）`
+  let assessment: string
+  if (pct < 20) {
+    assessment = `${name}当前股债利差为${stats.current}%，处于${scope}的估值分位${pct}%（极度低估区域），利差显著高于历史中位数${stats.p50}%，股票相对债券极具吸引力，适合定投建仓。`
+  } else if (pct < 30) {
+    assessment = `${name}当前股债利差为${stats.current}%，处于${scope}的估值分位${pct}%（价值机会区），利差高于历史中位数${stats.p50}%，股票相对便宜，可逢低布局。`
+  } else if (pct < 70) {
+    assessment = `${name}当前股债利差为${stats.current}%，处于${scope}的估值分位${pct}%（正常区间），接近历史中位数${stats.p50}%，估值中性，不具备明显的估值优势或劣势。`
+  } else if (pct < 80) {
+    assessment = `${name}当前股债利差为${stats.current}%，处于${scope}的估值分位${pct}%（估值偏高），利差低于历史中位数${stats.p50}%，股票相对偏贵，追高需谨慎。`
+  } else {
+    assessment = `${name}当前股债利差为${stats.current}%，处于${scope}的估值分位${pct}%（极度高估区域），利差远低于历史中位数${stats.p50}%，注意估值回落风险，建议减仓或回避。`
+  }
+  return { stats, assessment }
+})
+
+// PB / PE / 点数历史走势图（后端返回最近120个月，跟随时间窗口截取）
+function sliceByWindow<T extends { date: string }>(list: T[] | undefined): T[] {
+  if (!list?.length || timeWindow.value === '全部') return list ?? []
+  const years = timeWindow.value === '1Y' ? 1 : timeWindow.value === '3Y' ? 3 : timeWindow.value === '5Y' ? 5 : 10
+  const cutoff = new Date()
+  cutoff.setFullYear(cutoff.getFullYear() - years)
+  const cutoffStr = cutoff.toISOString().slice(0, 10)
+  return list.filter(p => p.date >= cutoffStr)
+}
+
 const pbChartOption = computed(() => {
-  if (!selectedItem.value?.pb_history?.length) return null
-  const hist = selectedItem.value.pb_history
+  const hist = sliceByWindow(selectedItem.value?.pb_history)
+  if (!hist.length) return {}
   return {
     tooltip: { trigger: 'axis' },
-    grid: { left: 50, right: 30, top: 30, bottom: 40 },
-    xAxis: { type: 'category', data: hist.map(h => h.date), boundaryGap: false },
-    yAxis: { type: 'value', name: 'PB', scale: true },
+    grid: { left: 50, right: 30, top: 20, bottom: 40 },
+    xAxis: { type: 'category', data: hist.map(h => h.date), boundaryGap: false, axisLabel: { fontSize: 10, color: '#717782' } },
+    yAxis: { type: 'value', name: 'PB', scale: true, axisLabel: { fontSize: 10, color: '#717782' } },
     dataZoom: [{ type: 'inside' }, { type: 'slider', height: 16, bottom: 5 }],
     series: [{
       name: 'PB',
@@ -272,51 +465,74 @@ const pbChartOption = computed(() => {
       smooth: true,
       showSymbol: false,
       lineStyle: { width: 2, color: '#f59e0b' },
+      itemStyle: { color: '#f59e0b' },
       areaStyle: { color: 'rgba(245,158,11,0.1)' },
     }],
   }
 })
 
-// 股债利差历史走势图
-const spreadChartOption = computed(() => {
-  if (!selectedItem.value?.spread_history?.length) return null
-  const hist = selectedItem.value.spread_history
+const peChartOption = computed(() => {
+  const hist = sliceByWindow(selectedItem.value?.pe_history)
+  if (!hist.length) return {}
   return {
-    tooltip: { trigger: 'axis' },
-    legend: { data: ['股债利差(%)', 'PB'] },
-    grid: { left: 50, right: 50, top: 40, bottom: 40 },
-    xAxis: { type: 'category', data: hist.map(h => h.date), boundaryGap: false },
-    yAxis: [
-      { type: 'value', name: '利差(%)', scale: true, position: 'left' },
-      { type: 'value', name: 'PB', scale: true, position: 'right' },
-    ],
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params: any) =>
+        params.map((p: any) => `${p.marker}${p.seriesName}: <b>${p.value ?? '—'}</b>`).join('<br/>'),
+    },
+    legend: { data: ['PE(TTM)', 'PE(静态)'], top: 0, textStyle: { fontSize: 10, color: '#717782' } },
+    grid: { left: 50, right: 30, top: 30, bottom: 40 },
+    xAxis: { type: 'category', data: hist.map(h => h.date), boundaryGap: false, axisLabel: { fontSize: 10, color: '#717782' } },
+    yAxis: { type: 'value', name: 'PE', scale: true, axisLabel: { fontSize: 10, color: '#717782' } },
     dataZoom: [{ type: 'inside' }, { type: 'slider', height: 16, bottom: 5 }],
     series: [
       {
-        name: '股债利差(%)',
+        name: 'PE(TTM)',
         type: 'line',
-        yAxisIndex: 0,
-        data: hist.map(h => h.spread),
+        data: hist.map(h => h.pe_ttm),
         smooth: true,
         showSymbol: false,
-        lineStyle: { width: 2, color: '#3b82f6' },
-        areaStyle: { color: 'rgba(59,130,246,0.1)' },
-        markLine: {
-          silent: true,
-          lineStyle: { type: 'dashed', color: '#666' },
-          data: [{ yAxis: 0, label: { formatter: '0%' } }],
-        },
+        lineStyle: { width: 2, color: '#005ea1' },
+        itemStyle: { color: '#005ea1' },
       },
       {
-        name: 'PB',
+        name: 'PE(静态)',
         type: 'line',
-        yAxisIndex: 1,
-        data: hist.map(h => h.pb),
+        data: hist.map(h => h.pe_static),
         smooth: true,
         showSymbol: false,
-        lineStyle: { width: 1.5, color: '#f59e0b', type: 'dashed' },
+        lineStyle: { width: 1.2, color: '#94a3b8', type: 'dashed' },
+        itemStyle: { color: '#94a3b8' },
       },
     ],
+  }
+})
+
+const priceChartOption = computed(() => {
+  const hist = sliceByWindow(selectedItem.value?.price_history)
+  if (!hist.length) return {}
+  return {
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params: any) => {
+        const p = params[0]
+        return `${p.axisValue}<br/>指数点数: <b>${Number(p.value).toLocaleString('zh-CN')}</b>`
+      },
+    },
+    grid: { left: 66, right: 30, top: 20, bottom: 40 },
+    xAxis: { type: 'category', data: hist.map(h => h.date), boundaryGap: false, axisLabel: { fontSize: 10, color: '#717782' } },
+    yAxis: { type: 'value', name: '点数', scale: true, axisLabel: { fontSize: 10, color: '#717782' } },
+    dataZoom: [{ type: 'inside' }, { type: 'slider', height: 16, bottom: 5 }],
+    series: [{
+      name: '指数点数',
+      type: 'line',
+      data: hist.map(h => h.value),
+      smooth: true,
+      showSymbol: false,
+      lineStyle: { width: 2, color: '#16a34a' },
+      itemStyle: { color: '#16a34a' },
+      areaStyle: { color: 'rgba(22,163,74,0.08)' },
+    }],
   }
 })
 
@@ -333,7 +549,11 @@ const macroParams = computed(() => {
 
 <template>
   <div class="index-valuation-page">
-    <PageHeader title="宽基指数估值分析" subtitle="股债利差估值分位 + 拥挤度" helpKey="indexValuation" />
+    <PageHeader title="宽基指数估值分析" subtitle="股债利差估值分位 + 拥挤度" helpKey="indexValuation">
+      <template #actions>
+        <n-button size="tiny" @click="exportCSV">导出CSV</n-button>
+      </template>
+    </PageHeader>
 
     <!-- 全A整体估值分位（头条：文章方法论的「总开关」） -->
     <div v-if="overall" class="overall-card">
@@ -415,6 +635,7 @@ const macroParams = computed(() => {
             size="small"
             :max-height="560"
             :scroll-x="1130"
+            :row-props="rowProps"
           />
           <n-empty v-else-if="!loading" description="暂无数据，请确保后端服务正常运行" style="padding: 60px 0" />
         </n-spin>
@@ -460,12 +681,12 @@ const macroParams = computed(() => {
     <!-- 名词字典：估值术语释义（与指数分析页缩写词典同款） -->
     <GlossaryPanel page-key="indexValuation" />
 
-    <!-- 详情弹窗 -->
+    <!-- 详情弹窗：点击行 / 操作列「详情」打开 -->
     <n-modal
       v-model:show="detailVisible"
       preset="card"
-      :title="selectedItem ? `${selectedItem.name} · 估值历史走势` : '指数详情'"
-      style="width: 900px; max-width: 95vw"
+      :title="selectedItem ? `${selectedItem.name} · 指数详情` : '指数详情'"
+      style="width: 960px; max-width: 95vw"
       :bordered="false"
     >
       <div v-if="selectedItem" class="detail-content">
@@ -501,18 +722,84 @@ const macroParams = computed(() => {
           </div>
         </div>
 
+        <!-- 股债利差估值带（全量历史 + 分位线） -->
+        <div class="detail-section">
+          <div class="section-head">
+            <h4 class="section-title">股债利差估值带</h4>
+            <div class="btn-group">
+              <button
+                v-for="tw in timeWindows"
+                :key="tw"
+                :class="['btn-opt', { active: timeWindow === tw }]"
+                @click="timeWindow = tw"
+              >
+                {{ tw }}
+              </button>
+            </div>
+          </div>
+          <template v-if="valAnalysis">
+            <div class="chart-legend">
+              <div class="legend-item"><span class="legend-line solid" />股债利差</div>
+              <div class="legend-item"><span class="legend-line dashed-red" />90% 分位</div>
+              <div class="legend-item"><span class="legend-line dashed-orange" />70% 分位</div>
+              <div class="legend-item"><span class="legend-line dashed-gray" />50% 分位</div>
+              <div class="legend-item"><span class="legend-line dashed-blue" />10% 分位</div>
+            </div>
+            <BaseChart :option="spreadBandOption" :height="260" />
+            <div class="analysis-summary">
+              <p>{{ valAnalysis.assessment }}</p>
+              <div class="summary-stats">
+                <div class="summary-stat">
+                  <span class="ss-label">{{ winLabel }}最低利差</span>
+                  <span class="ss-value">{{ valAnalysis.stats.min }}%</span>
+                </div>
+                <div class="summary-stat">
+                  <span class="ss-label">{{ winLabel }}平均利差</span>
+                  <span class="ss-value">{{ valAnalysis.stats.avg }}%</span>
+                </div>
+                <div class="summary-stat">
+                  <span class="ss-label">{{ winLabel }}最高利差</span>
+                  <span class="ss-value">{{ valAnalysis.stats.max }}%</span>
+                </div>
+                <div class="summary-stat">
+                  <span class="ss-label">{{ winLabel }}估值分位</span>
+                  <span class="ss-value">{{ valAnalysis.stats.valuationPercentile }}%</span>
+                </div>
+              </div>
+            </div>
+          </template>
+          <n-empty
+            v-else
+            :description="histLoading ? '股债利差历史序列加载中...' : '该指数暂无利差历史数据（上游数据源未覆盖）'"
+            style="padding: 30px 0"
+          />
+        </div>
+
         <!-- PB 历史走势 -->
         <div class="detail-section">
-          <h4 class="section-title">PB 历史走势</h4>
-          <BaseChart v-if="pbChartOption" :option="pbChartOption" :height="280" />
+          <h4 class="section-title">PB 历史走势（{{ winLabel }}）</h4>
+          <BaseChart v-if="pbChartOption && Object.keys(pbChartOption).length" :option="pbChartOption" :height="220" />
           <n-empty v-else description="暂无PB历史数据" style="padding: 30px 0" />
         </div>
 
-        <!-- 股债利差历史走势 -->
+        <!-- PE 历史走势 -->
         <div class="detail-section">
-          <h4 class="section-title">股债利差历史走势</h4>
-          <BaseChart v-if="spreadChartOption" :option="spreadChartOption" :height="280" />
-          <n-empty v-else description="暂无利差历史数据" style="padding: 30px 0" />
+          <div class="section-head">
+            <h4 class="section-title">PE 历史走势（{{ winLabel }}）</h4>
+            <div class="chart-legend">
+              <div class="legend-item"><span class="legend-line solid" />PE(TTM)</div>
+              <div class="legend-item"><span class="legend-line dashed-gray" />PE(静态)</div>
+            </div>
+          </div>
+          <BaseChart v-if="peChartOption && Object.keys(peChartOption).length" :option="peChartOption" :height="220" />
+          <n-empty v-else description="暂无PE历史数据" style="padding: 30px 0" />
+        </div>
+
+        <!-- 指数点数历史走势 -->
+        <div class="detail-section">
+          <h4 class="section-title">指数点数历史走势（{{ winLabel }}）</h4>
+          <BaseChart v-if="priceChartOption && Object.keys(priceChartOption).length" :option="priceChartOption" :height="220" />
+          <n-empty v-else description="暂无点数历史数据" style="padding: 30px 0" />
         </div>
 
         <!-- 公式说明 -->
@@ -676,6 +963,120 @@ const macroParams = computed(() => {
 .detail-section {
   display: flex;
   flex-direction: column;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+/* 时间窗口按钮组（原指数分析页样式） */
+.btn-group {
+  display: flex;
+  background: var(--bg-hover);
+  border-radius: 4px;
+  padding: 2px;
+  border: 1px solid var(--border-default);
+}
+
+.btn-opt {
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  border: none;
+  background: transparent;
+  border-radius: 3px;
+  cursor: pointer;
+  color: var(--text-muted);
+  transition: all 0.15s;
+}
+
+.btn-opt:hover { background: var(--bg-active); }
+.btn-opt.active {
+  background: var(--color-primary);
+  color: white;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+}
+
+/* 估值带图例（原指数分析页样式） */
+.chart-legend {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.legend-line {
+  width: 12px;
+  height: 2px;
+  border-radius: 1px;
+}
+.legend-line.solid { background: #005ea1; }
+.legend-line.dashed-red { border-top: 1px dashed rgba(220,38,38,0.6); height: 0; }
+.legend-line.dashed-orange { border-top: 1px dashed rgba(249,115,22,0.6); height: 0; }
+.legend-line.dashed-gray { border-top: 1px dashed rgba(107,114,128,0.6); height: 0; }
+.legend-line.dashed-blue { border-top: 1px dashed rgba(59,130,246,0.6); height: 0; }
+
+/* 估值评估摘要 */
+.analysis-summary {
+  margin-top: 12px;
+  padding: 12px 14px;
+  background: var(--bg-subtle);
+  border-radius: 8px;
+}
+
+.analysis-summary p {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+  margin: 0;
+}
+
+.summary-stats {
+  display: flex;
+  gap: 12px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.summary-stat {
+  flex: 1;
+  min-width: 90px;
+  background: var(--bg-hover);
+  padding: 8px;
+  border-radius: 4px;
+  text-align: center;
+}
+
+.ss-label {
+  display: block;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.ss-value {
+  display: block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-top: 2px;
 }
 
 .section-title {
