@@ -870,7 +870,7 @@ def _fetch_10y_history_uncached() -> dict[str, float]:
 
     两处修正：
       - 超时 6s → 25s：网关实测单次约 12s，原来 6s 必然每次超时；
-      - 分段上限 3 → 11：原来只拉 3 年却要算 10 年分位，结果本身就是错的。
+      - 分段上限 3 → 11 → 20：原来只拉 3 年却要算 10 年分位，结果本身就是错的；现窗口扩到 15 年（数据下界 2008），覆盖 2011 起含 2015/2018/2022 周期。
 
     网关 bond_china_yield 上游对连续请求不稳定（实测连拉数段后连续 502），因此再加：
       - **增量续传**：以上次落盘的部分历史为底，只补缺失的年份段；后台刷新反复执行
@@ -880,7 +880,9 @@ def _fetch_10y_history_uncached() -> dict[str, float]:
     Returns: {date: rate}，取数全失败返回空 dict
     """
     end = datetime.now()
-    start = end.replace(year=end.year - 10)
+    # 窗口扩到 15 年：网关 bond_china_yield 单年分段实测可拉到 2008 起，数据下界即 2008；
+    # 15 年窗口覆盖 2011 起，含 2015/2018/2022 周期，稳健超过「尽量到10年」目标。
+    start = end.replace(year=end.year - 15)
     result: dict[str, float] = {}
     # 增量续传：合并上次落盘的部分历史
     try:
@@ -890,7 +892,7 @@ def _fetch_10y_history_uncached() -> dict[str, float]:
 
     cur = start
     attempts = 0
-    while cur < end and attempts < 11:
+    while cur < end and attempts < 20:
         attempts += 1
         nxt = min(cur.replace(year=cur.year + 1), end)
         sd = cur.strftime("%Y%m%d")

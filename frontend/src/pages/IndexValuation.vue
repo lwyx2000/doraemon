@@ -305,7 +305,7 @@ watch(
 )
 
 // 时间窗口：全量序列前端截取
-const timeWindow = ref('3Y')
+const timeWindow = ref('全部')
 const timeWindows = ['1Y', '3Y', '5Y', '10Y', '全部']
 const winLabel = computed(() => (timeWindow.value === '全部' ? '全部历史' : `近${timeWindow.value.replace('Y', '')}年`))
 
@@ -449,6 +449,13 @@ function sliceByWindow<T extends { date: string }>(list: T[] | undefined): T[] {
   return list.filter(p => p.date >= cutoffStr)
 }
 
+// 网关 index-valuation 对宽基指数返回的 pe_ttm 与 pe_static 恒等（实测 100% 相同，属上游数据问题），
+// 仅当二者真有差异时才画第二条线，避免两条完全重合的误导线。
+const peStaticDiffers = computed(() => {
+  const h = selectedItem.value?.pe_history
+  return Array.isArray(h) && h.some(r => r.pe_static != null && r.pe_ttm != null && r.pe_static !== r.pe_ttm)
+})
+
 const pbChartOption = computed(() => {
   const hist = sliceByWindow(selectedItem.value?.pb_history)
   if (!hist.length) return {}
@@ -480,7 +487,7 @@ const peChartOption = computed(() => {
       formatter: (params: any) =>
         params.map((p: any) => `${p.marker}${p.seriesName}: <b>${p.value ?? '—'}</b>`).join('<br/>'),
     },
-    legend: { data: ['PE(TTM)', 'PE(静态)'], top: 0, textStyle: { fontSize: 10, color: '#717782' } },
+    legend: { data: ['PE(TTM)', ...(peStaticDiffers.value ? ['PE(静态)'] : [])], top: 0, textStyle: { fontSize: 10, color: '#717782' } },
     grid: { left: 50, right: 30, top: 30, bottom: 40 },
     xAxis: { type: 'category', data: hist.map(h => h.date), boundaryGap: false, axisLabel: { fontSize: 10, color: '#717782' } },
     yAxis: { type: 'value', name: 'PE', scale: true, axisLabel: { fontSize: 10, color: '#717782' } },
@@ -495,7 +502,7 @@ const peChartOption = computed(() => {
         lineStyle: { width: 2, color: '#005ea1' },
         itemStyle: { color: '#005ea1' },
       },
-      {
+      ...(peStaticDiffers.value ? [{
         name: 'PE(静态)',
         type: 'line',
         data: hist.map(h => h.pe_static),
@@ -503,7 +510,7 @@ const peChartOption = computed(() => {
         showSymbol: false,
         lineStyle: { width: 1.2, color: '#94a3b8', type: 'dashed' },
         itemStyle: { color: '#94a3b8' },
-      },
+      }] : []),
     ],
   }
 })
@@ -686,7 +693,7 @@ const macroParams = computed(() => {
       v-model:show="detailVisible"
       preset="card"
       :title="selectedItem ? `${selectedItem.name} · 指数详情` : '指数详情'"
-      style="width: 960px; max-width: 95vw"
+      style="width: 96vw; max-width: 96vw"
       :bordered="false"
     >
       <div v-if="selectedItem" class="detail-content">
@@ -775,24 +782,27 @@ const macroParams = computed(() => {
           />
         </div>
 
-        <!-- PB 历史走势 -->
-        <div class="detail-section">
-          <h4 class="section-title">PB 历史走势（{{ winLabel }}）</h4>
-          <BaseChart v-if="pbChartOption && Object.keys(pbChartOption).length" :option="pbChartOption" :height="220" />
-          <n-empty v-else description="暂无PB历史数据" style="padding: 30px 0" />
-        </div>
-
-        <!-- PE 历史走势 -->
-        <div class="detail-section">
-          <div class="section-head">
-            <h4 class="section-title">PE 历史走势（{{ winLabel }}）</h4>
-            <div class="chart-legend">
-              <div class="legend-item"><span class="legend-line solid" />PE(TTM)</div>
-              <div class="legend-item"><span class="legend-line dashed-gray" />PE(静态)</div>
-            </div>
+        <!-- PB / PE 历史走势（并排网格，一次显示多图） -->
+        <div class="detail-charts-grid">
+          <div class="detail-section">
+            <h4 class="section-title">PB 历史走势（{{ winLabel }}）</h4>
+            <BaseChart v-if="pbChartOption && Object.keys(pbChartOption).length" :option="pbChartOption" :height="240" />
+            <n-empty v-else description="暂无PB历史数据" style="padding: 30px 0" />
           </div>
-          <BaseChart v-if="peChartOption && Object.keys(peChartOption).length" :option="peChartOption" :height="220" />
-          <n-empty v-else description="暂无PE历史数据" style="padding: 30px 0" />
+
+          <!-- PE 历史走势 -->
+          <div class="detail-section">
+            <div class="section-head">
+              <h4 class="section-title">PE 历史走势（{{ winLabel }}）</h4>
+              <div class="chart-legend" v-if="peStaticDiffers">
+                <div class="legend-item"><span class="legend-line solid" />PE(TTM)</div>
+                <div class="legend-item"><span class="legend-line dashed-gray" />PE(静态)</div>
+              </div>
+              <span v-else class="legend-note">PE(TTM) 与 PE(静态) 在该数据源取值相同，仅显示其一</span>
+            </div>
+            <BaseChart v-if="peChartOption && Object.keys(peChartOption).length" :option="peChartOption" :height="240" />
+            <n-empty v-else description="暂无PE历史数据" style="padding: 30px 0" />
+          </div>
         </div>
 
         <!-- 指数点数历史走势 -->
@@ -931,6 +941,27 @@ const macroParams = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 20px;
+  max-height: 88vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.detail-charts-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.legend-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  align-self: center;
+}
+
+@media (max-width: 960px) {
+  .detail-charts-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .detail-stats {

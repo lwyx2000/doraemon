@@ -485,23 +485,23 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
                 current_ratio = current_pb / current_bench_pb
                 crowding = _percentile(current_ratio, ratio_history)
 
-        # PB 历史数据（精简，只返回最近120个月给前端画图）
-        pb_history = pb_data[-120:] if len(pb_data) > 120 else pb_data
+        # PB 历史数据（完整序列，前端按时间窗口自行截取；默认窗口=全部即展示 2005 起全史）
+        pb_history = pb_data
 
-        # PE 历史与指数点数历史（精简，最近120个月，供详情弹窗画图）
-        pe_src = pe_data[-120:] if len(pe_data) > 120 else pe_data
+        # PE 历史与指数点数历史（完整序列，供详情弹窗画图）
+        pe_src = pe_data
         pe_history = [
             {"date": r["date"], "pe_ttm": r.get("pe_ttm"), "pe_static": r.get("pe_static")}
             for r in pe_src if r.get("pe_ttm") is not None or r.get("pe_static") is not None
         ]
-        price_src = pb_data[-120:] if len(pb_data) > 120 else pb_data
+        price_src = pb_data
         price_history = [
             {"date": r["date"], "value": r.get("index_value")}
             for r in price_src if r.get("index_value") is not None
         ]
 
-        # 利差历史（精简，最近120个月）
-        spread_hist_short = spread_history[-120:] if len(spread_history) > 120 else spread_history
+        # 利差历史（完整序列，估值带全量展示；10Y 窗口已扩到 15 年）
+        spread_hist_short = spread_history
 
         return {
             "name": idx_name,
