@@ -168,13 +168,6 @@ const columns: DataTableColumns<BroadIndexValuation> = [
       h(NTag, { type: crowdingColor(row.crowding), size: 'small', bordered: false }, () => row.crowding != null ? row.crowding.toFixed(0) + '%' : '—'),
     ]),
   },
-  {
-    title: '操作',
-    key: 'action',
-    width: 80,
-    align: 'center',
-    render: (row) => h(NButton, { size: 'small', quaternary: true, onClick: () => openDetail(row) }, () => '详情'),
-  },
 ]
 
 // ==================== 行业估值表格列 ====================
@@ -693,7 +686,7 @@ const macroParams = computed(() => {
       </n-tab-pane>
     </n-tabs>
 
-    <!-- 详情弹窗：点击行 / 操作列「详情」打开 -->
+    <!-- 详情弹窗：点击列表行打开 -->
     <n-modal
       v-model:show="detailVisible"
       preset="card"
