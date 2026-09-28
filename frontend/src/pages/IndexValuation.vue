@@ -1,10 +1,10 @@
 <script setup lang="ts">
 defineOptions({ name: 'IndexValuation' })
 import { ref, computed, onMounted } from 'vue'
-import { NDataTable, NTag, NSpin, NEmpty, NModal, NButton, NAlert, useMessage } from 'naive-ui'
+import { NDataTable, NTag, NSpin, NEmpty, NModal, NButton, NAlert, NTabs, NTabPane, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { api } from '../utils/api'
-import type { BroadIndexValuation, SectionSourceMeta } from '../types'
+import type { BroadIndexValuation, IndustryValuation, SectionSourceMeta } from '../types'
 import PageHeader from '../components/PageHeader.vue'
 import PercentileIndicator from '../components/PercentileIndicator.vue'
 import BaseChart from '../components/BaseChart.vue'
@@ -28,7 +28,44 @@ async function loadData() {
   }
 }
 
-onMounted(loadData)
+// ==================== 全A整体估值分位（头条，文章方法论的「总开关」） ====================
+const overall = computed(() => (meta.value as any)?.overall ?? null)
+const benchmarkName = computed(() => (meta.value as any)?.benchmarkName ?? overall.value?.name ?? '中证全指')
+
+// ==================== 行业估值（申万一级） ====================
+const industryData = ref<IndustryValuation[]>([])
+const industryLoading = ref(false)
+const industryMeta = ref<(SectionSourceMeta & {
+  status?: string
+  message?: string
+  insufficientHistory?: boolean
+  tradeDays?: number
+  snapshotStats?: Record<string, any>
+}) | null>(null)
+
+async function loadIndustry() {
+  industryLoading.value = true
+  try {
+    const res = await api.getIndustryValuation()
+    industryData.value = res.data || []
+    industryMeta.value = res.meta ?? null
+  } catch (e: any) {
+    message.error('获取行业估值数据失败: ' + (e?.message || e))
+    industryData.value = []
+  } finally {
+    industryLoading.value = false
+  }
+}
+
+const activeTab = ref<'broad' | 'industry'>('broad')
+function handleTabChange(tab: string) {
+  activeTab.value = tab as 'broad' | 'industry'
+  if (tab === 'industry' && !industryData.value.length && !industryLoading.value && !industryMeta.value) {
+    loadIndustry()
+  }
+}
+
+onMounted(() => { loadData(); loadIndustry() })
 
 // ==================== 估值分位颜色 ====================
 function percentileColor(pct: number | null): 'default' | 'success' | 'warning' | 'error' {
@@ -115,6 +152,75 @@ const columns: DataTableColumns<BroadIndexValuation> = [
     width: 80,
     align: 'center',
     render: (row) => h(NButton, { size: 'small', quaternary: true, onClick: () => openDetail(row) }, () => '详情'),
+  },
+]
+
+// ==================== 行业估值表格列 ====================
+function pctColor(pct: number | null): string {
+  if (pct == null) return 'var(--text-primary)'
+  if (pct < 30) return '#16a34a'
+  if (pct > 70) return '#dc2626'
+  return 'var(--text-primary)'
+}
+
+const industryColumns: DataTableColumns<IndustryValuation> = [
+  {
+    title: '行业',
+    key: 'name',
+    width: 130,
+    fixed: 'left',
+    render: (row) => row.name || row.code,
+  },
+  {
+    title: 'PE',
+    key: 'pe',
+    width: 80,
+    align: 'right',
+    render: (row) => row.pe != null ? row.pe.toFixed(1) : '—',
+  },
+  {
+    title: 'PB',
+    key: 'pb',
+    width: 80,
+    align: 'right',
+    render: (row) => row.pb != null ? row.pb.toFixed(2) : '—',
+  },
+  {
+    title: '股息率',
+    key: 'dividend_yield',
+    width: 90,
+    align: 'right',
+    render: (row) => row.dividend_yield != null ? row.dividend_yield.toFixed(2) + '%' : '—',
+  },
+  {
+    title: 'PE分位',
+    key: 'pe_percentile',
+    width: 130,
+    align: 'center',
+    render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
+      h(PercentileIndicator, { value: row.pe_percentile, width: 60 }),
+      h(NTag, { type: percentileColor(row.pe_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pe_percentile)),
+    ]),
+  },
+  {
+    title: 'PB分位',
+    key: 'pb_percentile',
+    width: 130,
+    align: 'center',
+    render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
+      h(PercentileIndicator, { value: row.pb_percentile, width: 60 }),
+      h(NTag, { type: percentileColor(row.pb_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pb_percentile)),
+    ]),
+  },
+  {
+    title: '拥挤度',
+    key: 'crowding',
+    width: 130,
+    align: 'center',
+    render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
+      h(PercentileIndicator, { value: row.crowding, width: 60 }),
+      h(NTag, { type: percentileColor(row.crowding), size: 'small', bordered: false }, () => row.crowding != null ? row.crowding.toFixed(0) + '%' : '—'),
+    ]),
   },
 ]
 
@@ -209,63 +315,129 @@ const macroParams = computed(() => {
   <div class="index-valuation-page">
     <PageHeader title="宽基指数估值分析" subtitle="股债利差估值分位 + 拥挤度" helpKey="indexValuation" />
 
-    <!-- 宏观参数 -->
-    <div v-if="macroParams" class="macro-params">
-      <div class="param-item">
-        <span class="param-label">10年期国债收益率</span>
-        <span class="param-value">{{ macroParams.yield_10y != null ? macroParams.yield_10y.toFixed(2) + '%' : '—' }}</span>
+    <!-- 全A整体估值分位（头条：文章方法论的「总开关」） -->
+    <div v-if="overall" class="overall-card">
+      <div class="overall-head">
+        <span class="overall-title">全A整体估值分位</span>
+        <n-tag :type="percentileColor(overall.valuation_percentile)" size="small" :bordered="false">
+          {{ percentileLabel(overall.valuation_percentile) }}
+        </n-tag>
+        <span class="overall-sub">基准 = {{ overall.name }}（万得全A代理）</span>
       </div>
-      <div class="param-item">
-        <span class="param-label">CPI同比</span>
-        <span class="param-value">{{ macroParams.cpi_yoy != null ? macroParams.cpi_yoy.toFixed(2) + '%' : '—' }}</span>
-      </div>
-      <div class="param-item">
-        <span class="param-label">通胀调整系数</span>
-        <span class="param-value">0.3 × CPI</span>
-      </div>
-      <div class="param-item">
-        <span class="param-label">基准指数</span>
-        <span class="param-value">中证800 ★</span>
-      </div>
-      <div class="param-item" v-if="meta">
-        <span class="param-label">数据来源</span>
-        <span class="param-value">{{ meta.dataSource }}</span>
+      <div class="overall-body">
+        <div class="overall-pct" :style="{ color: pctColor(overall.valuation_percentile) }">
+          {{ overall.valuation_percentile != null ? overall.valuation_percentile.toFixed(1) + '%' : '—' }}
+        </div>
+        <div class="overall-metrics">
+          <div class="om"><span>PB</span><b>{{ overall.pb?.toFixed(2) ?? '—' }}</b></div>
+          <div class="om"><span>PE(TTM)</span><b>{{ overall.pe_ttm?.toFixed(1) ?? '—' }}</b></div>
+          <div class="om"><span>ROE均值(5Y)</span><b>{{ overall.roe_mean?.toFixed(2) ?? '—' }}%</b></div>
+          <div class="om"><span>股债利差</span><b>{{ overall.spread?.toFixed(2) ?? '—' }}%</b></div>
+        </div>
       </div>
     </div>
 
-    <!-- 方法论提示 -->
-    <div class="method-hint">
-      <strong>估值分位</strong>：基于股债利差 = ROE均值/PB − 国债收益率 + 0.3×CPI，取历史百分位。
-      <n-tag type="success" size="small" :bordered="false">&lt;30% 便宜</n-tag>
-      <n-tag type="warning" size="small" :bordered="false">30-70% 正常</n-tag>
-      <n-tag type="error" size="small" :bordered="false">&gt;70% 过热</n-tag>
-      &nbsp;&nbsp;<strong>拥挤度</strong>：指数PB / 基准PB 的历史分位，衡量相对估值。
-    </div>
+    <!-- Tab：宽基指数 / 行业估值 -->
+    <n-tabs v-model:value="activeTab" type="line" @update:value="handleTabChange">
+      <n-tab-pane name="broad" tab="宽基指数">
+        <!-- 宏观参数 -->
+        <div v-if="macroParams" class="macro-params">
+          <div class="param-item">
+            <span class="param-label">10年期国债收益率</span>
+            <span class="param-value">{{ macroParams.yield_10y != null ? macroParams.yield_10y.toFixed(2) + '%' : '—' }}</span>
+          </div>
+          <div class="param-item">
+            <span class="param-label">CPI同比</span>
+            <span class="param-value">{{ macroParams.cpi_yoy != null ? macroParams.cpi_yoy.toFixed(2) + '%' : '—' }}</span>
+          </div>
+          <div class="param-item">
+            <span class="param-label">通胀调整系数</span>
+            <span class="param-value">0.3 × CPI</span>
+          </div>
+          <div class="param-item">
+            <span class="param-label">基准指数</span>
+            <span class="param-value">{{ benchmarkName }} ★</span>
+          </div>
+          <div class="param-item" v-if="meta">
+            <span class="param-label">数据来源</span>
+            <span class="param-value">{{ meta.dataSource }}</span>
+          </div>
+        </div>
 
-    <!-- 数据源不可用横幅（优雅降级，替代白屏/499） -->
-    <n-alert
-      v-if="meta && meta.status === 'unavailable'"
-      type="warning"
-      :show-icon="true"
-      title="估值数据源暂不可用"
-      style="margin-bottom: 12px"
-    >
-      {{ meta.message || '远程网关指数 PE/PB 接口异常，估值功能已降级，请稍后重试。' }}
-    </n-alert>
+        <!-- 方法论提示 -->
+        <div class="method-hint">
+          <strong>估值分位</strong>：基于股债利差 = ROE均值/PB − 国债收益率 + 0.3×CPI，取历史百分位。
+          <n-tag type="success" size="small" :bordered="false">&lt;30% 便宜</n-tag>
+          <n-tag type="warning" size="small" :bordered="false">30-70% 正常</n-tag>
+          <n-tag type="error" size="small" :bordered="false">&gt;70% 过热</n-tag>
+          &nbsp;&nbsp;<strong>拥挤度</strong>：指数PB / 全A(PB) 的历史分位，衡量相对估值。
+        </div>
 
-    <!-- 数据表格 -->
-    <n-spin :show="loading">
-      <n-data-table
-        v-if="data.length"
-        :columns="columns"
-        :data="data"
-        :bordered="false"
-        :single-line="false"
-        size="small"
-        :scroll-x="850"
-      />
-      <n-empty v-else-if="!loading" description="暂无数据，请确保后端服务正常运行" style="padding: 60px 0" />
-    </n-spin>
+        <!-- 数据源不可用横幅（优雅降级，替代白屏/499） -->
+        <n-alert
+          v-if="meta && meta.status === 'unavailable'"
+          type="warning"
+          :show-icon="true"
+          title="估值数据源暂不可用"
+          style="margin-bottom: 12px"
+        >
+          {{ meta.message || '远程网关指数 PE/PB 接口异常，估值功能已降级，请稍后重试。' }}
+        </n-alert>
+
+        <!-- 数据表格 -->
+        <n-spin :show="loading">
+          <n-data-table
+            v-if="data.length"
+            :columns="columns"
+            :data="data"
+            :bordered="false"
+            :single-line="false"
+            size="small"
+            :scroll-x="850"
+          />
+          <n-empty v-else-if="!loading" description="暂无数据，请确保后端服务正常运行" style="padding: 60px 0" />
+        </n-spin>
+      </n-tab-pane>
+
+      <n-tab-pane name="industry" tab="行业估值">
+        <!-- 累积中提示：本地每日累积，历史样本不足时分位仅供参考 -->
+        <n-alert
+          v-if="industryMeta && industryMeta.insufficientHistory"
+          type="info"
+          :show-icon="true"
+          title="行业估值快照累积中"
+          style="margin-bottom: 12px"
+        >
+          数据源已切换为本地每日累积（网关 sw_index_first_info），当前已积累
+          {{ industryMeta.tradeDays ?? 0 }} 个交易日。分位 / 拥挤度为初步参考，历史越长越准。
+        </n-alert>
+        <n-alert
+          v-if="industryMeta && industryMeta.status === 'unavailable'"
+          type="warning"
+          :show-icon="true"
+          title="行业估值快照暂不可用"
+          style="margin-bottom: 12px"
+        >
+          {{ industryMeta.message || '行业估值快照（本地 base_sw_sector_daily）尚未累积到数据，请确认网关可访问或稍后重试。' }}
+        </n-alert>
+        <n-spin :show="industryLoading">
+          <n-data-table
+            v-if="industryData.length"
+            :columns="industryColumns"
+            :data="industryData"
+            :bordered="false"
+            :single-line="false"
+            size="small"
+            :max-height="560"
+            :scroll-x="780"
+          />
+          <n-empty v-else-if="!industryLoading" description="暂无行业估值数据" style="padding: 60px 0" />
+        </n-spin>
+      </n-tab-pane>
+    </n-tabs>
+
+    <!-- 名词字典：估值术语释义（与指数分析页缩写词典同款） -->
+    <GlossaryPanel page-key="indexValuation" />
 
     <!-- 详情弹窗 -->
     <n-modal
@@ -327,7 +499,7 @@ const macroParams = computed(() => {
           <n-text depth="3" style="font-size: 12px; line-height: 1.8">
             股债利差 = ROE均值(近5年) ÷ PB − 10年期国债收益率 + 0.3 × CPI同比<br>
             估值分位 = 100 − 利差在历史中的升序百分位（越小=越便宜）<br>
-            拥挤度 = (指数PB ÷ 中证800PB) 在历史中的百分位（越小=相对越便宜）
+            拥挤度 = (指数PB ÷ 中证全指PB) 在历史中的百分位（越小=相对越便宜）
           </n-text>
         </div>
       </div>
@@ -380,6 +552,70 @@ const macroParams = computed(() => {
 }
 
 .method-hint strong {
+  color: var(--text-primary);
+}
+
+.overall-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 20px;
+  background: linear-gradient(135deg, var(--bg-card), var(--bg-subtle));
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+}
+
+.overall-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.overall-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.overall-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.overall-body {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  flex-wrap: wrap;
+}
+
+.overall-pct {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 38px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.overall-metrics {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.om {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.om span {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.om b {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 15px;
   color: var(--text-primary);
 }
 

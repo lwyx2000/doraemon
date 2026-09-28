@@ -20,7 +20,7 @@ function isEnvelope(result: unknown): result is { data: unknown; meta: SectionSo
  * 页面可借此渲染「网关无数据」等来源级状态（见 isGatewayNoData）。
  * 泛型 T 始终代表「业务数据本身」（即信封内的 data），便于页面直接消费数组/对象。
  */
-export function useAsyncData<T>(fetcher: () => Promise<T | { data: T; meta: SectionSourceMeta }>) {
+export function useAsyncData<T>(fetcher: () => Promise<T | { data: T; meta?: SectionSourceMeta }>) {
   const data = ref<T | null>(null) as Ref<T | null>
   const loading = ref(true)
   const error = ref<string | null>(null)
@@ -35,7 +35,7 @@ export function useAsyncData<T>(fetcher: () => Promise<T | { data: T; meta: Sect
         data.value = (result.data as T) ?? null
         meta.value = result.meta ?? null
       } else {
-        data.value = result
+        data.value = result as T
         meta.value = null
       }
     } catch (e) {

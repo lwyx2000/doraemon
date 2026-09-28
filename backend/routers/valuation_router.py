@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 
 from models import ApiResponse
-from services.valuation_service import get_broad_index_valuation, get_index_spread_history, get_single_index_valuation
+from services.valuation_service import get_broad_index_valuation, get_index_spread_history, get_single_index_valuation, get_industry_valuation
 
 router = APIRouter(tags=["valuation"])
 
@@ -51,4 +51,16 @@ def index_spread_history(
     每个数据点包含：date, spread(股债利差%), pb, yield_10y(10Y国债%), roe_mean, earnings_yield。
     """
     data, meta = get_index_spread_history(index_name)
+    return ApiResponse(data=data, meta=meta)
+
+
+@router.get("/industries", response_model=ApiResponse[list[dict]])
+def industry_valuation() -> ApiResponse[list[dict]]:
+    """申万一级行业估值分位 + 拥挤度一览。
+
+    行业 PE/PB 历史来自本地 DuckDB base_sw_sector_daily（由网关 sw_index_first_info
+    每日累积，上游稳定可用），拥挤度分母用全A PB(000985)。历史样本不足时仍返回数据但
+    meta.insufficientHistory=True，前端展示「累积中」提示。
+    """
+    data, meta = get_industry_valuation()
     return ApiResponse(data=data, meta=meta)

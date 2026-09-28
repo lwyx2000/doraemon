@@ -8,7 +8,7 @@ from services.etf_service import get_etf_arbitrage_opportunities, get_etfs
 router = APIRouter(tags=["etfs"])
 
 
-@router.get("/etfs", response_model=ApiResponse[list[EtfFund]])
+@router.get("/", response_model=ApiResponse[list[EtfFund]])
 def etfs(
     category: str | None = Query(default=None),
     strategy: str | None = Query(default=None),
@@ -25,7 +25,7 @@ def etfs(
     return ApiResponse(data=data)
 
 
-@router.get("/etfs/arbitrage", response_model=ApiResponse[list[EtfFund]])
+@router.get("/arbitrage", response_model=ApiResponse[list[EtfFund]])
 def etf_arbitrage() -> ApiResponse[list[EtfFund]]:
     """Return ETF arbitrage opportunities."""
     data = get_etf_arbitrage_opportunities()

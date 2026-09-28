@@ -1,10 +1,17 @@
 <script setup lang="ts">
 defineOptions({ name: 'ClosedFunds' })
 import { h, ref, reactive, computed, onMounted } from 'vue'
-import { NButton, NDataTable, NIcon, NModal, NInput, NTag, useMessage } from 'naive-ui'
+import { NButton, NDataTable, NIcon, NModal, NInput, NTag, NSelect, NInputNumber, useMessage } from 'naive-ui'
 import type { PaginationProps } from 'naive-ui'
-import { TimerOutline, WarningOutline } from '@vicons/ionicons5'
+import { TimerOutline, WarningOutline, FlashOutline, StatsChartOutline } from '@vicons/ionicons5'
 import { api, useAsyncData, isGatewayNoData } from '../composables/useApi'
+import { useSignalScan } from '../composables/useSignalScan'
+import {
+  buildTacticalSignalColumns,
+  buildWinrateColumns,
+  tacticalStateOf as tacticalState,
+  winrateExportCells,
+} from '../utils/signalDisplay'
 import type { FundItem } from '../types'
 import { exportToCSV } from '../utils/export'
 import { analyzeClosedFundBatch, parseRemainingDays } from '../utils/closedFund'
@@ -44,6 +51,7 @@ const analysisMap = computed(() => {
 // 页面加载时获取数据
 onMounted(() => {
   refetch()
+  loadStrategies()
 })
 
 // 按综合评分降序排序
@@ -160,15 +168,36 @@ function exportFunds() {
     '基金名称', '代码', '剩余期限', '折价率', '年化收益', '预估到期收益', '到期日', '成交量',
     '流动性', '收敛路径', '年化收敛收益率', '信用评级', '底层类型', '综合评分', '风险提示',
   ]
+  if (tacticalLoaded.value) {
+    headers.push('MA20偏离度%', 'RSI14', '布林位置%', '当前信号')
+  }
+  if (winrateLoaded.value) {
+    headers.push('触发次数', '5日胜率%', '10日胜率%', '20日胜率%', '赔率(10日)', '半凯利%(10日)', '凯利%(10日)',
+      '样本内胜率%(10日)', '样本外胜率%(10日)', '分年度胜率%(10日)')
+  }
   const rows = funds.value.map(f => {
     const a = analysisMap.value.get(f.code)
-    return [
+    const t = tacticalMap.value.get(f.code)
+    const state = tacticalState(t)
+    const base = [
       f.name, f.code, f.remaining_term ?? '', f.premium_pct, f.annualized ?? '',
       f.est_ytm ?? '', f.maturity ?? '', f.volume,
       a?.liquidityLabel ?? '', a?.convergenceLabel ?? '', a?.convergenceYield ?? '',
       a?.creditRating ?? '', a?.underlyingType ?? '', a?.score ?? '',
       a?.warnings.join('; ') ?? '',
     ]
+    if (tacticalLoaded.value) {
+      base.push(
+        t && !t.error ? (t.bias_20 ?? '') : '',
+        t && !t.error ? (t.rsi_14 ?? '') : '',
+        t && !t.error ? (t.boll_pos ?? '') : '',
+        state === 'oversold' ? '超卖·关注' : state === 'overbought' ? '超买·谨慎' : state === 'neutral' ? '中性' : '',
+      )
+    }
+    if (winrateLoaded.value) {
+      base.push(...winrateExportCells(winrateMap.value.get(f.code)))
+    }
+    return base
   })
   exportToCSV(`closed_funds_${new Date().toISOString().slice(0, 10)}`, headers, rows)
   message.success(`已导出 ${rows.length} 条封闭基金数据`)
@@ -203,6 +232,36 @@ const summaryStats = computed(() => {
     opportunityCount,
     totalVolume,
   }
+})
+
+// ---- 战术信号 + 胜率扫描（共享逻辑见 useSignalScan；对综合评分排序后的列表生效，最多前 100 只）----
+const CLOSED_SCAN_LIMIT = 100
+const {
+  selectedStrategyId, selectedParams, strategyOptions, strategyParams, loadStrategies,
+  tacticalMap, tacticalLoading, tacticalLoaded, loadTactical,
+  winrateMap, winrateLoading, winrateLoaded, winrateMeta, scanWinrate, statsOf,
+} = useSignalScan(
+  () => sortedFunds.value.map(f => f.code),
+  { onError: msg => message.error(msg), notify: msg => message.success(msg), limit: CLOSED_SCAN_LIMIT },
+)
+
+// 战术/胜率列（计算完成后追加到主表，列定义共享于 signalDisplay）
+const tacticalAppendColumns = buildTacticalSignalColumns<FundItem>({
+  titleWithHelp,
+  getSignal: code => tacticalMap.value.get(code),
+  symbolOf: row => row.code,
+})
+const winrateAppendColumns = buildWinrateColumns<FundItem>({
+  titleWithHelp,
+  statsOf,
+  getScanItem: code => winrateMap.value.get(code),
+  symbolOf: row => row.code,
+})
+const tableColumns = computed(() => {
+  if (!tacticalLoaded.value) return columns
+  return winrateLoaded.value
+    ? [...columns, ...tacticalAppendColumns, ...winrateAppendColumns]
+    : [...columns, ...tacticalAppendColumns]
 })
 
 const columns = [
@@ -400,8 +459,37 @@ const columns = [
 
     <!-- Fund Table -->
     <DataPanel title="封闭基金监控列表" meta="自动刷新: 5秒">
+      <div class="tactical-toolbar">
+        <n-select
+          v-model="selectedStrategyId"
+          :options="strategyOptions"
+          size="small"
+          placeholder="选择策略"
+          style="width: 200px"
+        />
+        <div v-for="p in strategyParams" :key="p.key" class="param-field">
+          <span class="param-label">{{ p.label }}</span>
+          <n-input-number
+            v-model="selectedParams[p.key]"
+            size="small"
+            style="width: 110px"
+            :min="p.min"
+            :max="p.max"
+            :step="p.step ?? 1"
+          />
+        </div>
+        <n-button size="small" :loading="tacticalLoading" @click="loadTactical">
+          <template #icon><n-icon :component="FlashOutline" /></template>
+          战术信号
+        </n-button>
+        <n-button size="small" type="primary" :loading="winrateLoading" :disabled="!tacticalLoaded" @click="scanWinrate">
+          <template #icon><n-icon :component="StatsChartOutline" /></template>
+          扫描胜率
+        </n-button>
+        <span v-if="winrateMeta" class="scan-meta">{{ winrateMeta }}</span>
+      </div>
       <n-data-table
-        :columns="columns"
+        :columns="tableColumns"
         :data="sortedFunds"
         :row-key="(row: any) => row.code"
         :bordered="false"
@@ -600,6 +688,17 @@ const columns = [
   flex-direction: column;
   gap: 14px;
 }
+
+.tactical-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.param-field { display: inline-flex; align-items: center; gap: 4px; }
+.param-label { font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
+.scan-meta { font-size: 11px; color: var(--text-muted); }
 
 /* Bottom Grid */
 .bottom-grid {

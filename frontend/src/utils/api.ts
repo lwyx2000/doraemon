@@ -454,12 +454,20 @@ export const api = {
   getBroadIndexValuation: () =>
     requestWithMeta<BroadIndexValuation[]>('/api/v1/valuation/broad-indices'),
 
+  // 申万一级行业估值分位 + 拥挤度（行业 PE/PB 历史 + 全A PB 分母）
+  getIndustryValuation: () =>
+    requestWithMeta<IndustryValuation[]>('/api/v1/valuation/industries'),
+
   getSingleIndexValuation: (indexName: string) =>
     requestWithMeta<BroadIndexValuation>(`/api/v1/valuation/indices/${encodeURIComponent(indexName)}`),
 
   // 单指数股债利差历史序列（全量，供估值带图表）
   getIndexSpreadHistory: (indexName: string) =>
     requestWithMeta<SpreadHistoryPoint[]>(`/api/v1/valuation/indices/${encodeURIComponent(indexName)}/spread-history`),
+
+  // 网关数据源自描述信息（/api/project/info 代理）
+  getProjectInfo: () =>
+    requestWithMeta<ProjectInfo>('/api/v1/datasources/project-info'),
 }
 
 // ============================================================
@@ -636,7 +644,9 @@ import type {
   SwSectorValuationItem,
   SwSectorStrength,
   BroadIndexValuation,
+  IndustryValuation,
   SpreadHistoryPoint,
+  ProjectInfo,
   BrokerAccount,
   AccountName,
   StrategyDef,

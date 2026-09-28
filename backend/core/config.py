@@ -24,10 +24,11 @@ APP_VERSION = "1.0.0"
 # 仅在确实需要纯演示/离线时才显式设置 USE_MOCK_DATA=true。
 USE_MOCK_DATA = os.getenv("USE_MOCK_DATA", "false").lower() == "true"
 
-# AkShare WebAPI 数据源地址（供 market/fund 等服务调用上游取数，支持环境变量覆盖）
-# 默认指向 192.168.3.53:8000（akshare 数据服务所在机器）；
-# 若网关与 akshare 同机运行，可设 AKSHARE_API_BASE=http://127.0.0.1:8000
-#AKSHARE_API_BASE = os.getenv("AKSHARE_API_BASE", "http://192.168.3.53:8000")
+# AkShare WebAPI 数据源地址（供 market/fund/valuation 等服务调用上游取数，支持环境变量覆盖）
+# 默认指向外网可达的网关（项目核心规则：所有数据经此网关获取）。
+# 当前外网网关 http://10.100.213.248:8000 实测可用（指数估值/宏观/CPI/10Y国债 等均返回真实数据）。
+# 在 53 内网机上运行时，用环境变量覆盖：AKSHARE_API_BASE=http://192.168.3.53:8000
+AKSHARE_API_BASE = os.getenv("AKSHARE_API_BASE", "http://10.100.213.248:8000")
 
 # 企业微信群机器人 Webhook URL（用于预警通知推送）
 # 环境变量覆盖：WECOM_WEBHOOK_URL
@@ -35,5 +36,3 @@ WECOM_WEBHOOK_URL = os.getenv("WECOM_WEBHOOK_URL", "")
 
 # 钉钉机器人 Webhook URL
 DINGTALK_WEBHOOK_URL = os.getenv("DINGTALK_WEBHOOK_URL", "")
-#AKSHARE_API_BASE = os.getenv("AKSHARE_API_BASE", "http://10.100.213.248:8000")
-AKSHARE_API_BASE = os.getenv("AKSHARE_API_BASE", "http://192.168.3.53:8000")

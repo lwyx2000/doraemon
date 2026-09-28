@@ -1,7 +1,7 @@
 <script setup lang="ts">
 defineOptions({ name: 'LofFunds' })
 import { ref, computed, h, onMounted, watch } from 'vue'
-import { NDataTable, NButton, NIcon, useMessage } from 'naive-ui'
+import { NDataTable, NButton, NIcon, NSelect, NInputNumber, useMessage } from 'naive-ui'
 import type { PaginationProps } from 'naive-ui'
 import {
   TrendingUp,
@@ -9,8 +9,17 @@ import {
   EarthOutline,
   LockClosedOutline,
   PulseOutline,
+  FlashOutline,
+  StatsChartOutline,
 } from '@vicons/ionicons5'
 import { api, useAsyncData, isGatewayNoData } from '../composables/useApi'
+import { useSignalScan } from '../composables/useSignalScan'
+import {
+  buildTacticalSignalColumns,
+  buildWinrateColumns,
+  tacticalStateOf as tacticalState,
+  winrateExportCells,
+} from '../utils/signalDisplay'
 import type { FundItem } from '../types'
 import { exportToCSV } from '../utils/export'
 import { analyzeArbitrageBatch, FEASIBILITY_ORDER } from '../utils/arbitrage'
@@ -73,10 +82,33 @@ function scan() {
 
 function exportFunds() {
   const headers = ['基金名称', '代码', '类型', '价格', '预估净值', '溢价率', '百分位', '净套利收益', '成交量']
-  const rows = filteredFunds.value.map(f => [
-    f.name, f.code, f.type, f.price.toFixed(3), f.iopv.toFixed(3), f.premium_pct,
-    f.premium_percentile ?? '', f.net_arbitrage_yield, f.volume ?? '',
-  ])
+  if (tacticalLoaded.value) {
+    headers.push('MA20偏离度%', 'RSI14', '布林位置%', '当前信号')
+  }
+  if (winrateLoaded.value) {
+    headers.push('触发次数', '5日胜率%', '10日胜率%', '20日胜率%', '赔率(10日)', '半凯利%(10日)', '凯利%(10日)',
+      '样本内胜率%(10日)', '样本外胜率%(10日)', '分年度胜率%(10日)')
+  }
+  const rows = filteredFunds.value.map(f => {
+    const t = tacticalMap.value.get(f.code)
+    const state = tacticalState(t)
+    const base = [
+      f.name, f.code, f.type, f.price.toFixed(3), f.iopv.toFixed(3), f.premium_pct,
+      f.premium_percentile ?? '', f.net_arbitrage_yield, f.volume ?? '',
+    ]
+    if (tacticalLoaded.value) {
+      base.push(
+        t && !t.error ? (t.bias_20 ?? '') : '',
+        t && !t.error ? (t.rsi_14 ?? '') : '',
+        t && !t.error ? (t.boll_pos ?? '') : '',
+        state === 'oversold' ? '超卖·关注' : state === 'overbought' ? '超买·谨慎' : state === 'neutral' ? '中性' : '',
+      )
+    }
+    if (winrateLoaded.value) {
+      base.push(...winrateExportCells(winrateMap.value.get(f.code)))
+    }
+    return base
+  })
   exportToCSV(`lof_funds_${activeTab.value}_${new Date().toISOString().slice(0, 10)}`, headers, rows)
   message.success(`已导出 ${rows.length} 条基金数据`)
 }
@@ -84,6 +116,7 @@ function exportFunds() {
 // 页面加载时获取数据
 onMounted(() => {
   refetch()
+  loadStrategies()
 })
 
 const filteredFunds = computed(() => {
@@ -170,6 +203,36 @@ const tabs = [
   { key: 'qdii', label: 'QDII', icon: EarthOutline },
   { key: 'closed', label: '封闭式', icon: LockClosedOutline },
 ]
+
+// ---- 战术信号 + 胜率扫描（共享逻辑见 useSignalScan；对当前 Tab 筛选结果生效，最多前 100 只）----
+const LOF_SCAN_LIMIT = 100
+const {
+  selectedStrategyId, selectedParams, strategyOptions, strategyParams, loadStrategies,
+  tacticalMap, tacticalLoading, tacticalLoaded, loadTactical,
+  winrateMap, winrateLoading, winrateLoaded, winrateMeta, scanWinrate, statsOf,
+} = useSignalScan(
+  () => filteredFunds.value.map(f => f.code),
+  { onError: msg => message.error(msg), notify: msg => message.success(msg), limit: LOF_SCAN_LIMIT },
+)
+
+// 战术/胜率列（计算完成后追加到主表，列定义共享于 signalDisplay）
+const tacticalAppendColumns = buildTacticalSignalColumns<FundItem>({
+  titleWithHelp,
+  getSignal: code => tacticalMap.value.get(code),
+  symbolOf: row => row.code,
+})
+const winrateAppendColumns = buildWinrateColumns<FundItem>({
+  titleWithHelp,
+  statsOf,
+  getScanItem: code => winrateMap.value.get(code),
+  symbolOf: row => row.code,
+})
+const tableColumns = computed(() => {
+  if (!tacticalLoaded.value) return columns.value
+  return winrateLoaded.value
+    ? [...columns.value, ...tacticalAppendColumns, ...winrateAppendColumns]
+    : [...columns.value, ...tacticalAppendColumns]
+})
 
 function onRowClick(fund: FundItem) {
   selectedCode.value = fund.code
@@ -409,8 +472,37 @@ const columns = computed(() => {
 
     <!-- 基金列表 -->
     <DataPanel title="实时基金估值">
+      <div class="tactical-toolbar">
+        <n-select
+          v-model="selectedStrategyId"
+          :options="strategyOptions"
+          size="small"
+          placeholder="选择策略"
+          style="width: 200px"
+        />
+        <div v-for="p in strategyParams" :key="p.key" class="param-field">
+          <span class="param-label">{{ p.label }}</span>
+          <n-input-number
+            v-model="selectedParams[p.key]"
+            size="small"
+            style="width: 110px"
+            :min="p.min"
+            :max="p.max"
+            :step="p.step ?? 1"
+          />
+        </div>
+        <n-button size="small" :loading="tacticalLoading" @click="loadTactical">
+          <template #icon><n-icon :component="FlashOutline" /></template>
+          战术信号
+        </n-button>
+        <n-button size="small" type="primary" :loading="winrateLoading" :disabled="!tacticalLoaded" @click="scanWinrate">
+          <template #icon><n-icon :component="StatsChartOutline" /></template>
+          扫描胜率
+        </n-button>
+        <span v-if="winrateMeta" class="scan-meta">{{ winrateMeta }}</span>
+      </div>
       <n-data-table
-        :columns="columns"
+        :columns="tableColumns"
         :data="filteredFunds"
         :row-key="(row: any) => row.code"
         :bordered="false"
@@ -583,6 +675,17 @@ const columns = computed(() => {
   flex-direction: column;
   gap: 14px;
 }
+
+.tactical-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.param-field { display: inline-flex; align-items: center; gap: 4px; }
+.param-label { font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
+.scan-meta { font-size: 11px; color: var(--text-muted); }
 
 .table-footer {
   display: flex;

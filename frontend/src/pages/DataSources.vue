@@ -1,7 +1,7 @@
 <script setup lang="ts">
 defineOptions({ name: 'DataSources' })
 import { ref, onMounted, computed, h } from 'vue'
-import { NDataTable, NTag, NIcon, NCollapse, NCollapseItem } from 'naive-ui'
+import { NDataTable, NTag, NIcon, NCollapse, NCollapseItem, NAlert, NSpin } from 'naive-ui'
 import {
   ServerOutline,
   CalendarOutline,
@@ -15,10 +15,13 @@ import DataPanel from '../components/DataPanel.vue'
 import StatCard from '../components/StatCard.vue'
 import GlossaryPanel from '../components/GlossaryPanel.vue'
 import LoadingState from '../components/LoadingState.vue'
+import { useAsyncData, api } from '../composables/useApi'
+import type { ProjectInfo } from '../types'
 
 // 模拟加载：短暂展示骨架屏后显示内容
 const loading = ref(true)
 onMounted(() => {
+  loadProjectInfo()
   setTimeout(() => { loading.value = false }, 700)
 })
 
@@ -278,6 +281,75 @@ const uniquePages = computed(() => {
 function getPageReqs(pageName: string) {
   return pageDataReqs.filter(r => r.page === pageName)
 }
+
+// ============================================================
+// 网关实时数据源状态（/api/project/info 代理）
+// ============================================================
+const {
+  data: projectInfo,
+  loading: piLoading,
+  meta: piMeta,
+  execute: loadProjectInfo,
+} = useAsyncData<ProjectInfo>(() => api.getProjectInfo())
+
+// 数据源状态 → NTag 配色（按常见状态词容错）
+function statusType(status?: string): 'success' | 'warning' | 'error' | 'default' {
+  const s = (status || '').toLowerCase()
+  if (s.includes('health') || s === 'ok' || s === 'up' || s === 'normal' || s === 'available') return 'success'
+  if (s.includes('error') || s === 'down' || s === 'fail' || s === 'unavailable') return 'error'
+  if (s.includes('partial') || s.includes('warn') || s.includes('degraded') || s.includes('limited')) return 'warning'
+  return 'default'
+}
+
+// 数据源分类列表（容错：categories 可能是对象/数组/缺省）
+const dsCategories = computed(() => {
+  const cats = projectInfo.value?.datasources?.categories
+  if (!cats) return []
+  if (Array.isArray(cats)) return cats
+  return Object.entries(cats).map(([key, v]) => ({ key, ...(v || {}) }))
+})
+
+// 容灾链列表
+const failoverChains = computed(() => {
+  const fc = projectInfo.value?.failover_chains
+  if (!fc || typeof fc !== 'object') return []
+  return Object.entries(fc).map(([key, v]) => ({ key, ...(v || {}) }))
+})
+
+// 接口目录列表
+const apiCatalog = computed(() => {
+  const c = projectInfo.value?.api_catalog
+  return Array.isArray(c) ? c : []
+})
+
+const piGatewayEmpty = computed(() => piMeta.value?.gatewayEmpty === true)
+
+// 接口目录表格列
+const catalogColumns = [
+  {
+    title: '分组',
+    key: 'group',
+    width: 130,
+    render: (r: any) => h('span', { class: 'ds-cat' }, r.group || '-'),
+  },
+  {
+    title: '方法',
+    key: 'method',
+    width: 80,
+    align: 'center' as const,
+    render: (r: any) => h(NTag, { size: 'small', bordered: false }, { default: () => (r.method || 'GET') }),
+  },
+  {
+    title: '路径',
+    key: 'path',
+    render: (r: any) => h('code', { class: 'ds-api' }, r.path || r.endpoint || '-'),
+  },
+  {
+    title: '数据源 / 容灾',
+    key: 'source',
+    render: (r: any) => h('span', { class: 'ds-source' }, r.source || r.failover || '-'),
+  },
+]
 </script>
 
 <template>
@@ -291,6 +363,78 @@ function getPageReqs(pageName: string) {
     <PageHeader title="数据来源说明" subtitle="各页面数据需求明细 — 研究数据频率：日K线级别" helpKey="dataSources" />
 
     <GlossaryPanel page-key="dataSources" />
+
+    <!-- 网关实时数据源状态（/api/project/info 代理） -->
+    <DataPanel title="网关实时数据源状态">
+      <div v-if="piLoading" class="pi-loading">
+        <n-spin size="small" />
+        <span>正在拉取网关数据源信息...</span>
+      </div>
+      <n-alert
+        v-else-if="piGatewayEmpty || !projectInfo"
+        type="warning"
+        :show-icon="true"
+        title="网关数据源信息暂不可用"
+      >
+        网关未部署或不可达（/api/project/info）。下方为各页面数据需求说明（静态文档）；
+        如需查看实时数据源健康度，请确认 AkShare WebAPI 网关已部署且本服务可访问。
+      </n-alert>
+      <div v-else class="pi-content">
+        <div class="pi-meta">
+          <span class="pi-name">{{ projectInfo.meta?.name || 'AkShare WebAPI' }}</span>
+          <n-tag v-if="projectInfo.meta?.version" size="small" :bordered="false">{{ projectInfo.meta.version }}</n-tag>
+          <span class="pi-count">接口数 {{ projectInfo.api_count ?? '—' }} · 数据源 {{ projectInfo.datasources?.count ?? '—' }}</span>
+        </div>
+        <p v-if="projectInfo.meta?.description" class="pi-desc">{{ projectInfo.meta.description }}</p>
+        <div v-if="projectInfo.meta?.tech_stack?.length" class="pi-tech">
+          <n-tag v-for="t in projectInfo.meta.tech_stack" :key="t" size="tiny" :bordered="false" type="info">{{ t }}</n-tag>
+        </div>
+
+        <h4 class="pi-subtitle">数据源健康度</h4>
+        <div class="pi-cat-grid">
+          <div v-for="cat in dsCategories" :key="cat.key" class="pi-cat-card">
+            <div class="pi-cat-head">
+              <span class="pi-cat-name">{{ cat.name || cat.key }}</span>
+              <n-tag v-if="cat.status" size="small" :bordered="false" :type="statusType(cat.status)">{{ cat.status }}</n-tag>
+            </div>
+            <div v-if="Array.isArray(cat.sources)" class="pi-src-list">
+              <div v-for="(s, i) in cat.sources" :key="i" class="pi-src">
+                <span class="pi-src-name">{{ s.name || ('源' + i) }}</span>
+                <n-tag v-if="s.status" size="tiny" :bordered="false" :type="statusType(s.status)">{{ s.status }}</n-tag>
+              </div>
+            </div>
+            <p v-else-if="cat.description" class="pi-cat-desc">{{ cat.description }}</p>
+          </div>
+        </div>
+
+        <h4 class="pi-subtitle">容灾降级链</h4>
+        <div v-if="failoverChains.length" class="pi-fc-list">
+          <div v-for="fc in failoverChains" :key="fc.key" class="pi-fc">
+            <span class="pi-fc-key">{{ fc.key }}</span>
+            <span class="pi-fc-chain">{{ (fc.chain || []).join(' → ') }}</span>
+            <span class="pi-fc-healthy">健康 {{ (fc.healthy || []).length }}/{{ (fc.chain || []).length }}</span>
+          </div>
+        </div>
+        <p v-else class="pi-empty">无容灾链信息</p>
+
+        <h4 class="pi-subtitle">接口目录（{{ apiCatalog.length }}）</h4>
+        <n-data-table
+          v-if="apiCatalog.length"
+          :columns="catalogColumns"
+          :data="apiCatalog"
+          :bordered="false"
+          :single-line="false"
+          size="small"
+        />
+        <p v-else class="pi-empty">无接口目录信息</p>
+
+        <n-collapse class="pi-raw">
+          <n-collapse-item title="查看原始 JSON" name="raw">
+            <pre class="pi-json">{{ JSON.stringify(projectInfo, null, 2) }}</pre>
+          </n-collapse-item>
+        </n-collapse>
+      </div>
+    </DataPanel>
 
     <!-- 概览卡片 -->
     <div class="stat-grid">
@@ -624,6 +768,149 @@ function getPageReqs(pageName: string) {
   font-size: 12px;
   color: var(--text-muted);
   font-style: italic;
+}
+
+/* 网关实时数据源状态 */
+.pi-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  padding: 8px 0;
+}
+.pi-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pi-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.pi-name {
+  font-family: 'Work Sans', sans-serif;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.pi-count {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.pi-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin: 0;
+}
+.pi-tech {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.pi-subtitle {
+  font-family: 'Work Sans', sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 10px 0 6px;
+}
+.pi-cat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+.pi-cat-card {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  padding: 12px;
+}
+.pi-cat-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.pi-cat-name {
+  font-family: 'Work Sans', sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.pi-cat-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin: 0;
+}
+.pi-src-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pi-src {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.pi-src-name {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.pi-fc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pi-fc {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  padding: 6px 10px;
+  background: var(--bg-subtle);
+  border-radius: 6px;
+  flex-wrap: wrap;
+}
+.pi-fc-key {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.pi-fc-chain {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--color-primary);
+  flex: 1;
+  min-width: 160px;
+}
+.pi-fc-healthy {
+  color: var(--color-success);
+  white-space: nowrap;
+}
+.pi-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0;
+}
+.pi-raw {
+  margin-top: 10px;
+}
+.pi-json {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: var(--bg-code, var(--bg-subtle));
+  padding: 12px;
+  border-radius: 6px;
+  overflow: auto;
+  max-height: 360px;
+  margin: 0;
 }
 
 /* Responsive */

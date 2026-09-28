@@ -207,6 +207,8 @@ export interface BroadIndexValuation {
   roe_mean: number | null       // ROE近5年均值 (%)
   spread: number | null          // 股债利差 (%)
   valuation_percentile: number | null  // 估值分位 0-100, 越小越便宜
+  pe_percentile: number | null    // PE 历史分位 0-100, 高=贵
+  pb_percentile: number | null    // PB 历史分位 0-100, 高=贵
   crowding: number | null        // 拥挤度 0-100, 越小相对越便宜
   yield_10y: number | null       // 10年期国债收益率 (%)
   cpi_yoy: number | null         // CPI同比 (%)
@@ -240,6 +242,59 @@ export interface SwSectorStrength {
   pb: number | null
   dividend_yield: number | null
   latest_date: string
+}
+
+/** 申万一级行业估值分位 + 拥挤度 */
+export interface IndustryValuation {
+  code: string
+  name: string | null
+  pe: number | null
+  pb: number | null
+  dividend_yield: number | null
+  pe_percentile: number | null   // PE 历史分位 0-100, 高=贵
+  pb_percentile: number | null   // PB 历史分位 0-100, 高=贵
+  crowding: number | null        // 行业PB/全APB 历史分位 0-100, 高=相对贵
+  month_points: number
+  data_points: number
+}
+
+// 网关 /api/project/info 自描述信息（doraemon 后端透传，结构以网关为准，故字段宽松）
+export interface ProjectInfo {
+  meta?: {
+    name?: string
+    version?: string
+    description?: string
+    capabilities?: string[]
+    tech_stack?: string[]
+  }
+  api_count?: number
+  datasources?: {
+    count?: number
+    categories?: Record<string, {
+      name?: string
+      description?: string
+      status?: string
+      sources?: Array<{ name?: string; status?: string; [k: string]: any }>
+      [k: string]: any
+    }>
+    [k: string]: any
+  }
+  failover_chains?: Record<string, {
+    level?: string
+    chain?: string[]
+    healthy?: string[]
+    [k: string]: any
+  }>
+  api_catalog?: Array<{
+    group?: string
+    method?: string
+    path?: string
+    source?: string
+    failover?: string
+    [k: string]: any
+  }>
+  cache_strategy?: any
+  [key: string]: any
 }
 
 export interface ConvertibleBond {

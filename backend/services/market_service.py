@@ -872,11 +872,22 @@ def _fetch_10y_history_uncached() -> dict[str, float]:
       - 超时 6s → 25s：网关实测单次约 12s，原来 6s 必然每次超时；
       - 分段上限 3 → 11：原来只拉 3 年却要算 10 年分位，结果本身就是错的。
 
+    网关 bond_china_yield 上游对连续请求不稳定（实测连拉数段后连续 502），因此再加：
+      - **增量续传**：以上次落盘的部分历史为底，只补缺失的年份段；后台刷新反复执行
+        可逐步补全，不再"一段失败就整年缺失到下个周期"；
+      - **段间 1s 间隔 + 失败段重试一次**（间隔 3s），降低被上游连发拒绝的概率。
+
     Returns: {date: rate}，取数全失败返回空 dict
     """
     end = datetime.now()
     start = end.replace(year=end.year - 10)
     result: dict[str, float] = {}
+    # 增量续传：合并上次落盘的部分历史
+    try:
+        result.update(_10y_load_disk() or {})
+    except Exception:
+        pass
+
     cur = start
     attempts = 0
     while cur < end and attempts < 11:
@@ -884,13 +895,29 @@ def _fetch_10y_history_uncached() -> dict[str, float]:
         nxt = min(cur.replace(year=cur.year + 1), end)
         sd = cur.strftime("%Y%m%d")
         ed = nxt.strftime("%Y%m%d")
-        df = _akshare_request("bond_china_yield", {"start_date": sd, "end_date": ed}, retries=1, timeout=25)
+        # 该段已有足够数据 → 跳过（增量续传，避免对不稳定上游重复施压）。
+        # 注意必须统计段内日期数而非仅判存在：上段末尾的边界日期（如 2025-09-28）
+        # 会落入下一段区间，仅判存在会把只差一两天的段误判为已完成。
+        sd_norm = f"{sd[:4]}-{sd[4:6]}-{sd[6:]}"
+        ed_norm = f"{ed[:4]}-{ed[4:6]}-{ed[6:]}"
+        covered = sum(1 for d in result if sd_norm < d <= ed_norm)
+        if covered >= 100:  # 一年约 250 个交易日，100 视为该段已基本取全
+            cur = nxt
+            continue
+        df = None
+        for seg_attempt in range(2):  # 每段最多 2 次尝试
+            if seg_attempt:
+                time.sleep(3)
+            df = _akshare_request("bond_china_yield", {"start_date": sd, "end_date": ed}, retries=1, timeout=25)
+            if df and isinstance(df, list):
+                break
         if df and isinstance(df, list):
             for row in df:
                 d = str(row.get("日期", ""))[:10]
                 v = _safe_float(row.get("10年"), None)
                 if d and v is not None:
                     result[d] = v
+        time.sleep(1)  # 段间 1s 间隔
         cur = nxt
     return result
 
@@ -1415,105 +1442,182 @@ def _valuation_cache_put(key: str, data: list[dict]) -> None:
                 _valuation_locks.pop(old_key, None)
 
 
+def ensure_sw_sector_valuation_snapshot(trade_date: str | None = None) -> int:
+    """确保 base_sw_sector_daily 存在指定交易日的 PE/PB 估值快照。
+
+    仅依赖网关 ``sw_index_first_info``（申万一级行业当日 PE/PB/股息率/成份数），
+    不依赖实时行情接口，因此即使行情接口抖动也能累积估值历史。
+
+    若当日已存在有效估值（任意行业 pe/pb 非空）则跳过，幂等；否则拉取并 upsert。
+    代码统一截掉 ``.SI`` 后缀（如 ``801010``），与回填/历史接口保持一致。
+
+    Returns:
+        本次实际写入/覆盖的行数（0 表示已存在或无数据）。
+    """
+    try:
+        from database.connection import get_db
+        from datetime import date as _date
+
+        day = trade_date or _date.today().isoformat()
+        db = get_db()
+        existing = db.fetchone(
+            "SELECT COUNT(*) FROM base_sw_sector_daily "
+            "WHERE trade_date = ? AND (pe IS NOT NULL OR pb IS NOT NULL)",
+            [day],
+        )
+        if existing and existing[0] and existing[0] > 0:
+            print(f"[SW Valuation] {day} 估值快照已存在({existing[0]}行)，跳过")
+            return 0
+    except Exception as e:
+        print(f"[SW Valuation] 检查已有快照失败(继续尝试写入): {e}")
+
+    try:
+        first = _akshare_request("sw_index_first_info", timeout=20)
+    except Exception as e:
+        print(f"[SW Valuation] 网关 sw_index_first_info 调用失败: {e}")
+        return 0
+    if not first:
+        return 0
+
+    sectors: list[dict] = []
+    for r in first:
+        code = str(r.get("行业代码", "")).split(".")[0]
+        if not code:
+            continue
+        sectors.append({
+            "code": code,
+            "name": str(r.get("行业名称", "")),
+            "price": None,
+            "prev_close": None,
+            "change_pct": None,
+            "pe": _safe_float(r.get("静态市盈率")),
+            "ttm_pe": _safe_float(r.get("TTM(滚动)市盈率")),
+            "pb": _safe_float(r.get("市净率")),
+            "dividend_yield": _safe_float(r.get("静态股息率")),
+            "count": _safe_int(r.get("成份个数")),
+        })
+    if not sectors:
+        return 0
+    return _save_sw_sector_snapshot(sectors, trade_date=day)
+
+
+def get_all_sw_sector_valuation_rows(window_days: int = 250) -> list[dict]:
+    """从 base_sw_sector_daily 读取所有行业的估值快照（用于估值分位/拥挤度计算）。
+
+    只取有 pe 或 pb 的交易日（即真正累积到估值的快照行），按 (归一化代码, 交易日)
+    去重，避免 get_sw_sectors 与 ensure 在不同代码格式下产生的同日重复行。
+
+    Returns:
+        [{"code","name","date","pe","ttm_pe","pb","dividend_yield"}, ...]（按代码、日期升序）
+    """
+    try:
+        from database.connection import get_db
+        from datetime import date as _date, timedelta as _td
+
+        db = get_db()
+        sd = (_date.today() - _td(days=window_days)).isoformat()
+        raw = db.fetchall(
+            """
+            SELECT sector_code, sector_name, trade_date, pe, ttm_pe, pb, dividend_yield
+            FROM base_sw_sector_daily
+            WHERE trade_date >= ? AND (pe IS NOT NULL OR pb IS NOT NULL)
+            ORDER BY sector_code, trade_date
+            """,
+            [sd],
+        )
+    except Exception as e:
+        print(f"[SW Valuation] 读取本地估值快照失败: {e}")
+        return []
+
+    seen: set[tuple[str, str]] = set()
+    out: list[dict] = []
+    for r in raw:
+        code = str(r[0]).split(".")[0]
+        day = str(r[2])
+        key = (code, day)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "code": code,
+            "name": str(r[1]),
+            "date": day,
+            "pe": float(r[3]) if r[3] is not None else None,
+            "ttm_pe": float(r[4]) if r[4] is not None else None,
+            "pb": float(r[5]) if r[5] is not None else None,
+            "dividend_yield": float(r[6]) if r[6] is not None else None,
+        })
+    return out
+
+
 def get_sw_sector_valuation_history(
     sector_code: str | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> tuple[list[dict], dict]:
-    """获取申万一级行业的历史估值数据（PE / PB / 股息率），来自远程网关 index_analysis_daily_sw。
+    """获取申万一级行业的历史估值数据（PE / PB / 股息率）。
 
-    数据源：远程网关 ``index_analysis_daily_sw(symbol='一级行业')``
-    该接口返回所有 31 个申万一级行业在指定日期范围内的每日指标，包括：
-    收盘指数、涨跌幅、换手率、市盈率(PE)、市净率(PB)、股息率、流通市值等。
+    数据源：本地 DuckDB ``base_sw_sector_daily``（由 ``ensure_sw_sector_valuation_snapshot``
+    每日从网关 ``sw_index_first_info`` 累积 PE/PB/股息率快照）。该上游稳定可用，行业估值历史
+    是**真实累积**的，不再依赖已挂掉的 ``index_analysis_daily_sw``。
 
-    由于该接口较慢（按交易日分批请求，约 0.7s/天），对全量结果做 1 小时缓存，
-    且网关侧 AKSHARE_TIMEOUT 默认 30s：超出会 500，故默认窗口控制在约 120 天以内。
+    调用前会懒触发当日快照累积（幂等）：打开行业估值页即可自然累积历史；数据越多，
+    分位/拥挤度越准。历史不足时在 meta 中给出 ``snapshotStats`` 供前端提示。
 
     Args:
         sector_code: 申万一级行业代码（如 '801010'），为 None 则返回所有行业
-        start_date: 开始日期 'YYYYMMDD'，默认近 120 天
-        end_date: 结束日期 'YYYYMMDD'，默认今天
+        start_date: 开始日期 'YYYYMMDD'（仅用于推算窗口天数，默认近 250 天）
+        end_date: 结束日期 'YYYYMMDD'（默认今天）
 
     Returns:
-        (list[dict], meta)  — meta 含数据来源信息
+        (list[dict], meta)  — meta 含数据来源/累积情况
     """
     if USE_MOCK_DATA:
         return [], _build_meta(True, "MOCK(模拟数据)")
 
-    from datetime import date as _date
+    from datetime import date as _date, timedelta as _td
 
     today = _date.today()
     if not end_date:
         end_date = today.strftime("%Y%m%d")
     if not start_date:
-        # 默认取近 120 天（约 80 个交易日，网关 30s 超时内可完成）
-        start_date = (today - timedelta(days=120)).strftime("%Y%m%d")
+        start_date = (today - _td(days=250)).strftime("%Y%m%d")
 
-    # 检查缓存
-    cache_key = f"sw_val_{start_date}_{end_date}"
-    now_ts = time.time()
-    def _miss() -> list[dict]:
-        """缓存未命中：实际调用网关 index_analysis_daily_sw（约 0.7s/交易日），结果写回缓存。"""
-        try:
-            print(f"[SW Valuation] 调用网关 index_analysis_daily_sw(一级行业, {start_date}, {end_date})...")
-            df = _akshare_request(
-                "index_analysis_daily_sw",
-                {"symbol": "一级行业", "start_date": start_date, "end_date": end_date},
-                timeout=120,
-            )
-        except Exception as e:
-            raise RuntimeError(f"网关 index_analysis_daily_sw 失败: {e}") from e
+    # 懒触发当日估值快照累积（幂等：已存在则跳过）。即使行情接口抖动，
+    # sw_index_first_info 仍可提供当日 PE/PB，从而让历史自然滚动增长。
+    try:
+        ensure_sw_sector_valuation_snapshot()
+    except Exception as e:
+        print(f"[SW Valuation] 当日快照累积失败(继续读已有历史): {e}")
 
-        if df is None:
-            raise RuntimeError("网关 index_analysis_daily_sw 无返回（可能超出网关超时，请缩短 start_date~end_date 区间）")
-        if len(df) == 0:
-            raise RuntimeError("网关无返回数据")
+    # 由起止日期推算窗口天数
+    window_days = 250
+    try:
+        ed = _date.strptime(end_date, "%Y%m%d")
+        sd = _date.strptime(start_date, "%Y%m%d")
+        window_days = max(30, (ed - sd).days + 1)
+    except Exception:
+        pass
 
-        rows: list[dict] = []
-        for row in df:
-            rows.append({
-                "code": str(row.get("指数代码", "")),
-                "name": str(row.get("指数名称", "")),
-                "date": str(row.get("发布日期", "")),
-                "price": _safe_float(row.get("收盘指数")) if row.get("收盘指数") is not None else None,
-                "change_pct": _safe_float(row.get("涨跌幅")) if row.get("涨跌幅") is not None else None,
-                "turnover_rate": _safe_float(row.get("换手率")) if row.get("换手率") is not None else None,
-                "pe": _safe_float(row.get("市盈率")) if row.get("市盈率") is not None else None,
-                "pb": _safe_float(row.get("市净率")) if row.get("市净率") is not None else None,
-                "dividend_yield": _safe_float(row.get("股息率")) if row.get("股息率") is not None else None,
-                "avg_price": _safe_float(row.get("均价")) if row.get("均价") is not None else None,
-                "turnover_ratio": _safe_float(row.get("成交额占比")) if row.get("成交额占比") is not None else None,
-                "circ_market_cap": _safe_float(row.get("流通市值")) if row.get("流通市值") is not None else None,
-            })
-
-        # 按日期升序排列
-        rows.sort(key=lambda x: x["date"])
-        _valuation_cache_put(cache_key, rows)
-        return rows
-
-    # 先无锁读一次（快路径）
-    cached = _valuation_history_cache.get(cache_key)
-    if cached and (now_ts - cached["fetched_at"]) < _VALUATION_CACHE_TTL:
-        all_data = cached["data"]
-    else:
-        # 未命中：同一 key 只允许一个线程去拉，避免并发重复触发全量拉取
-        with _valuation_lock_for(cache_key):
-            cached = _valuation_history_cache.get(cache_key)
-            if cached and (time.time() - cached["fetched_at"]) < _VALUATION_CACHE_TTL:
-                all_data = cached["data"]
-            else:
-                try:
-                    all_data = _miss()
-                except Exception as e:
-                    return [], _build_meta(False, str(e))
+    rows = get_all_sw_sector_valuation_rows(window_days=window_days)
 
     # 按 sector_code 过滤
     if sector_code:
-        result = [d for d in all_data if d["code"] == sector_code]
-    else:
-        result = all_data
+        rows = [r for r in rows if r["code"] == sector_code]
 
-    return result, _build_meta(False, f"网关 {AKSHARE_HOST} (index_analysis_daily_sw)")
+    if not rows:
+        m = _build_meta(False, f"本地 base_sw_sector_daily 暂无估值快照(网关 {AKSHARE_HOST})")
+        m["status"] = "unavailable"
+        m["message"] = (
+            "行业估值快照尚未累积到数据。请确认网关 sw_index_first_info 可访问，"
+            "或稍后重试（打开行业估值页会自动累积当日快照）。"
+        )
+        m["snapshotStats"] = get_sw_sector_snapshot_stats()
+        return [], m
+
+    m = _build_meta(False, f"本地累积(网关 sw_index_first_info, 窗口{window_days}天)")
+    m["snapshotStats"] = get_sw_sector_snapshot_stats()
+    return rows, m
 
 
 def get_board_sectors_with_meta() -> tuple[list, dict]:

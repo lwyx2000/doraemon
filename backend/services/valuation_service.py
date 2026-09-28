@@ -49,13 +49,15 @@ BROAD_INDEX_LIST: list[dict] = [
     {"name": "中证800",  "code": "000906"},
 ]
 
-# 基准指数：用中证800（沪深300+中证500）替代万得全A
-BENCHMARK_INDEX = "中证800"
-BENCHMARK_CODE = "000906"  # 中证800 的 csindex 代码
-# 基准指数回退顺序：网关偶发抖动导致某指数 PB 取数失败时，依次尝试其它基准，
+# 基准指数：用「中证全指(000985)」作为万得全A代理。
+# 文章方法论要求以万得全A为基准（整体估值分位 + 拥挤度分母），而本项目
+# market_charts_service 已约定 000985 = 万得全A代理，故此处对齐为 000985。
+BENCHMARK_INDEX = "中证全指"
+BENCHMARK_CODE = "000985"  # 中证全指（万得全A代理）
+# 基准指数回退顺序：网关偶发抖动导致 000985 PB 取数失败时，依次尝试其它基准，
 # 避免单次网关失败就让整个估值返回空。
-BENCHMARK_FALLBACKS = ["沪深300", "上证50", "中证500"]
-BENCHMARK_FALLBACK_CODES = ["000300", "000016", "000905"]
+BENCHMARK_FALLBACKS = ["中证800", "沪深300", "上证50"]
+BENCHMARK_FALLBACK_CODES = ["000906", "000300", "000016"]
 
 # ROE 均值计算窗口（近5-7年，取5年=60个月）
 ROE_WINDOW_MONTHS = 60
@@ -323,9 +325,23 @@ def _compute_spread_history(
     #    表现为宽基估值只返回前 2 个指数。
     try:
         from services.market_service import _fetch_10y_history
-        if not _fetch_10y_history():
+        yld_map = _fetch_10y_history()
+        if not yld_map:
             # 10Y 历史尚未加载完成：本次不产出利差，由调用方判空后不写结果缓存
             return []
+        # 新鲜度护栏：_get_10y_treasury_yield_by_date 是「向前回退」匹配，
+        # 若 10Y 历史缺近年数据（网关 bond_china_yield 分段拉取偶发 502），
+        # 会拿几年前的利率算出错误的「当前利差」→ 宁可本轮不出利差
+        # （调用方判空后不写缓存、自动重试，配合增量续传下轮补全），也不输出错值。
+        try:
+            newest = max(yld_map.keys())
+            newest_d = datetime.strptime(newest, "%Y-%m-%d").date()
+            stale_days = (datetime.now().date() - newest_d).days
+            if stale_days > 45:
+                print(f"[Spread] 10Y 历史最新点 {newest} 距今 {stale_days} 天，视为不完整，本轮不出利差")
+                return []
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -390,7 +406,9 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
     with _cache_lock:
         cached = _result_cache.get("broad")
         if cached and (now - cached["ts"]) < _CACHE_TTL_RESULT:
-            return cached["data"], _build_meta(False, "缓存(1h)")
+            m = _build_meta(False, "缓存(1h)")
+            m["overall"] = cached.get("overall")
+            return cached["data"], m
 
     # 数据源存活探测：上游 legulegu 接口异常时整体快速降级，避免长时间挂起(499)
     if not _check_source_available():
@@ -422,35 +440,21 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
     start_ts = time.time()
     _HARD_DEADLINE = 45  # 秒：任何情况下整体处理不得超过此值（防止上游偶发挂起拖垮接口）
 
-    results: list[dict] = []
-    deadline_hit = False
-
-    for idx_info in BROAD_INDEX_LIST:
-        if time.time() - start_ts > _HARD_DEADLINE:
-            deadline_hit = True
-            break
-        idx_name = idx_info["name"]
-        idx_code = idx_info["code"]
-
-        # 获取 PB 和 PE 历史
+    def _compute_index_row(idx_name: str, idx_code: str) -> dict | None:
+        """计算单个指数的估值分位与拥挤度（核心算法，宽基与全A整体共用）。"""
         pb_data = _get_pb_history(idx_code)
         pe_data = _get_pe_history(idx_code)
-
         if not pb_data:
-            continue
+            return None
 
-        # 当前 PB
         current_pb = pb_data[-1].get("pb") if pb_data else None
         current_pe = pe_data[-1].get("pe_ttm") if pe_data else None
 
-        # ROE 历史
         roe_data = _compute_roe_history(pb_data, pe_data)
         roe_mean = _compute_roe_mean(roe_data)
 
-        # 股债利差历史
         spread_history = _compute_spread_history(roe_data, idx_name, cpi_yoy)
 
-        # 当前利差和估值分位
         current_spread = spread_history[-1]["spread"] if spread_history else None
         valuation_percentile = None
         if current_spread is not None and len(spread_history) > 1:
@@ -458,6 +462,12 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
             spread_values = [s["spread"] for s in spread_history if s["spread"] is not None]
             spread_pct = _percentile(current_spread, spread_values)
             valuation_percentile = round(100 - spread_pct, 2)
+
+        # PE / PB 历史分位（升序百分位，高=贵），与行业口径一致
+        pb_values_all = [x.get("pb") for x in pb_data if x.get("pb") is not None]
+        pe_values_all = [x.get("pe_ttm") for x in pe_data if x.get("pe_ttm") is not None]
+        pb_percentile = round(_percentile(current_pb, pb_values_all), 2) if (current_pb is not None and pb_values_all) else None
+        pe_percentile = round(_percentile(current_pe, pe_values_all), 2) if (current_pe is not None and pe_values_all) else None
 
         # 拥挤度 = (指数PB / 基准PB) 的历史分位
         crowding = None
@@ -470,7 +480,6 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
                 ratio_history.append(pb_val / bench_pb)
 
         if ratio_history and current_pb:
-            # 找当前 ratio
             current_bench_pb = benchmark_pb_map.get(pb_data[-1]["date"])
             if current_bench_pb and current_bench_pb > 0:
                 current_ratio = current_pb / current_bench_pb
@@ -482,7 +491,7 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
         # 利差历史（精简，最近120个月）
         spread_hist_short = spread_history[-120:] if len(spread_history) > 120 else spread_history
 
-        results.append({
+        return {
             "name": idx_name,
             "code": idx_code,
             "pb": round(current_pb, 4) if current_pb else None,
@@ -490,13 +499,34 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
             "roe_mean": round(roe_mean * 100, 2) if roe_mean else None,  # 转为百分比
             "spread": round(current_spread, 2) if current_spread else None,
             "valuation_percentile": valuation_percentile,
+            "pe_percentile": pe_percentile,
+            "pb_percentile": pb_percentile,
             "crowding": crowding,
             "yield_10y": yield_10y,
             "cpi_yoy": cpi_yoy,
             "pb_history": pb_history,
             "spread_history": spread_hist_short,
             "is_benchmark": idx_name == benchmark_used,
-        })
+        }
+
+    # ---- 全A整体估值分位（文章方法论的「总开关」）----
+    # 基准指数本身即「全A代理(000985)」，单独算一次作为头条整体估值。
+    overall = _compute_index_row(BENCHMARK_INDEX, BENCHMARK_CODE)
+    if overall is not None:
+        overall["is_overall"] = True
+        overall["crowding"] = None  # 全A 相对自身，拥挤度无意义
+
+    # ---- 12 个宽基指数 ----
+    results: list[dict] = []
+    deadline_hit = False
+
+    for idx_info in BROAD_INDEX_LIST:
+        if time.time() - start_ts > _HARD_DEADLINE:
+            deadline_hit = True
+            break
+        row = _compute_index_row(idx_info["name"], idx_info["code"])
+        if row:
+            results.append(row)
 
     if not results:
         # 探测通过但全部指数取数失败（如网关部分抖动/整体超时），统一降级为不可用
@@ -513,9 +543,12 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
     #    否则一次抖动只算出 2 个指数，会被缓存 1 小时持续对外输出。
     if not deadline_hit and not incomplete:
         with _cache_lock:
-            _result_cache["broad"] = {"data": results, "ts": now}
+            _result_cache["broad"] = {"data": results, "overall": overall, "ts": now}
 
     meta = _build_meta(False, f"远程网关(基准={benchmark_used}, 成分股聚合PB/PE + 国债 + CPI)")
+    meta["overall"] = overall  # 全A整体估值分位（头条）
+    if overall is not None:
+        meta["benchmarkName"] = BENCHMARK_INDEX
     if deadline_hit:
         meta["truncated"] = True
         meta["message"] = (
@@ -544,6 +577,138 @@ def get_single_index_valuation(index_name: str) -> tuple[dict | None, dict]:
         if item["name"] == index_name or item["code"] == index_name:
             return item, meta
     return None, _build_meta(False, f"未找到指数: {index_name}")
+
+
+def get_industry_valuation(window_days: int = 250) -> tuple[list[dict], dict]:
+    """申万一级行业估值分位 + 拥挤度（数据源：本地每日累积，非挂掉的网关上游）。
+
+    方法论与宽基一致，行业用文章推荐的「申万一级行业」维度：
+    - 行业 PE/PB 历史来自本地 DuckDB ``base_sw_sector_daily``，由
+      ``ensure_sw_sector_valuation_snapshot`` 每日从网关 ``sw_index_first_info``
+      累积（该上游稳定可用，不再依赖已挂掉的 ``index_analysis_daily_sw``）；
+    - 拥挤度 = (行业PB / 全A PB) 序列的历史分位，分母与宽基同为全A(000985)；
+    - PE/PB 估值分位用全部日度快照样本算升序百分位（高=贵），
+      与页面配色（低=绿便宜/高=红贵）一致。
+
+    历史不足（交易日 < 20）时仍返回数据，但 meta.insufficientHistory=True，
+    前端展示「累积中」提示，避免把初步分位当成定论。
+    """
+    if USE_MOCK_DATA:
+        return [], {"isMock": True, "dataSource": "MOCK", "mockTime": None,
+                    "updateTime": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+    # 全A PB（月度，作为拥挤度分母），与宽基基准一致
+    bench_pb, _ = get_index_pb_pe(BENCHMARK_CODE)
+    # 同时建「日→PB」与「月→PB」两种映射：拥挤度分母优先用当日全A PB，退化用月末
+    bench_daily: dict[str, float] = {}
+    bench_month: dict[str, float] = {}
+    for r in bench_pb:
+        pb_v = r.get("pb")
+        if not pb_v:
+            continue
+        bench_daily[str(r["date"])] = pb_v
+        bench_month[str(r["date"])[:7]] = pb_v  # 'YYYY-MM'
+    if not bench_month:
+        m = _build_meta(False, "全A基准PB获取失败(远程网关)")
+        m["status"] = "unavailable"
+        m["message"] = "全A基准 PB 获取失败，行业拥挤度暂不可用，请稍后重试。"
+        return [], m
+
+    # 行业历史 PE/PB：本地累积快照（懒触发当日累积，详见 get_sw_sector_valuation_history）
+    from datetime import date as _d, timedelta as _td
+    from services.market_service import (
+        get_sw_sector_valuation_history,
+        get_sw_sector_snapshot_stats,
+    )
+
+    ed = _d.today().strftime("%Y%m%d")
+    sd = (_d.today() - _td(days=window_days)).strftime("%Y%m%d")
+    rows, hist_meta = get_sw_sector_valuation_history(start_date=sd, end_date=ed)
+    if not rows:
+        m = _build_meta(False, "行业估值快照尚未累积")
+        m["status"] = "unavailable"
+        m["message"] = (
+            "行业估值快照（本地 base_sw_sector_daily）尚未累积到数据。"
+            "请确认网关 sw_index_first_info 可访问，或稍后重试"
+            "（打开行业估值页会自动累积当日快照）。"
+        )
+        m["snapshotStats"] = (
+            hist_meta.get("snapshotStats")
+            if hist_meta else get_sw_sector_snapshot_stats()
+        )
+        return [], m
+
+    # 按行业代码分组
+    by_code: dict[str, list[dict]] = {}
+    for r in rows:
+        by_code.setdefault(r["code"], []).append(r)
+
+    results: list[dict] = []
+    for code, hl in by_code.items():
+        hl = sorted(hl, key=lambda x: x["date"])
+        cur = hl[-1]
+        pe = cur.get("pe")
+        pb = cur.get("pb")
+        dy = cur.get("dividend_yield")
+        name = cur.get("name")
+
+        # PE/PB 估值分位：用全部日度快照样本（数据越多越准），升序百分位（高=贵）
+        pe_hist = [r["pe"] for r in hl if r.get("pe") is not None]
+        pb_hist = [r["pb"] for r in hl if r.get("pb") is not None]
+
+        # 拥挤度 = 行业PB / 全APB 的历史序列（分母取当日或当月全A PB）
+        ratio_hist: list[float] = []
+        for r in hl:
+            spb = r.get("pb")
+            if not spb:
+                continue
+            bpb = bench_daily.get(str(r["date"])) or bench_month.get(str(r["date"])[:7])
+            if bpb and bpb > 0:
+                ratio_hist.append(spb / bpb)
+        cur_bench = bench_daily.get(str(cur["date"])) or bench_month.get(str(cur["date"])[:7])
+        current_ratio = pb / cur_bench if (pb and cur_bench and cur_bench > 0) else None
+
+        pe_pct = _percentile(pe, pe_hist) if (pe is not None and pe_hist) else None
+        pb_pct = _percentile(pb, pb_hist) if (pb is not None and pb_hist) else None
+        crowding = _percentile(current_ratio, ratio_hist) if (current_ratio is not None and ratio_hist) else None
+
+        results.append({
+            "code": code,
+            "name": name,
+            "pe": round(pe, 2) if pe is not None else None,
+            "pb": round(pb, 4) if pb is not None else None,
+            "dividend_yield": round(dy, 2) if dy is not None else None,
+            "pe_percentile": round(pe_pct, 2) if pe_pct is not None else None,
+            "pb_percentile": round(pb_pct, 2) if pb_pct is not None else None,
+            "crowding": round(crowding, 2) if crowding is not None else None,
+            "data_points": len(hl),
+            "trade_days": len({str(r["date"]) for r in hl}),
+        })
+
+    # 拥挤度高的在前（相对偏贵）
+    results.sort(key=lambda x: x.get("crowding") or 0, reverse=True)
+
+    # 历史样本不足提示：按「实际含估值的交易日数」判断，避免把纯价量回填行（PE/PB 为 NULL）算进去。
+    # 注意：历史价量回填能补 price/change_pct，但免费源无历史 PE/PB，只有每日
+    # sw_index_first_info 快照才带估值，故含估值的交易日通常远少于总交易日。
+    real_trade_days = len({str(r["date"]) for r in rows})
+    snap = get_sw_sector_snapshot_stats()
+    insufficient = bool(real_trade_days < 20)
+
+    meta = _build_meta(
+        False,
+        f"本地累积(网关 sw_index_first_info, 窗口{window_days}天) + 全APB({BENCHMARK_CODE})",
+    )
+    meta["window_days"] = window_days
+    meta["snapshotStats"] = snap
+    meta["tradeDays"] = real_trade_days
+    meta["insufficientHistory"] = insufficient
+    if insufficient:
+        meta["message"] = (
+            f"行业估值快照仍在累积中（已积累 {real_trade_days} 个含估值的交易日，"
+            "其余为历史价量回填、无 PE/PB）。分位/拥挤度为初步参考，历史越长越准。"
+        )
+    return results, meta
 
 
 def _build_meta(is_mock: bool, data_source: str) -> dict:
