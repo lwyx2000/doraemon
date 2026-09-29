@@ -111,6 +111,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '市场复盘图表', icon: 'bar_chart' },
   },
   {
+    path: '/jobs-monitor',
+    name: 'JobsMonitor',
+    component: () => import('../pages/JobsMonitor.vue'),
+    meta: { title: '任务监控', icon: 'time' },
+  },
+  {
     path: '/login',
     name: 'Login',
     component: () => import('../pages/Login.vue'),

@@ -12,7 +12,16 @@
 from __future__ import annotations
 
 import threading
+import time
 from datetime import date, datetime
+
+from jobs.registry import (
+    register_job,
+    record_start,
+    record_success,
+    record_failure,
+    set_next_run,
+)
 
 # 每交易日收盘后落快照的时间（A 股 15:00 收盘，留 30 分钟等数据源稳定）
 SNAPSHOT_HOUR = 15
@@ -61,12 +70,16 @@ def _job_daily_snapshot() -> None:
     if not _is_trading_day():
         print(f"[SW Job] 非交易日，跳过快照（{date.today()}）")
         return
+    run = record_start("sw_sector_daily_snapshot")
+    t0 = time.time()
     try:
         from services.market_service import get_sw_sectors
 
         sectors, _meta = get_sw_sectors()  # 内部已调用 _save_sw_sector_snapshot 落库
         print(f"[SW Job] 收盘快照完成：{len(sectors)} 个行业")
+        record_success("sw_sector_daily_snapshot", run, (time.time() - t0) * 1000)
     except Exception as e:
+        record_failure("sw_sector_daily_snapshot", run, f"{type(e).__name__}: {e}")
         print(f"[SW Job] 收盘快照失败: {type(e).__name__}: {e}")
 
 
@@ -80,13 +93,17 @@ def run_backfill_async(days: int = AUTO_BACKFILL_DAYS) -> bool:
 
     def _worker() -> None:
         global _backfill_running
+        run = record_start("sw_sector_backfill")
+        t0 = time.time()
         try:
             from services.market_service import backfill_sw_sector_history
 
             print(f"[SW Job] 开始回填申万行业历史（近 {days} 个交易日）...")
             result = backfill_sw_sector_history(days=days)
             print(f"[SW Job] 回填结果: {result}")
+            record_success("sw_sector_backfill", run, (time.time() - t0) * 1000)
         except Exception as e:
+            record_failure("sw_sector_backfill", run, f"{type(e).__name__}: {e}")
             print(f"[SW Job] 回填异常: {type(e).__name__}: {e}")
         finally:
             with _backfill_lock:
@@ -152,6 +169,30 @@ def start_sw_snapshot_scheduler() -> None:
     except Exception as e:
         print(f"[SW Job] 定时任务启动失败: {type(e).__name__}: {e}")
         return
+
+    # 注册到任务监控注册表（供「任务监控」页展示执行状态）
+    register_job(
+        "sw_sector_daily_snapshot",
+        "申万一级行业每日收盘快照",
+        f"每交易日 {SNAPSHOT_HOUR:02d}:{SNAPSHOT_MINUTE:02d}（Asia/Shanghai）",
+        job_type="scheduled",
+        enabled=True,
+        triggerable=True,
+        fn=_job_daily_snapshot,
+    )
+    register_job(
+        "sw_sector_backfill",
+        "申万一级行业历史回填",
+        "手动触发 / 启动自动（数据不足时）",
+        job_type="manual",
+        enabled=True,
+        triggerable=True,
+        fn=lambda: run_backfill_async(AUTO_BACKFILL_DAYS),
+    )
+    # 同步 APScheduler 计算的下次运行时间
+    aps_job = scheduler.get_job("sw_sector_daily_snapshot")
+    if aps_job and aps_job.next_run_time:
+        set_next_run("sw_sector_daily_snapshot", aps_job.next_run_time.strftime("%Y-%m-%d %H:%M:%S"))
 
     _maybe_auto_backfill()
 

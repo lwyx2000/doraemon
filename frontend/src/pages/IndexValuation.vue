@@ -91,6 +91,22 @@ function crowdingColor(pct: number | null): 'default' | 'success' | 'warning' | 
   return 'error'
 }
 
+// ==================== ERP 稳健 Z-score 配色（MAD，最近10年滚动窗口） ====================
+// Z_MAD > 1.5 → 低估(便宜/green)；Z_MAD < -1.5 → 高估(贵/red)；之间 → 中性
+function zscoreColor(zc: string | null): 'default' | 'success' | 'warning' | 'error' {
+  if (zc == null) return 'default'
+  if (zc === 'low') return 'success'
+  if (zc === 'high') return 'error'
+  return 'warning'   // neutral
+}
+
+function zscoreLabel(zc: string | null): string {
+  if (zc === 'low') return '低估'
+  if (zc === 'high') return '高估'
+  if (zc === 'neutral') return '中性'
+  return '—'
+}
+
 // ==================== 表格列定义 ====================
 const columns: DataTableColumns<BroadIndexValuation> = [
   {
@@ -180,6 +196,24 @@ const columns: DataTableColumns<BroadIndexValuation> = [
       h(NTag, { type: crowdingColor(row.crowding), size: 'small', bordered: false }, () => row.crowding != null ? row.crowding.toFixed(0) + '%' : '—'),
     ]),
   },
+  {
+    title: 'ERP Z分数',
+    key: 'erp_zscore',
+    width: 150,
+    align: 'center',
+    render: (row) => {
+      if (row.erp_zscore == null) {
+        return h('span', { style: 'color: var(--text-muted)' }, '—')
+      }
+      return h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
+        h('span', {
+          style: 'font-family: "JetBrains Mono", monospace; font-weight:700; font-size:13px;',
+          title: `MAD稳健Z-score：基于最近10年股债利差序列\n窗口中位数=${row.erp_zscore_median ?? '—'}，MAD=${row.erp_zscore_mad ?? '—'}，样本=${row.erp_zscore_window_samples ?? '—'}个月\n阈值：>1.5 低估 / <-1.5 高估`,
+        }, row.erp_zscore.toFixed(2)),
+        h(NTag, { type: zscoreColor(row.erp_zscore_class), size: 'small', bordered: false }, () => zscoreLabel(row.erp_zscore_class)),
+      ])
+    },
+  },
 ]
 
 // ==================== 行业估值表格列 ====================
@@ -261,11 +295,12 @@ const rowProps = (row: BroadIndexValuation) => ({
 
 // 导出宽基估值 CSV（原指数分析页功能）
 function exportCSV() {
-  const headers = ['指数', 'PB', 'PE(TTM)', 'ROE均值(%)', '股债利差(%)', '估值分位(%)', 'PE分位(%)', 'PB分位(%)', '拥挤度(%)']
+  const headers = ['指数', 'PB', 'PE(TTM)', 'ROE均值(%)', '股债利差(%)', '估值分位(%)', 'PE分位(%)', 'PB分位(%)', '拥挤度(%)', 'ERP Z分数', 'ERP Z分类']
   const rows = data.value.map(idx => [
     idx.name, idx.pb ?? '', idx.pe_ttm ?? '', idx.roe_mean ?? '',
     idx.spread ?? '', idx.valuation_percentile ?? '',
     idx.pe_percentile ?? '', idx.pb_percentile ?? '', idx.crowding ?? '',
+    idx.erp_zscore ?? '', zscoreLabel(idx.erp_zscore_class),
   ])
   const csv = [headers, ...rows].map(r => r.join(',')).join('\n')
   const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' })
@@ -416,6 +451,60 @@ const spreadBandOption = computed(() => {
             { yAxis: stats.p70, lineStyle: { color: 'rgba(249,115,22,0.5)' }, label: { formatter: '70%', position: 'end', fontSize: 9, color: '#f97316' } },
             { yAxis: stats.p50, lineStyle: { color: 'rgba(107,114,128,0.5)' }, label: { formatter: '50%', position: 'end', fontSize: 9, color: '#6b7280' } },
             { yAxis: stats.p10, lineStyle: { color: 'rgba(59,130,246,0.5)' }, label: { formatter: '10%', position: 'end', fontSize: 9, color: '#3b82f6' } },
+          ],
+        },
+      },
+    ],
+  }
+})
+
+// ERP 稳健 Z-score 历史折线（10年滚动 MAD，±1.5 阈值线），数据来自 spreadHist.zscore
+const zscoreOption = computed(() => {
+  const pts = windowedHist.value.filter(p => p.zscore != null)
+  if (pts.length < 2) return {}
+  const step = Math.max(1, Math.floor(pts.length / 200))
+  const sampled = pts.filter((_, i) => i % step === 0 || i === pts.length - 1)
+  return {
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params: any) => {
+        const p = params[0]
+        return `${p.axisValue}<br/>Z分数: <b>${p.value}</b>`
+      },
+    },
+    grid: { top: 18, right: 16, bottom: 28, left: 40 },
+    xAxis: {
+      type: 'category',
+      data: sampled.map(p => p.date),
+      axisTick: { show: false },
+      axisLine: { lineStyle: { color: '#c1c6d7' } },
+      axisLabel: { fontSize: 10, color: '#717782' },
+    },
+    yAxis: {
+      type: 'value',
+      name: 'Z',
+      nameTextStyle: { fontSize: 10, color: '#717782' },
+      scale: true,
+      axisLabel: { fontSize: 10, color: '#717782' },
+      splitLine: { lineStyle: { type: 'dashed', color: 'rgba(0,0,0,0.06)' } },
+    },
+    series: [
+      {
+        type: 'line',
+        smooth: false,
+        showSymbol: false,
+        data: sampled.map(p => p.zscore),
+        lineStyle: { width: 2, color: '#7c3aed' },
+        itemStyle: { color: '#7c3aed' },
+        areaStyle: { opacity: 0.08, color: '#7c3aed' },
+        markLine: {
+          symbol: 'none',
+          silent: true,
+          lineStyle: { type: 'dashed', width: 1 },
+          data: [
+            { yAxis: 1.5, lineStyle: { color: 'rgba(22,163,74,0.6)' }, label: { formatter: '低估 +1.5', position: 'end', fontSize: 9, color: '#16a34a' } },
+            { yAxis: -1.5, lineStyle: { color: 'rgba(220,38,38,0.6)' }, label: { formatter: '高估 -1.5', position: 'end', fontSize: 9, color: '#dc2626' } },
+            { yAxis: 0, lineStyle: { color: 'rgba(107,114,128,0.35)' }, label: { show: false } },
           ],
         },
       },
@@ -631,6 +720,10 @@ const macroParams = computed(() => {
           <n-tag type="warning" size="small" :bordered="false">30-70% 正常</n-tag>
           <n-tag type="error" size="small" :bordered="false">&gt;70% 过热</n-tag>
           &nbsp;&nbsp;<strong>拥挤度</strong>：指数PB / 全A(PB) 的历史分位，衡量相对估值。
+          &nbsp;&nbsp;<strong>ERP Z分数</strong>：最近10年股债利差序列的 MAD 稳健 Z-score（非均值标准差），
+          <n-tag type="success" size="small" :bordered="false">Z&gt;1.5 低估</n-tag>
+          <n-tag type="warning" size="small" :bordered="false">中性</n-tag>
+          <n-tag type="error" size="small" :bordered="false">Z&lt;-1.5 高估</n-tag>
         </div>
 
         <!-- 数据源不可用横幅（优雅降级，替代白屏/499） -->
@@ -654,7 +747,7 @@ const macroParams = computed(() => {
             :single-line="false"
             size="small"
             :max-height="560"
-            :scroll-x="1130"
+            :scroll-x="1200"
             :row-props="rowProps"
           />
           <n-empty v-else-if="!loading" description="暂无数据，请确保后端服务正常运行" style="padding: 60px 0" />
@@ -737,6 +830,13 @@ const macroParams = computed(() => {
               {{ selectedItem.crowding?.toFixed(1) ?? '—' }}%
             </span>
           </div>
+          <div class="stat-item">
+            <span class="stat-label">ERP Z分数</span>
+            <span class="stat-value" :style="{ color: zscoreColor(selectedItem.erp_zscore_class) === 'success' ? '#16a34a' : zscoreColor(selectedItem.erp_zscore_class) === 'error' ? '#dc2626' : 'var(--text-primary)' }">
+              {{ selectedItem.erp_zscore?.toFixed(2) ?? '—' }}
+              <n-tag v-if="selectedItem.erp_zscore_class" :type="zscoreColor(selectedItem.erp_zscore_class)" size="tiny" :bordered="false" style="margin-left:4px;vertical-align:middle;">{{ zscoreLabel(selectedItem.erp_zscore_class) }}</n-tag>
+            </span>
+          </div>
         </div>
 
         <!-- 股债利差估值带（全量历史 + 分位线） -->
@@ -792,6 +892,20 @@ const macroParams = computed(() => {
           />
         </div>
 
+        <!-- ERP 稳健 Z-score（10年滚动 MAD） -->
+        <div class="detail-section" v-if="zscoreOption && Object.keys(zscoreOption).length">
+          <h4 class="section-title">ERP 稳健 Z-score（最近10年滚动 MAD）</h4>
+          <BaseChart :option="zscoreOption" :height="220" />
+          <p class="zscore-note">
+            Z_MAD = (当前ERP − 窗口中位数) ÷ (MAD × 1.4826)；窗口为最近10年股债利差序列。
+            <template v-if="selectedItem.erp_zscore_class">
+              当前 Z = <b>{{ selectedItem.erp_zscore?.toFixed(2) }}</b>，判定为
+              <n-tag :type="zscoreColor(selectedItem.erp_zscore_class)" size="tiny" :bordered="false">{{ zscoreLabel(selectedItem.erp_zscore_class) }}</n-tag>
+              （窗口样本 {{ selectedItem.erp_zscore_window_samples ?? '—' }} 个月）。
+            </template>
+          </p>
+        </div>
+
         <!-- PB / PE 历史走势（并排网格，一次显示多图） -->
         <div class="detail-charts-grid">
           <div class="detail-section">
@@ -827,7 +941,8 @@ const macroParams = computed(() => {
           <n-text depth="3" style="font-size: 12px; line-height: 1.8">
             股债利差 = ROE均值(近5年) ÷ PB − 10年期国债收益率 + 0.3 × CPI同比<br>
             估值分位 = 100 − 利差在历史中的升序百分位（越小=越便宜）<br>
-            拥挤度 = (指数PB ÷ 中证全指PB) 在历史中的百分位（越小=相对越便宜）
+            拥挤度 = (指数PB ÷ 中证全指PB) 在历史中的百分位（越小=相对越便宜）<br>
+            ERP Z分数 = (当前利差 − 近10年中位数) ÷ (MAD × 1.4826)，&gt;1.5 低估 / &lt;−1.5 高估（MAD 稳健，抗极端值）
           </n-text>
         </div>
       </div>
@@ -1139,5 +1254,17 @@ const macroParams = computed(() => {
   padding: 10px 14px;
   background: var(--bg-subtle);
   border-radius: 6px;
+}
+
+.zscore-note {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+
+.zscore-note b {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-primary);
 }
 </style>

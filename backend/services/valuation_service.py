@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import threading
 import time
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from datetime import datetime
 from typing import Any
 
@@ -398,6 +398,118 @@ def _compute_spread_history(
 
 
 # ============================================================
+# ERP 稳健 Z-score（MAD，10 年滚动窗口）
+# ============================================================
+
+_MAD_CONST = 1.4826  # 正态分布校正系数
+
+
+def _median(values: list[float]) -> float:
+    """中位数（偶数个取中间两值平均）。空序列返回 0.0。"""
+    if not values:
+        return 0.0
+    s = sorted(values)
+    n = len(s)
+    mid = n // 2
+    return s[mid] if n % 2 == 1 else (s[mid - 1] + s[mid]) / 2.0
+
+
+def _sub_years(d: datetime, years: int) -> datetime:
+    """日期减 N 年，处理闰年 02-29 边界（2010-02-29 非法 → 退到 02-28）。"""
+    try:
+        return d.replace(year=d.year - years)
+    except ValueError:
+        return d.replace(year=d.year - years, day=28)
+
+
+def _mad_zscore_single(window_values: list[float], x: float) -> float | None:
+    """对单个点计算 MAD 稳健 Z-score。
+
+    Z = (x - median) / (MAD × 1.4826)；样本不足(<24)或 MAD<=0 返回 None。
+    """
+    if len(window_values) < 24:
+        return None
+    med = _median(window_values)
+    devs = [abs(v - med) for v in window_values]
+    mad = _median(devs)
+    if mad <= 0:
+        return None
+    return (x - med) / (mad * _MAD_CONST)
+
+
+def _rolling_mad_zscore(dates: list[str], values: list[float], window_years: int = 10) -> list[float | None]:
+    """逐点计算「最近 window_years 年」滚动窗口的 MAD 稳健 Z-score。
+
+    用于详情弹窗绘制 Z 分数历史线（仅在打开弹窗时对单个指数计算，无主列表硬超时风险）。
+    """
+    n = len(values)
+    if n == 0:
+        return []
+    zs: list[float | None] = [None] * n
+    cutoffs = []
+    for d in dates:
+        try:
+            dt = datetime.strptime(d[:10], "%Y-%m-%d")
+            cutoffs.append(_sub_years(dt, window_years).strftime("%Y-%m-%d"))
+        except Exception:
+            cutoffs.append("0000-00-00")
+    for i in range(n):
+        lo = bisect_left(dates, cutoffs[i])
+        window = values[lo:i + 1]
+        zs[i] = _mad_zscore_single(window, values[i])
+    return zs
+
+
+def _classify_zscore(z: float | None) -> str | None:
+    """Z_MAD 阈值约定：>1.5 → 低估(low)；<-1.5 → 高估(high)；之间 → 中性(neutral)。"""
+    if z is None:
+        return None
+    if z > 1.5:
+        return "low"
+    if z < -1.5:
+        return "high"
+    return "neutral"
+
+
+def _current_erp_zscore(spread_history: list[dict]) -> dict | None:
+    """基于股债利差(ERP)序列计算当前 MAD 稳健 Z-score 与窗口统计。
+
+    Returns:
+        {"zscore","zclass","median","mad","window_samples","window_start","window_end"} 或 None。
+    注意：为控制主列表计算耗时，仅对「最新点」的最近10年窗口计算（O(窗口长度)，约120点）。
+    """
+    pts = [s for s in spread_history if s.get("spread") is not None]
+    if len(pts) < 24:
+        return None
+    dates = [s["date"] for s in pts]
+    values = [s["spread"] for s in pts]
+    try:
+        dt = datetime.strptime(dates[-1][:10], "%Y-%m-%d")
+        start = _sub_years(dt, 10).strftime("%Y-%m-%d")
+    except Exception:
+        start = dates[0]
+    lo = bisect_left(dates, start)
+    window = values[lo:]
+    if len(window) < 24:
+        return None
+    x = values[-1]
+    z = _mad_zscore_single(window, x)
+    if z is None:
+        return None
+    med = _median(window)
+    mad = _median([abs(v - med) for v in window])
+    return {
+        "zscore": round(z, 2),
+        "zclass": _classify_zscore(z),
+        "median": round(med, 4),
+        "mad": round(mad, 4),
+        "window_samples": len(window),
+        "window_start": dates[lo],
+        "window_end": dates[-1],
+    }
+
+
+# ============================================================
 # 主接口
 # ============================================================
 
@@ -503,11 +615,26 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
         # 由前端展示「—」+ 历史样本不足提示。
         history_samples = len(pb_data)
         insufficient_history = history_samples < MIN_HISTORY_SAMPLES
+
+        # ERP 稳健 Z-score（MAD，最近10年滚动窗口）：主列表仅算最新点，控制耗时
+        erp_zscore = None
+        erp_zscore_class = None
+        erp_zscore_median = None
+        erp_zscore_mad = None
+        erp_zscore_window_samples = None
         if insufficient_history:
             valuation_percentile = None
             pb_percentile = None
             pe_percentile = None
             crowding = None
+        else:
+            erp_zscore_info = _current_erp_zscore(spread_history)
+            if erp_zscore_info:
+                erp_zscore = erp_zscore_info["zscore"]
+                erp_zscore_class = erp_zscore_info["zclass"]
+                erp_zscore_median = erp_zscore_info["median"]
+                erp_zscore_mad = erp_zscore_info["mad"]
+                erp_zscore_window_samples = erp_zscore_info["window_samples"]
 
         # PB 历史数据（完整序列，前端按时间窗口自行截取；默认窗口=全部即展示 2005 起全史）
         pb_history = pb_data
@@ -538,6 +665,11 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
             "pe_percentile": pe_percentile,
             "pb_percentile": pb_percentile,
             "crowding": crowding,
+            "erp_zscore": erp_zscore,
+            "erp_zscore_class": erp_zscore_class,
+            "erp_zscore_median": erp_zscore_median,
+            "erp_zscore_mad": erp_zscore_mad,
+            "erp_zscore_window_samples": erp_zscore_window_samples,
             "insufficient_history": insufficient_history,
             "history_samples": history_samples,
             "yield_10y": yield_10y,
@@ -797,9 +929,11 @@ def get_index_spread_history(index_name: str) -> tuple[list[dict], dict]:
     roe_data = _compute_roe_history(pb_data, pe_data)
     spread_history = _compute_spread_history(roe_data, index_name, cpi_yoy)
 
-    # 返回全量序列
+    # 返回全量序列；附带逐点「10年滚动 MAD 稳健 Z-score」供详情弹窗折线图
+    sh = spread_history
+    zs = _rolling_mad_zscore([s["date"] for s in sh], [s["spread"] for s in sh])
     out = []
-    for s in spread_history:
+    for k, s in enumerate(sh):
         out.append({
             "date": s["date"],
             "spread": s["spread"],
@@ -807,6 +941,7 @@ def get_index_spread_history(index_name: str) -> tuple[list[dict], dict]:
             "yield_10y": s["yield_10y"],
             "roe_mean": s["roe_mean"],
             "earnings_yield": s["earnings_yield"],
+            "zscore": round(zs[k], 2) if zs[k] is not None else None,
         })
 
     return out, meta

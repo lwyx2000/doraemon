@@ -6,7 +6,7 @@ import { TrendingUp, WarningOutline, CheckmarkCircleOutline, ChevronDownOutline,
 import { api } from '../utils/api'
 import type {
   MacroIndicators,
-  IndexValuation,
+  BroadIndexValuation,
   MarketOverview as MarketOverviewData, // 与组件 MarketOverview.vue 重名，需别名
   BoardSector,
   FundFlows,
@@ -33,7 +33,7 @@ const valuationCollapsed = ref(true)
 
 // 使用真实API数据（分区接口：并行调用，各模块互不影响）
 const indicators = ref<MacroIndicators | null>(null)
-const indices = ref<IndexValuation[]>([])
+const broadValuations = ref<BroadIndexValuation[]>([])
 const marketOverview = ref<MarketOverviewData | null>(null)
 const boardSectors = ref<BoardSector[]>([])
 const fundFlows = ref<FundFlows | null>(null)
@@ -44,13 +44,13 @@ const swSectors = ref<SwSector[]>([])
 // 各分区数据来源标记（真实/模拟）
 const sectionSources = ref<Record<string, SectionSourceMeta>>({})
 
-type SectionKey = 'indicators' | 'indices' | 'overview' | 'boardSectors' | 'fundFlows' | 'ztStats' | 'fundRanking' | 'swSectors'
+type SectionKey = 'indicators' | 'broad' | 'overview' | 'boardSectors' | 'fundFlows' | 'ztStats' | 'fundRanking' | 'swSectors'
 const TOTAL_SECTIONS = 8
 
 // 各分区加载状态：骨架屏按分区独立显示，任一接口完成即渲染对应模块
 const sectionLoading = ref<Record<SectionKey, boolean>>({
   indicators: true,
-  indices: true,
+  broad: true,
   overview: true,
   boardSectors: true,
   fundFlows: true,
@@ -65,7 +65,7 @@ const refreshing = ref(false)
 // 各分区失败标记：用于渲染失败兜底（带重试），与加载中/内容互斥
 const sectionError = ref<Record<SectionKey, boolean>>({
   indicators: false,
-  indices: false,
+  broad: false,
   overview: false,
   boardSectors: false,
   fundFlows: false,
@@ -87,7 +87,7 @@ const anySectionLoading = computed(() =>
 
 const hasData = computed(() =>
   !!indicators.value ||
-  indices.value.length > 0 ||
+  broadValuations.value.length > 0 ||
   !!marketOverview.value ||
   boardSectors.value.length > 0 ||
   !!fundFlows.value ||
@@ -152,7 +152,7 @@ async function fetchMacroData() {
   const t0 = performance.now()
   await Promise.all([
     reg('indicators', () => api.getMacroIndicators(), (d) => { indicators.value = d }),
-    reg('indices', () => api.getIndices(), (d) => { indices.value = d }),
+    reg('broad', () => api.getBroadIndexValuation(), (d) => { broadValuations.value = d }),
     reg('overview', () => api.getMarketOverview(), (d) => { marketOverview.value = d }),
     reg('boardSectors', () => api.getMarketBoardSectors(), (d) => { boardSectors.value = d }),
     reg('fundFlows', () => api.getMarketFundFlows(), (d) => { fundFlows.value = d }),
@@ -173,7 +173,7 @@ async function refresh() {
   try {
     await fetchMacroData()
     if (hasData.value) {
-      message.success(`已刷新 ${indices.value.length} 个指数数据`)
+      message.success(`已刷新 ${broadValuations.value.length} 个宽基指数估值`)
     }
   } finally {
     refreshing.value = false
@@ -213,13 +213,26 @@ const marketHeat = computed(() => {
   return total > 0 ? Math.round((ov.upCount / total) * 100) : 0
 })
 
-const indicesTotal = computed(() => indices.value.length)
+const indicesTotal = computed(() => broadValuations.value.length)
 
+// 低估/高估：基于宽基指数本地 PE/PB 历史分位（可靠源，非已下线网关 index_valuation）。
+// 规则：min(PE分位, PB分位) < 30 视为低估；max(PE分位, PB分位) > 70 视为高估；
+// 分位缺失（历史样本不足）的指数不计入，避免失真。
 const undervaluedCount = computed(() =>
-  indices.value.filter(i => i.category === 'undervalued' || i.category === 'opportunity').length
+  broadValuations.value.filter((v) => {
+    const pe = v.pe_percentile
+    const pb = v.pb_percentile
+    if (pe == null && pb == null) return false
+    return Math.min(pe ?? 101, pb ?? 101) < 30
+  }).length
 )
 const overvaluedCount = computed(() =>
-  indices.value.filter(i => i.category === 'overvalued').length
+  broadValuations.value.filter((v) => {
+    const pe = v.pe_percentile
+    const pb = v.pb_percentile
+    if (pe == null && pb == null) return false
+    return Math.max(pe ?? -1, pb ?? -1) > 70
+  }).length
 )
 
 // 宏观指标区是否有有效数据：空对象/无关键利率数据时不渲染4个指标卡片
@@ -422,12 +435,12 @@ const hasIndicatorsData = computed(() => {
         <span class="stat-value">{{ indicesTotal }}</span>
       </div>
       <div class="stat-divider" />
-      <div class="stat-item">
+      <div class="stat-item" title="宽基指数中 PE/PB 历史分位（本地2005年起）较小者 < 30 的数量">
         <span class="stat-label text-blue">低估</span>
         <span class="stat-value text-blue">{{ undervaluedCount }}</span>
       </div>
       <div class="stat-divider" />
-      <div class="stat-item">
+      <div class="stat-item" title="宽基指数中 PE/PB 历史分位（本地2005年起）较大者 > 70 的数量">
         <span class="stat-label text-red">高估</span>
         <span class="stat-value text-red">{{ overvaluedCount }}</span>
       </div>

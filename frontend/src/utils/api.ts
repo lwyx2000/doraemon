@@ -336,6 +336,17 @@ export const api = {
   getMonitorDashboard: () =>
     request<MonitorDashboard>('/api/v1/monitor/dashboard'),
 
+  // 后台任务监控（定时/后台任务执行状态）
+  getJobs: () =>
+    request<JobInfo[]>('/api/v1/jobs'),
+
+  runJob: (jobId: string) =>
+    request<{ job_id: string; ok: boolean; message: string }>(
+      `/api/v1/jobs/${jobId}/run`,
+      undefined,
+      { method: 'POST' },
+    ),
+
   // ============================================================
   // 通知渠道配置（NotificationConfig）
   // ============================================================
@@ -639,6 +650,7 @@ import type {
   DataSourceStatus,
   CacheConfig,
   MonitorDashboard,
+  JobInfo,
   AlertEvent,
   AlertScanResult,
   NotificationConfig,

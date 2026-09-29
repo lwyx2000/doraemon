@@ -153,6 +153,7 @@ export interface SpreadHistoryPoint {
   yield_10y: number    // 10年期国债收益率(%)
   roe_mean: number     // ROE均值(小数)
   earnings_yield: number // 收益率 = ROE均值/PB (%)
+  zscore?: number | null  // 该时点「10年滚动 MAD 稳健 Z-score」
 }
 
 export interface SwSector {
@@ -232,6 +233,12 @@ export interface BroadIndexValuation {
   pe_percentile: number | null    // PE 历史分位 0-100, 高=贵
   pb_percentile: number | null    // PB 历史分位 0-100, 高=贵
   crowding: number | null        // 拥挤度 0-100, 越小相对越便宜
+  // ERP 稳健 Z-score（MAD，最近10年滚动窗口）：>1.5 低估 / <-1.5 高估 / 之间 中性
+  erp_zscore: number | null
+  erp_zscore_class: 'low' | 'neutral' | 'high' | null
+  erp_zscore_median?: number | null
+  erp_zscore_mad?: number | null
+  erp_zscore_window_samples?: number | null
   insufficient_history?: boolean  // 历史样本不足（< MIN_HISTORY_SAMPLES），分位已置空
   history_samples?: number | null // 可用的 PB 历史月度样本数
   yield_10y: number | null       // 10年期国债收益率 (%)
@@ -1101,4 +1108,31 @@ export interface TrackedLibrary {
   current_holding?: HoldingSuggestion | null
   curve?: { date: string[]; strategy_nav: number[]; benchmark_nav: number[] }
   history?: { date: string; cum_return_pct?: number; excess_pct?: number; max_drawdown_pct?: number; avg_double_low?: number }[]
+}
+
+// ===================== 后台任务监控（任务监控页） =====================
+export interface JobRun {
+  started_at: string | null
+  finished_at: string | null
+  status: 'running' | 'success' | 'failed'
+  duration_ms: number | null
+  error: string | null
+}
+
+export interface JobInfo {
+  job_id: string
+  name: string
+  schedule: string
+  job_type: string // scheduled | manual | startup
+  enabled: boolean
+  triggerable: boolean
+  last_run_at: string | null
+  last_status: 'never' | 'success' | 'failed' | 'running'
+  last_status_label: string
+  last_duration_ms: number | null
+  last_error: string | null
+  next_run_at: string | null
+  run_count: number
+  fail_count: number
+  recent_runs: JobRun[]
 }
