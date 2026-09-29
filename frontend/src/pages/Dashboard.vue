@@ -1,7 +1,7 @@
 <script setup lang="ts">
 defineOptions({ name: 'Dashboard' })
-import { ref, computed, h, onMounted } from 'vue'
-import { NDataTable, NButton, NIcon, useMessage, NTabs, NTabPane } from 'naive-ui'
+import { ref, computed, onMounted } from 'vue'
+import { NIcon, useMessage } from 'naive-ui'
 import { TrendingUp, WarningOutline, CheckmarkCircleOutline, ChevronDownOutline, ChevronUpOutline } from '@vicons/ionicons5'
 import { api } from '../utils/api'
 import type {
@@ -16,8 +16,6 @@ import type {
   SwSector,
 } from '../types'
 import PageHeader from '../components/PageHeader.vue'
-import DataPanel from '../components/DataPanel.vue'
-import LoadingState from '../components/LoadingState.vue'
 import SectionSkeleton from '../components/SectionSkeleton.vue'
 import SectionFallback from '../components/SectionFallback.vue'
 import FieldHelp from '../components/FieldHelp.vue'
@@ -28,10 +26,9 @@ import SwHeatmap from '../components/SwHeatmap.vue'
 import FundFlowPanel from '../components/FundFlowPanel.vue'
 import ZTStatsPanel from '../components/ZTStatsPanel.vue'
 import FundRankingPanel from '../components/FundRankingPanel.vue'
-import { useFieldHelp } from '../composables/useFieldHelp'
+import SwRankTrend from '../components/SwRankTrend.vue'
 
 const message = useMessage()
-const { titleWithHelp } = useFieldHelp()
 const valuationCollapsed = ref(true)
 
 // 使用真实API数据（分区接口：并行调用，各模块互不影响）
@@ -64,7 +61,6 @@ const sectionLoading = ref<Record<SectionKey, boolean>>({
 
 const error = ref<string | null>(null)
 const refreshing = ref(false)
-const activeMarket = ref<'a_share' | 'hk' | 'us'>('a_share')
 
 // 各分区失败标记：用于渲染失败兜底（带重试），与加载中/内容互斥
 const sectionError = ref<Record<SectionKey, boolean>>({
@@ -207,23 +203,6 @@ const erpColor = computed(() => {
   return 'var(--color-danger)'
 })
 
-const filteredIndices = computed(() =>
-  indices.value.filter(idx => idx.market === activeMarket.value)
-)
-
-const marketStats = computed(() => {
-  const list = indices.value.filter(idx => idx.market === activeMarket.value)
-  if (list.length === 0) return null
-  // 仅对具备估值数据的指数求均值（科创板/科创50/中证A500 暂无估值，跳过）
-  const valued = list.filter(idx => idx.hasValuation !== false && idx.pe != null && idx.pb != null)
-  const denom = valued.length || 1
-  const avgPE = valued.reduce((sum, idx) => sum + (idx.pe ?? 0), 0) / denom
-  const avgPB = valued.reduce((sum, idx) => sum + (idx.pb ?? 0), 0) / denom
-  const undervalued = list.filter(idx => idx.category === 'undervalued').length
-  const overvalued = list.filter(idx => idx.category === 'overvalued').length
-  return { avgPE: avgPE.toFixed(1), avgPB: avgPB.toFixed(2), undervalued, overvalued, total: list.length }
-})
-
 // 真实派生指标（取代原硬编码的 35% / 1,242 / 428 / 112 / 12ms）
 const sysLatency = ref<number | null>(null)
 
@@ -243,83 +222,11 @@ const overvaluedCount = computed(() =>
   indices.value.filter(i => i.category === 'overvalued').length
 )
 
-// 指数估值区更新时间：优先用真实数据更新时间，其次用模拟时间
-const indicesUpdateMeta = computed(() => {
-  const src = sectionSources.value.indices
-  const time = src?.updateTime || src?.mockTime
-  return time ? `Last update: ${time}` : 'Last update: —'
-})
-
 // 宏观指标区是否有有效数据：空对象/无关键利率数据时不渲染4个指标卡片
 const hasIndicatorsData = computed(() => {
   return !!indicators.value && Object.keys(indicators.value).length > 0 &&
     (indicators.value.erp !== undefined || indicators.value.dr007 !== undefined || indicators.value.gc001 !== undefined)
 })
-
-// CATEGORY 估值分类本地化（后端返回 undervalued/overvalued/normal/opportunity）
-const CATEGORY_LABEL: Record<string, string> = {
-  undervalued: '低估',
-  opportunity: '极度低估',
-  normal: '正常',
-  overvalued: '高估',
-  unknown: '—',
-}
-
-const columns = [
-  { title: 'INDEX NAME', key: 'name', width: 160, render: (row: any) => row.name },
-  { title: 'LEVEL', key: 'level', width: 100, align: 'right' as const,
-    render: (row: any) => row.level.toLocaleString() },
-  { title: 'CHG%', key: 'change_pct', width: 90, align: 'right' as const,
-    render: (row: any) => {
-      // 涨红跌绿（A股惯例，与全站其余面板一致）
-      const color = row.change_pct >= 0 ? 'var(--color-danger)' : 'var(--color-success)'
-      return h('span', { style: { color } },
-        `${row.change_pct >= 0 ? '+' : ''}${row.change_pct.toFixed(2)}%`)
-    },
-  },
-  { title: titleWithHelp('PE PERCENTILE', 'pe_percentile'), key: 'pe_percentile', width: 130, align: 'center' as const,
-    render: (row: any) =>
-      row.hasValuation === false || row.pe_percentile == null
-        ? h('span', { class: 'percentile-label' }, '—')
-        : h('div', { class: 'percentile-cell' }, [
-            h('div', { class: 'percentile-track' }, [
-              h('div', { class: 'percentile-needle', style: { left: `${row.pe_percentile}%` } }),
-            ]),
-            h('span', { class: 'percentile-label' }, `${row.pe_percentile}%`),
-          ]),
-  },
-  { title: titleWithHelp('PB PERCENTILE', 'pb_percentile'), key: 'pb_percentile', width: 130, align: 'center' as const,
-    render: (row: any) =>
-      row.hasValuation === false || row.pb_percentile == null
-        ? h('span', { class: 'percentile-label' }, '—')
-        : h('div', { class: 'percentile-cell' }, [
-            h('div', { class: 'percentile-track' }, [
-              h('div', { class: 'percentile-needle', style: { left: `${row.pb_percentile}%` } }),
-            ]),
-            h('span', { class: 'percentile-label' }, `${row.pb_percentile}%`),
-          ]),
-  },
-  { title: 'CATEGORY', key: 'category', width: 120,
-    render: (row: any) => h('span', { class: ['category-tag', row.category] }, CATEGORY_LABEL[row.category] ?? row.category),
-  },
-  { title: titleWithHelp('近3月涨跌', 'change_3m_pct'), key: 'change_3m_pct', width: 110, align: 'right' as const,
-    render: (row: any) => {
-      const color = row.change_3m_pct >= 0 ? 'var(--color-danger)' : 'var(--color-success)'
-      return h('span', { style: { color } },
-        `${row.change_3m_pct >= 0 ? '+' : ''}${row.change_3m_pct.toFixed(2)}%`)
-    },
-  },
-  { title: titleWithHelp('WIN RATE', 'win_rate'), key: 'win_rate', width: 90, align: 'right' as const,
-    render: (row: any) => `${row.win_rate}%` },
-]
-
-function handleCheckedChange(keys: (string | number)[]) {
-  if (keys.length === 0) return
-  const names = indices.value
-    .filter(idx => keys.includes(idx.name))
-    .map(idx => idx.name)
-  message.info(`已选 ${keys.length} 个指数: ${names.join(', ')}`)
-}
 </script>
 
 <template>
@@ -431,36 +338,17 @@ function handleCheckedChange(keys: (string | number)[]) {
       <SectionFallback v-else key="fallback" :error="sectionError.swSectors ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.swSectors?.isMock && sectionSources.swSectors?.gatewayEmpty" :min-height="160" @retry="retrySection('swSectors')" />
     </Transition>
 
-    <!-- 跨市场指数估值（默认收起） -->
+    <!-- 宏观指标（ERP/利率/市场热度，默认收起） -->
     <div class="market-valuation-section">
       <div class="section-header" @click="valuationCollapsed = !valuationCollapsed" :class="{ collapsed: valuationCollapsed }">
         <h3 class="section-title">
-          跨市场指数估值
+          宏观指标
           <n-icon :component="valuationCollapsed ? ChevronDownOutline : ChevronUpOutline" size="18" class="section-chevron" />
         </h3>
-        <div v-if="marketStats && !valuationCollapsed" class="market-stats">
-          <span class="stat-item">平均PE: {{ marketStats.avgPE }}</span>
-          <span class="stat-item">平均PB: {{ marketStats.avgPB }}</span>
-          <span class="stat-item undervalued">低估: {{ marketStats.undervalued }}</span>
-          <span class="stat-item overvalued">高估: {{ marketStats.overvalued }}</span>
-        </div>
       </div>
       
       <div v-show="!valuationCollapsed">
-      <n-tabs v-model:value="activeMarket" type="segment" class="market-tabs">
-        <n-tab-pane name="a_share" tab="A股">
-          <div class="market-description">中国A股市场主要宽基指数</div>
-        </n-tab-pane>
-        <n-tab-pane name="hk" tab="港股">
-          <div class="market-description">香港股市主要指数</div>
-        </n-tab-pane>
-        <n-tab-pane name="us" tab="美股">
-          <div class="market-description">美国股市主要指数</div>
-        </n-tab-pane>
-      </n-tabs>
-
-      <!-- ERP & Rate Cards (仅A股显示，骨架屏 ↔ 内容平滑过渡) -->
-      <div v-if="activeMarket === 'a_share'">
+      <!-- ERP & Rate Cards（骨架屏 ↔ 内容平滑过渡） -->
         <Transition name="fade" mode="out-in">
           <SectionSkeleton v-if="sectionLoading.indicators" key="skeleton" variant="metric" />
           <div v-else-if="hasIndicatorsData" key="content" class="metric-grid">
@@ -512,28 +400,11 @@ function handleCheckedChange(keys: (string | number)[]) {
           <SectionFallback v-else key="fallback" :error="sectionError.indicators ? '加载失败，请点击重试' : null" :min-height="120" @retry="retrySection('indicators')" />
         </Transition>
       </div>
-
-      <!-- Index Valuation Table -->
-      <DataPanel :title="`${activeMarket === 'a_share' ? 'A股' : activeMarket === 'hk' ? '港股' : '美股'}指数估值`" :meta="indicesUpdateMeta">
-        <Transition name="fade" mode="out-in">
-          <SectionSkeleton v-if="sectionLoading.indices" key="skeleton" variant="table" :rows="6" />
-          <n-data-table
-            v-else-if="filteredIndices.length > 0"
-            key="content"
-            :columns="columns"
-          :data="filteredIndices"
-          :row-key="(row: any) => row.name"
-          :bordered="false"
-          :single-line="false"
-          size="small"
-          :row-class-name="() => 'data-row'"
-          @update:checked-row-keys="handleCheckedChange"
-          />
-          <SectionFallback v-else key="fallback" :error="sectionError.indices ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.indicators?.isMock && sectionSources.indicators?.gatewayEmpty" :min-height="240" :empty-text="filteredIndices.length === 0 ? '当前市场暂无指数数据' : '暂无数据'" @retry="retrySection('indices')" />
-        </Transition>
-      </DataPanel>
       </div>
     </div>
+
+    <!-- A股行业热力图趋势（每日行业涨跌幅排名，本地快照累积） -->
+    <SwRankTrend />
 
     <!-- Bottom Stats -->
     <div class="bottom-stats">
@@ -567,62 +438,6 @@ function handleCheckedChange(keys: (string | number)[]) {
     </div>
   </div>
 </template>
-
-<!-- Global styles for h()-rendered table cells (not scoped so VNodes get the styles) -->
-<style>
-.percentile-cell {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-}
-
-.percentile-track {
-  width: 80px;
-  height: 4px;
-  background: var(--border-default);
-  border-radius: 2px;
-  position: relative;
-}
-
-.percentile-needle {
-  position: absolute;
-  top: -3px;
-  width: 2px;
-  height: 10px;
-  background: var(--color-primary);
-  border-radius: 1px;
-  transition: left 0.3s ease;
-}
-
-.percentile-label {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  color: var(--text-muted);
-}
-
-.category-tag {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 2px;
-  font-family: 'Work Sans', sans-serif;
-  font-size: 10px;
-  font-weight: 700;
-}
-.category-tag.undervalued,
-.category-tag.opportunity {
-  background: var(--tag-blue-bg);
-  color: var(--tag-blue-text);
-}
-.category-tag.normal {
-  background: var(--tag-gray-bg);
-  color: var(--tag-gray-text);
-}
-.category-tag.overvalued {
-  background: var(--tag-red-bg);
-  color: var(--tag-red-text);
-}
-</style>
 
 <style scoped>
 .dashboard-page {

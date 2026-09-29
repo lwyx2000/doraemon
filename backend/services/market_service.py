@@ -1351,15 +1351,14 @@ def get_sw_sector_relative_strength(days: int = 5) -> list[dict]:
         latest_date = latest[0]
 
         # 取最近 days+1 个交易日的数据（用于计算 N 日涨跌幅）
+        # 注意：DISTINCT+ORDER BY+LIMIT 在 DuckDB 1.5.x 会漏行，必须用 GROUP BY 写法
         rows = db.fetchall(
             """
             SELECT sector_code, sector_name, trade_date, change_pct, price, pe, pb, dividend_yield
             FROM base_sw_sector_daily
             WHERE trade_date >= (
-                SELECT MIN(trade_date) FROM (
-                    SELECT DISTINCT trade_date FROM base_sw_sector_daily
-                    ORDER BY trade_date DESC LIMIT ?
-                ) t
+                SELECT trade_date FROM base_sw_sector_daily
+                GROUP BY trade_date ORDER BY trade_date DESC LIMIT ?
             )
             ORDER BY sector_code, trade_date
             """,
@@ -1410,6 +1409,93 @@ def get_sw_sector_relative_strength(days: int = 5) -> list[dict]:
         return result
     except Exception:
         return []
+
+
+def get_sw_sector_rank_trend(days: int = 20) -> dict:
+    """A股行业热力图趋势：最近 N 个交易日，每日各申万一级行业的涨跌幅与当日排名。
+
+    数据源：本地 DuckDB base_sw_sector_daily（每日快照落库，见 jobs/sw_snapshot_job.py）。
+    排名规则：每日按 change_pct 降序，第 1 名 = 当日最强。
+    行业排序：按窗口内平均排名升序（持续强势的行业排在最上面）。
+
+    Returns:
+        {
+          "dates": ["2026-09-22", ...],                  # 交易日，升序
+          "sectors": [
+            {"code": "801010", "name": "农林牧渔", "avg_rank": 12.3,
+             "daily": [{"date": "...", "change_pct": 1.23, "rank": 5}, ...]},
+          ],
+          "meta": {"trade_days": N, "latest_date": "YYYY-MM-DD"}
+        }
+    """
+    empty = {"dates": [], "sectors": [], "meta": {"trade_days": 0, "latest_date": None}}
+    try:
+        from database.connection import get_db
+
+        days = max(2, min(int(days or 20), 120))
+        db = get_db()
+        rows = db.fetchall(
+            """
+            SELECT sector_code, sector_name, trade_date, change_pct
+            FROM base_sw_sector_daily
+            WHERE trade_date IN (
+                -- 注意：不要用 SELECT DISTINCT ... LIMIT（DuckDB 1.5.x 该组合会漏行），
+                -- 也不要用 >= (子查询)（1.5.x 按标量子查询处理，多行报错），用 IN + GROUP BY
+                SELECT trade_date FROM base_sw_sector_daily
+                GROUP BY trade_date ORDER BY trade_date DESC LIMIT ?
+            )
+            ORDER BY trade_date, sector_code
+            """,
+            [days],
+        )
+        if not rows:
+            return empty
+
+        # 按日期聚合；逐日对 change_pct 降序排名（缺失涨跌幅的行业当日不参与排名）
+        by_date: dict[str, list[tuple[str, float]]] = {}
+        name_by_code: dict[str, str] = {}
+        for code, name, d, pct in rows:
+            ds = str(d)
+            if pct is not None:
+                by_date.setdefault(ds, []).append((code, float(pct)))
+            name_by_code[code] = name
+
+        dates = sorted(by_date)
+        if not dates:
+            return empty
+
+        daily_by_code: dict[str, list[dict]] = {}
+        rank_sum: dict[str, float] = {}
+        rank_cnt: dict[str, int] = {}
+        for ds in dates:
+            items = sorted(by_date[ds], key=lambda x: x[1], reverse=True)
+            for rank, (code, pct) in enumerate(items, start=1):
+                daily_by_code.setdefault(code, []).append(
+                    {"date": ds, "change_pct": round(pct, 2), "rank": rank}
+                )
+                rank_sum[code] = rank_sum.get(code, 0.0) + rank
+                rank_cnt[code] = rank_cnt.get(code, 0) + 1
+
+        sectors = []
+        for code, daily in daily_by_code.items():
+            avg = rank_sum[code] / rank_cnt[code] if rank_cnt[code] else None
+            sectors.append({
+                "code": code,
+                "name": name_by_code.get(code, code),
+                "avg_rank": round(avg, 1) if avg is not None else None,
+                "daily": daily,
+            })
+        sectors.sort(key=lambda s: (s["avg_rank"] if s["avg_rank"] is not None else 9999.0, s["code"]))
+
+        return {
+            "dates": dates,
+            "sectors": sectors,
+            "meta": {"trade_days": len(dates), "latest_date": dates[-1]},
+        }
+    except Exception as e:
+        # 不吞真实报错：打印后返回空结构（与相邻快照函数风格一致）
+        print(f"[market_service] get_sw_sector_rank_trend error: {e}")
+        return empty
 
 
 # 申万一级行业估值历史缓存（避免频繁调用 AkShare）

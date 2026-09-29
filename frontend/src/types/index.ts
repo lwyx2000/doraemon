@@ -182,6 +182,28 @@ export interface SwSectorHistoryItem {
   count: number | null
 }
 
+/** 行业热力图趋势：单个行业在窗口内的每日涨跌幅与当日排名 */
+export interface SwRankTrendDailyItem {
+  date: string
+  change_pct: number
+  rank: number
+}
+
+/** 行业热力图趋势：单个行业（按窗口内平均排名升序排列） */
+export interface SwRankTrendSector {
+  code: string
+  name: string
+  avg_rank: number | null
+  daily: SwRankTrendDailyItem[]
+}
+
+/** 行业热力图趋势数据（GET /market/sw-sectors/rank-trend） */
+export interface SwRankTrendData {
+  dates: string[]
+  sectors: SwRankTrendSector[]
+  meta: { trade_days: number; latest_date: string | null }
+}
+
 /** 申万一级行业历史估值数据项（来自 index_analysis_daily_sw） */
 export interface SwSectorValuationItem {
   code: string

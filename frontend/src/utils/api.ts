@@ -152,6 +152,10 @@ export const api = {
       end_date: endDate,
     }),
 
+  // A股行业热力图趋势：最近 N 个交易日每日行业涨跌幅与当日排名（本地快照表）
+  getSwSectorRankTrend: (days: number = 20) =>
+    request<SwRankTrendData>('/api/v1/market/sw-sectors/rank-trend', { days }),
+
   // ============================================================
   // 基金数据（LOF / ETF / 封基）
   // ============================================================
@@ -643,6 +647,7 @@ import type {
   SwSectorHistoryItem,
   SwSectorValuationItem,
   SwSectorStrength,
+  SwRankTrendData,
   BroadIndexValuation,
   IndustryValuation,
   SpreadHistoryPoint,

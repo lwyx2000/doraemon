@@ -27,6 +27,7 @@ from services.market_service import (
     get_market_overview_with_meta,
     get_precious_metals_with_meta,
     get_sw_sector_history,
+    get_sw_sector_rank_trend,
     get_sw_sector_relative_strength,
     get_sw_sector_snapshot_stats,
     get_sw_sector_valuation_history,
@@ -157,6 +158,18 @@ def sw_sector_strength(
 ) -> ApiResponse[list[dict]]:
     """各申万一级行业的相对强度：近 N 日累计涨跌幅 vs 当日涨跌幅。"""
     data = get_sw_sector_relative_strength(days=days)
+    return ApiResponse(data=data)
+
+
+@router.get("/sw-sectors/rank-trend", response_model=ApiResponse[dict])
+def sw_sector_rank_trend(
+    days: int = Query(default=20, ge=2, le=120),
+) -> ApiResponse[dict]:
+    """A股行业热力图趋势：最近 N 个交易日，每日各申万一级行业涨跌幅与当日排名。
+
+    数据来自本地 base_sw_sector_daily 快照表；行业按窗口内平均排名升序排列。
+    """
+    data = get_sw_sector_rank_trend(days=days)
     return ApiResponse(data=data)
 
 
