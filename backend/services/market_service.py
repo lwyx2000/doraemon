@@ -675,6 +675,96 @@ def get_fund_ranking_real() -> list[dict]:
     return funds
 
 
+# ============================================================
+# 每日成交额快照（本地落库，用于"较上一日"对比）
+# 上游 market_stats 不一定返回 yesterday_same_time_turnover，
+# 故每次拉取市场概况时把当天成交额 upsert 入表，作为"上一日成交额"的可靠来源。
+# 说明：我们只存每个交易日一行（当天最新累计值覆盖），因此"较上一日此时"实为
+# 今日实时累计 vs 上一交易日全天总额——这是没有分时历史时最合理的近似。
+# ============================================================
+_TURNOVER_TABLE_READY = False
+_TURNOVER_UPSERT_SQL = """
+INSERT INTO base_market_turnover_daily (trade_date, total_turnover, sh_turnover, sz_turnover, captured_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (trade_date) DO UPDATE SET
+    total_turnover = excluded.total_turnover,
+    sh_turnover    = excluded.sh_turnover,
+    sz_turnover    = excluded.sz_turnover,
+    captured_at    = excluded.captured_at
+"""
+
+
+def _ensure_turnover_table() -> None:
+    global _TURNOVER_TABLE_READY
+    if _TURNOVER_TABLE_READY:
+        return
+    try:
+        from database.connection import get_db
+
+        db = get_db()
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS base_market_turnover_daily (
+                trade_date      DATE PRIMARY KEY,
+                total_turnover  BIGINT,
+                sh_turnover     BIGINT,
+                sz_turnover     BIGINT,
+                captured_at     TIMESTAMP
+            )
+            """
+        )
+        _TURNOVER_TABLE_READY = True
+    except Exception as e:
+        print(f"[Turnover] 建表失败: {type(e).__name__}: {e}")
+
+
+def _save_today_turnover(
+    trade_date: str,
+    total_yuan: float | None,
+    sh_yuan: float | None,
+    sz_yuan: float | None,
+) -> None:
+    """把当天成交额 upsert 入 base_market_turnover_daily（同日期覆盖）。"""
+    if total_yuan is None:
+        return
+    try:
+        _ensure_turnover_table()
+        from database.connection import get_db
+
+        db = get_db()
+        db.execute(
+            _TURNOVER_UPSERT_SQL,
+            [
+                trade_date,
+                int(total_yuan),
+                int(sh_yuan) if sh_yuan is not None else None,
+                int(sz_yuan) if sz_yuan is not None else None,
+                datetime.now(_CST).strftime("%Y-%m-%d %H:%M:%S"),
+            ],
+        )
+    except Exception as e:
+        print(f"[Turnover] 落库失败: {type(e).__name__}: {e}")
+
+
+def _get_prev_trading_day_turnover(trade_date: str) -> float | None:
+    """返回上一交易日的成交额（元），用于"较上一日"对比；无记录返回 None。"""
+    try:
+        _ensure_turnover_table()
+        from database.connection import get_db
+
+        db = get_db()
+        row = db.fetchone(
+            "SELECT total_turnover FROM base_market_turnover_daily "
+            "WHERE trade_date < ? ORDER BY trade_date DESC LIMIT 1",
+            [trade_date],
+        )
+        if row and row[0] is not None:
+            return float(row[0])
+    except Exception as e:
+        print(f"[Turnover] 查询上一交易日失败: {type(e).__name__}: {e}")
+    return None
+
+
 def get_market_stats_real() -> dict | None:
     """获取市场统计数据 - 使用 /api/processed_data/market_stats 接口
     
@@ -690,20 +780,41 @@ def get_market_stats_real() -> dict | None:
     print(f"[Market Stats] 成功获取市场统计")
     # 上游返回成交额单位为"元"，统一转换为"亿元"(1亿 = 10^8 元)
     total_yuan = _safe_float(data.get("total_turnover"))
+    sh_yuan = _safe_float(data.get("sh_turnover"))
+    sz_yuan = _safe_float(data.get("sz_turnover"))
     yest_yuan = _safe_float(data.get("yesterday_same_time_turnover")) if data.get("yesterday_same_time_turnover") is not None else None
     total_e = round(total_yuan / 1e8, 2) if total_yuan else 0.0
-    sh_e = round(_safe_float(data.get("sh_turnover")) / 1e8, 2) if data.get("sh_turnover") is not None else 0.0
-    sz_e = round(_safe_float(data.get("sz_turnover")) / 1e8, 2) if data.get("sz_turnover") is not None else 0.0
+    sh_e = round(sh_yuan / 1e8, 2) if sh_yuan else 0.0
+    sz_e = round(sz_yuan / 1e8, 2) if sz_yuan else 0.0
+
+    today = data.get("date") or datetime.now(_CST).strftime("%Y-%m-%d")
+
+    # 每天把当天成交额落库，作为"上一日成交额"的可靠本地来源
+    # （上游 market_stats 不保证返回 yesterday_same_time_turnover）
+    _save_today_turnover(today, total_yuan, sh_yuan, sz_yuan)
+
+    # 上游未提供"上一日此时"成交额 → 用本地存的上一交易日总额补充
+    prev_day_yuan = None
+    if yest_yuan is None:
+        yest_yuan = _get_prev_trading_day_turnover(today)
+        if yest_yuan is not None:
+            prev_day_yuan = yest_yuan
+
     turnover_change_abs = None
     if yest_yuan is not None and yest_yuan > 0:
         turnover_change_abs = round((total_yuan - yest_yuan) / 1e8, 2)
+    turnover_change_pct = _safe_float_or_none(data.get("turnover_change_pct"))
+    if turnover_change_pct is None and yest_yuan and yest_yuan > 0 and total_yuan:
+        turnover_change_pct = round((total_yuan - yest_yuan) / yest_yuan * 100, 2)
+
     return {
-        "date": data.get("date", datetime.now().strftime("%Y-%m-%d")),
+        "date": today,
         "totalTurnover": total_e,
         "shTurnover": sh_e,
         "szTurnover": sz_e,
-        "turnoverChangePct": _safe_float_or_none(data.get("turnover_change_pct")),
+        "turnoverChangePct": turnover_change_pct,
         "turnoverChangeAbs": turnover_change_abs,
+        "prevDayTurnover": round(prev_day_yuan / 1e8, 2) if prev_day_yuan else None,
         "upCount": _safe_int(data.get("advance_count")),
         "downCount": _safe_int(data.get("decline_count")),
         "flatCount": _safe_int(data.get("flat_count")),
@@ -988,6 +1099,7 @@ def get_market_overview_with_meta() -> tuple[dict, dict]:
             "flatCount": market_stats["flatCount"],
             "totalVolume": market_stats["totalTurnover"],
             "volumeChange": vol_change,
+            "prevDayVolume": market_stats.get("prevDayTurnover"),
         }
         return data, _build_meta(False, f"AkShare WebAPI ({AKSHARE_HOST})")
     if realtime_indices:
@@ -1000,6 +1112,7 @@ def get_market_overview_with_meta() -> tuple[dict, dict]:
             "flatCount": 0,
             "totalVolume": 0,
             "volumeChange": 0,
+            "prevDayVolume": None,
         }
         return data, _build_meta(False, "AkShare WebAPI (部分数据)")
     # 取数失败：返回空数据(绝不返回伪造数据)，前端走错误/空态
@@ -1009,10 +1122,11 @@ def get_market_overview_with_meta() -> tuple[dict, dict]:
         "indices": [],
         "upCount": 0,
         "downCount": 0,
-        "flatCount": 0,
-        "totalVolume": 0,
-        "volumeChange": 0,
-    }, gateway_no_data_meta()
+            "flatCount": 0,
+            "totalVolume": 0,
+            "volumeChange": 0,
+            "prevDayVolume": None,
+        }, gateway_no_data_meta()
 
 
 def get_sw_sectors() -> tuple[list[dict], dict]:

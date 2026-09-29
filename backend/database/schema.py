@@ -285,6 +285,18 @@ TABLES = [
     )
     """,
 
+    # 15.4 每日全市场成交额快照 — 本地落库，用于"较上一日成交额"对比
+    # （上游 market_stats 不保证返回 yesterday_same_time_turnover，故自建本地来源）
+    """
+    CREATE TABLE IF NOT EXISTS base_market_turnover_daily (
+        trade_date      DATE PRIMARY KEY,
+        total_turnover  BIGINT,         -- 全市场成交额（单位：元）
+        sh_turnover     BIGINT,         -- 沪市成交额（元）
+        sz_turnover     BIGINT,         -- 深市成交额（元）
+        captured_at     TIMESTAMP
+    )
+    """,
+
     # 15.5 申万一级行业每日快照 — 存储每日行业涨跌幅/PE/PB/股息率，用于历史走势和相对强度
     """
     CREATE TABLE IF NOT EXISTS base_sw_sector_daily (

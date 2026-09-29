@@ -725,6 +725,7 @@ export interface MarketOverview {
   flatCount: number
   totalVolume: number // 成交额（亿）
   volumeChange: number | null // 较上一日变化（亿），null 表示上游无数据
+  prevDayVolume?: number | null // 上一日成交额（亿），来自本地每日落库；null 表示无历史
 }
 
 // 板块数据（行业/概念）

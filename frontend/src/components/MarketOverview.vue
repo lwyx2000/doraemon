@@ -132,6 +132,13 @@ const hasMore = computed(() => {
           {{ overview.volumeChange >= 0 ? '+' : '' }}{{ overview.volumeChange }}亿
         </span>
       </div>
+      <div class="volume-prev">
+        <span class="label">上一日成交额</span>
+        <span v-if="overview.prevDayVolume == null" class="value" style="color: var(--text-muted)">
+          —
+        </span>
+        <span v-else class="value">{{ overview.prevDayVolume }}亿</span>
+      </div>
     </div>
 
     <!-- 指数 K 线弹窗 -->
@@ -334,11 +341,13 @@ const hasMore = computed(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
   padding-top: 16px;
   border-top: 1px solid var(--border-subtle);
 }
 
-.volume-item, .volume-change {
+.volume-item, .volume-change, .volume-prev {
   display: flex;
   align-items: center;
   gap: 8px;
