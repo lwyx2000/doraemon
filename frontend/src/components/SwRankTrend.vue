@@ -39,6 +39,7 @@
             <tr>
               <th class="col-name">行业</th>
               <th class="col-avg">均排名</th>
+              <th class="col-trend">趋势</th>
               <th v-for="d in data.dates" :key="d" class="col-date">{{ shortDate(d) }}</th>
             </tr>
           </thead>
@@ -46,6 +47,10 @@
             <tr v-for="sec in data.sectors" :key="sec.code">
               <td class="col-name" :title="`${sec.name}（${sec.code}）`">{{ sec.name }}</td>
               <td class="col-avg">{{ sec.avg_rank ?? '—' }}</td>
+              <td class="col-trend" :title="trendMap.get(sec.code)?.title">
+                <span v-if="trendMap.get(sec.code)" :class="['trend-tag', trendMap.get(sec.code)!.dir]">{{ trendMap.get(sec.code)!.text }}</span>
+                <span v-else class="trend-na">—</span>
+              </td>
               <td
                 v-for="d in data.dates"
                 :key="d"
@@ -66,7 +71,7 @@
         <span class="legend-item"><span class="legend-box" :style="swatch(0)" />平盘</span>
         <span class="legend-item"><span class="legend-box" :style="swatch(-1)" />跌 ~1%</span>
         <span class="legend-item"><span class="legend-box" :style="swatch(-2.5)" />跌 ≥2.5%</span>
-        <span class="legend-note">格内数字 = 当日涨幅排名（1 = 当日最强）</span>
+        <span class="legend-note">格内数字 = 当日涨幅排名（1 = 当日最强）；趋势列 = 前后半窗平均排名对比，排名持续前移 = 相对走强</span>
       </div>
     </template>
   </div>
@@ -74,7 +79,7 @@
 
 <script setup lang="ts">
 defineOptions({ name: 'SwRankTrend' })
-import { ref, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { NButton, NSelect } from 'naive-ui'
 import { api } from '../utils/api'
 import type { SwRankTrendData, SwRankTrendSector } from '../types'
@@ -106,6 +111,43 @@ async function load() {
 onMounted(load)
 
 watch(days, load)
+
+// ---- 排名趋势判定：排名 1 = 最强（相对强弱），前后半窗平均排名对比 ----
+// delta = 前半窗均排名 − 后半窗均排名；delta > 0 = 排名持续前移 = 资金持续流入该行业（走强）
+interface TrendInfo {
+  dir: 'up' | 'flat' | 'down'
+  text: string
+  title: string
+}
+
+const RANK_TREND_MIN_SAMPLES = 6   // 有效样本不足 6 个交易日不做判定
+const RANK_TREND_THRESHOLD = 2.5   // 前后半窗平均排名差 ≥ 2.5 位才视为趋势，避免噪声
+
+const trendMap = computed(() => {
+  const m = new Map<string, TrendInfo>()
+  for (const sec of data.value?.sectors ?? []) {
+    const ranks = [...sec.daily]
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .map(x => x.rank)
+      .filter((r): r is number => r != null)
+    if (ranks.length < RANK_TREND_MIN_SAMPLES) continue
+    const half = Math.floor(ranks.length / 2)
+    const avg = (a: number[]) => a.reduce((s, v) => s + v, 0) / a.length
+    const firstAvg = avg(ranks.slice(0, half))
+    const secondAvg = avg(ranks.slice(ranks.length - half))
+    const delta = firstAvg - secondAvg
+    const dir = delta >= RANK_TREND_THRESHOLD ? 'up' : delta <= -RANK_TREND_THRESHOLD ? 'down' : 'flat'
+    const arrow = dir === 'up' ? '↗' : dir === 'down' ? '↘' : '→'
+    const label = dir === 'up' ? '走强' : dir === 'down' ? '走弱' : '震荡'
+    const move = `${delta >= 0 ? '前移' : '后移'} ${Math.abs(delta).toFixed(1)} 位`
+    m.set(sec.code, {
+      dir,
+      text: `${arrow} ${label}`,
+      title: `${sec.name}：前半窗均排名 ${firstAvg.toFixed(1)} → 后半窗 ${secondAvg.toFixed(1)}（${move}，基于近 ${ranks.length} 个交易日）`,
+    })
+  }
+  return m
+})
 
 function shortDate(d: string): string {
   // "2026-09-22" -> "09-22"
@@ -240,15 +282,21 @@ function cellTitle(sec: SwRankTrendSector, date: string): string {
   position: sticky;
   left: 0;
   z-index: 2;
-  min-width: 84px;
+  min-width: 96px;
+  padding-left: 10px;
   text-align: left;
   background: var(--bg-card, #fff);
-  font-weight: 500;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
   color: var(--text-strong, #1f2329);
 }
 
 .rank-grid thead .col-name {
   z-index: 4;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: normal;
 }
 
 .rank-grid .col-avg {
@@ -257,6 +305,29 @@ function cellTitle(sec: SwRankTrendSector, date: string): string {
   color: var(--text-muted, #717782);
   background: var(--bg-card, #fff);
 }
+
+.rank-grid .col-trend {
+  min-width: 68px;
+  background: var(--bg-card, #fff);
+}
+
+.trend-tag {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+/* 与热力图色彩语义一致：红=走强（涨），绿=走弱（跌） */
+.trend-tag.up { color: var(--tag-red-text, #c0392b); background: var(--tag-red-bg, #fdeceb); }
+.trend-tag.down { color: var(--tag-green-text, #1e8e60); background: var(--tag-green-bg, #e7f5ee); }
+.trend-tag.flat { color: var(--text-muted, #717782); background: var(--bg-surface, #f5f6f7); }
+
+.trend-na { color: var(--text-muted, #717782); }
 
 .rank-grid .col-date {
   min-width: 52px;
