@@ -170,6 +170,8 @@ pipeline {
                         sh """
                             chmod 600 ${SSH_KEY}
                             ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${DEPLOY_SERVER} '
+                                # 任一命令失败立即中止，避免 npm 构建失败后继续 docker build 掩盖真实错误
+                                set -e
                                 cd ${DEPLOY_PATH}
 
                                 # 创建 .env 文件（如果不存在）
@@ -191,6 +193,14 @@ pipeline {
                                     cd "${DEPLOY_PATH}/frontend"
                                     npm install --no-audit --no-fund
                                     npm run build
+
+                                    # 前端构建必须产出 dist，否则镜像 COPY dist 会报 "/dist": not found
+                                    if [ ! -f dist/index.html ]; then
+                                        echo "错误: 前端构建未产出 dist/index.html，请检查上方 npm run build 日志（常见原因: node 版本过低 / vue-tsc 类型报错 / 内存不足 OOM）"
+                                        exit 1
+                                    fi
+                                    echo "dist 构建产物校验通过"
+
                                     cd "${DEPLOY_PATH}"
 
                                     echo "构建前端镜像..."
