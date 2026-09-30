@@ -1,12 +1,12 @@
 <script setup lang="ts">
 defineOptions({ name: 'JobsMonitor' })
-import { ref, computed, onMounted, h } from 'vue'
+import { ref, onMounted, h } from 'vue'
 import {
   NIcon, NButton, NTag, NCard, NSpace, NGrid, NGridItem, NEmpty, NDataTable,
   NCollapse, NCollapseItem, NSpin, useMessage,
 } from 'naive-ui'
 import {
-  TimeOutline, RefreshOutline, PlayOutline, CheckmarkCircleOutline,
+  RefreshOutline, PlayOutline, CheckmarkCircleOutline,
   CloseCircleOutline, HourglassOutline, InformationCircleOutline,
 } from '@vicons/ionicons5'
 import { api } from '../utils/api'
@@ -153,7 +153,7 @@ const runColumns = [
                 <NDataTable
                   :columns="runColumns"
                   :data="job.recent_runs"
-                  :row-key="(row: JobRun) => row.started_at"
+                  :row-key="(row: JobRun) => row.started_at ?? ''"
                   size="small"
                   :max-height="240"
                   :bordered="false"
