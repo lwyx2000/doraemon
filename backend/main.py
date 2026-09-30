@@ -47,6 +47,10 @@ async def lifespan(app: FastAPI):
         from jobs.sw_snapshot_job import start_sw_snapshot_scheduler
 
         start_sw_snapshot_scheduler()
+        # 全市场成交额：每交易日收盘后固定落一次全天值（供看板「上一日成交额」读取）
+        from jobs.turnover_snapshot_job import start_turnover_snapshot_scheduler
+
+        start_turnover_snapshot_scheduler()
         # 监控缓存配置：从 biz_config 恢复（重启保留用户改过的配置）
         from services.monitor_service import load_cache_config
 
