@@ -63,6 +63,9 @@ async def lifespan(app: FastAPI):
         from jobs.sw_snapshot_job import stop_sw_snapshot_scheduler
 
         stop_sw_snapshot_scheduler()
+        from jobs.turnover_snapshot_job import stop_turnover_snapshot_scheduler
+
+        stop_turnover_snapshot_scheduler()
     close_db()
     print("[Shutdown] Database connection closed")
 

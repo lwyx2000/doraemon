@@ -123,15 +123,6 @@ const hasMore = computed(() => {
         <span class="label">今日实时成交额</span>
         <span class="value">{{ overview.totalVolume }}亿</span>
       </div>
-      <div class="volume-change">
-        <span class="label">较上一日此时</span>
-        <span v-if="overview.volumeChange == null" class="value" style="color: var(--text-muted)">
-          —
-        </span>
-        <span v-else class="value" :style="{ color: overview.volumeChange >= 0 ? 'var(--color-danger)' : 'var(--color-success)' }">
-          {{ overview.volumeChange >= 0 ? '+' : '' }}{{ overview.volumeChange }}亿
-        </span>
-      </div>
       <div class="volume-prev">
         <span class="label">上一日成交额</span>
         <span v-if="overview.prevDayVolume == null" class="value" style="color: var(--text-muted)">
@@ -347,13 +338,13 @@ const hasMore = computed(() => {
   border-top: 1px solid var(--border-subtle);
 }
 
-.volume-item, .volume-change, .volume-prev {
+.volume-item, .volume-prev {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.volume-item .label, .volume-change .label {
+.volume-item .label, .volume-prev .label {
   font-size: 13px;
   color: var(--text-muted);
 }
