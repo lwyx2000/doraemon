@@ -413,7 +413,6 @@ const hasIndicatorsData = computed(() => {
           <SectionFallback v-else key="fallback" :error="sectionError.indicators ? '加载失败，请点击重试' : null" :min-height="120" @retry="retrySection('indicators')" />
         </Transition>
       </div>
-      </div>
     </div>
 
     <!-- A股行业热力图趋势（每日行业涨跌幅排名，本地快照累积） -->
