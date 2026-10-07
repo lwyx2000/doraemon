@@ -578,7 +578,7 @@ const columns = computed(() => {
     <div v-else class="insight-bar">
       <n-icon :component="PulseOutline" size="20" class="insight-icon" />
       <span>
-        <strong>QDII溢价套利提示：</strong>纳指LOF当前溢价6.25%，扣除申购赎回成本后净套利收益约1.82%，存在套利空间。
+        <strong>LOF/封闭基金套利提示：</strong>关注折价率较深的封闭基金到期套利机会，以及LOF折溢价波动带来的套利空间。
       </span>
     </div>
     </div>
