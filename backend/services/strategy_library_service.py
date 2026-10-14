@@ -21,7 +21,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from database.connection import get_db
+from database.sqlite_connection import get_biz_db
 from services.market_service import get_index_history
 from services.convertible_bond_service import get_convertible_bonds
 
@@ -463,7 +463,7 @@ def backtest_symbol_signal(symbol: str, strategy_id: str, params: dict | None = 
 # ============================================================
 
 def _ensure_tables() -> None:
-    db = get_db()
+    db = get_biz_db()
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS biz_library_subscriptions (
@@ -491,7 +491,7 @@ def _ensure_tables() -> None:
 
 def get_tracked(user_id: str) -> list[dict[str, Any]]:
     _ensure_tables()
-    db = get_db()
+    db = get_biz_db()
     rows = db.fetchall(
         "SELECT id, library_id, params_json, created_at FROM biz_library_subscriptions "
         "WHERE fk_user = ? ORDER BY created_at DESC",
@@ -523,7 +523,7 @@ def add_tracked(user_id: str, library_id: str, params: dict | None) -> dict[str,
         raise ValueError(f"未知策略: {library_id}")
     now = datetime.now(timezone.utc).isoformat()
     rec_id = str(uuid.uuid4())
-    db = get_db()
+    db = get_biz_db()
     db.execute(
         "INSERT INTO biz_library_subscriptions (id, fk_user, library_id, params_json, created_at, updated_at) "
         "VALUES (?, ?, ?, ?, ?, ?)",
@@ -534,7 +534,7 @@ def add_tracked(user_id: str, library_id: str, params: dict | None) -> dict[str,
 
 def remove_tracked(user_id: str, rec_id: str) -> bool:
     _ensure_tables()
-    db = get_db()
+    db = get_biz_db()
     db.execute(
         "DELETE FROM biz_library_subscriptions WHERE id = ? AND fk_user = ?",
         [rec_id, user_id],
@@ -548,7 +548,7 @@ def remove_tracked(user_id: str, rec_id: str) -> bool:
 
 def _save_snapshot(user_id: str, rec_id: str, library_id: str, payload: dict) -> None:
     """保存当日绩效快照（同日覆盖），供长期走势跟踪。"""
-    db = get_db()
+    db = get_biz_db()
     today = datetime.now().strftime("%Y-%m-%d")
     db.execute(
         "INSERT OR REPLACE INTO biz_library_snapshots (id, fk_user, library_id, snap_date, payload_json) "
@@ -559,7 +559,7 @@ def _save_snapshot(user_id: str, rec_id: str, library_id: str, payload: dict) ->
 
 
 def _load_snapshot_history(user_id: str, rec_id: str, limit: int = 30) -> list[dict]:
-    db = get_db()
+    db = get_biz_db()
     rows = db.fetchall(
         "SELECT snap_date, payload_json FROM biz_library_snapshots "
         "WHERE id = ? AND fk_user = ? ORDER BY snap_date DESC LIMIT ?",

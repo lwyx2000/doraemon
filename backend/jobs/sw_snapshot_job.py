@@ -34,35 +34,14 @@ AUTO_BACKFILL_DAYS = 250  # ≈ 一年
 _scheduler = None
 _backfill_lock = threading.Lock()
 _backfill_running = False
-_trading_days: set[date] | None = None
 
 
-def _load_trading_days() -> set[date] | None:
-    """加载 A 股交易日历（含历史与未来），失败返回 None（调用方回退到周一~周五判断）。"""
-    global _trading_days
-    if _trading_days is not None:
-        return _trading_days
-    try:
-        from services.akshare_client import akshare_request
-
-        df = akshare_request("tool_trade_date_hist_sina", timeout=30)
-        if df:
-            days = {datetime.strptime(str(v.get("trade_date"))[:10], "%Y-%m-%d").date() for v in df}
-            if days:
-                _trading_days = days
-                print(f"[SW Job] 交易日历加载成功：{len(days)} 个交易日（网关）")
-    except Exception as e:
-        print(f"[SW Job] 交易日历加载失败（回退到周一~周五判断）: {type(e).__name__}: {e}")
-    return _trading_days
-
-
-def _is_trading_day(day: date | None = None) -> bool:
-    """是否为 A 股交易日。节假日以交易日历为准，取不到时回退到周一~周五。"""
-    day = day or date.today()
-    days = _load_trading_days()
-    if days:
-        return day in days
-    return day.weekday() < 5
+# ⚠️ 交易日历已抽到 ``services/trading_calendar``（2026-10-08）。
+#    红利页 PE 的新鲜度判断也要用它，且**必须按交易日而非自然日**——
+#    长假（如国庆）用自然日必然误报「数据陈旧」。
+#    这里保留原函数名做薄封装，全文其余调用点无需改动（行为完全一致）。
+from services.trading_calendar import is_trading_day as _is_trading_day  # noqa: E402
+from services.trading_calendar import load_trading_days as _load_trading_days  # noqa: E402
 
 
 def _job_daily_snapshot() -> None:

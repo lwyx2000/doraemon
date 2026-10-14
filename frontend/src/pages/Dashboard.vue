@@ -1,12 +1,13 @@
 <script setup lang="ts">
 defineOptions({ name: 'Dashboard' })
-import { ref, computed, onMounted } from 'vue'
-import { NIcon, useMessage } from 'naive-ui'
+import { ref, computed, h, onMounted } from 'vue'
+import { NDataTable, NButton, NIcon, useMessage, NTabs, NTabPane } from 'naive-ui'
 import { TrendingUp, WarningOutline, CheckmarkCircleOutline, ChevronDownOutline, ChevronUpOutline } from '@vicons/ionicons5'
 import { api } from '../utils/api'
+import { pctColor } from '../utils/percentile'
 import type {
   MacroIndicators,
-  BroadIndexValuation,
+  IndexValuation,
   MarketOverview as MarketOverviewData, // 与组件 MarketOverview.vue 重名，需别名
   BoardSector,
   FundFlows,
@@ -14,8 +15,12 @@ import type {
   FundRankingItem,
   SectionSourceMeta,
   SwSector,
+  FearGreedLatest,
+  FearGreedPoint,
 } from '../types'
 import PageHeader from '../components/PageHeader.vue'
+import DataPanel from '../components/DataPanel.vue'
+import LoadingState from '../components/LoadingState.vue'
 import SectionSkeleton from '../components/SectionSkeleton.vue'
 import SectionFallback from '../components/SectionFallback.vue'
 import FieldHelp from '../components/FieldHelp.vue'
@@ -26,52 +31,59 @@ import SwHeatmap from '../components/SwHeatmap.vue'
 import FundFlowPanel from '../components/FundFlowPanel.vue'
 import ZTStatsPanel from '../components/ZTStatsPanel.vue'
 import FundRankingPanel from '../components/FundRankingPanel.vue'
-import SwRankTrend from '../components/SwRankTrend.vue'
+import FearGreedPanel from '../components/FearGreedPanel.vue'
+import { useFieldHelp } from '../composables/useFieldHelp'
 
 const message = useMessage()
+const { titleWithHelp } = useFieldHelp()
 const valuationCollapsed = ref(true)
 
 // 使用真实API数据（分区接口：并行调用，各模块互不影响）
 const indicators = ref<MacroIndicators | null>(null)
-const broadValuations = ref<BroadIndexValuation[]>([])
+const indices = ref<IndexValuation[]>([])
 const marketOverview = ref<MarketOverviewData | null>(null)
 const boardSectors = ref<BoardSector[]>([])
 const fundFlows = ref<FundFlows | null>(null)
 const ztStats = ref<ZTStats | null>(null)
 const fundRanking = ref<FundRankingItem[]>([])
 const swSectors = ref<SwSector[]>([])
+const fearGreedLatest = ref<FearGreedLatest | null>(null)
+const fearGreedHistory = ref<FearGreedPoint[]>([])
 
 // 各分区数据来源标记（真实/模拟）
 const sectionSources = ref<Record<string, SectionSourceMeta>>({})
 
-type SectionKey = 'indicators' | 'broad' | 'overview' | 'boardSectors' | 'fundFlows' | 'ztStats' | 'fundRanking' | 'swSectors'
-const TOTAL_SECTIONS = 8
+type SectionKey = 'indicators' | 'indices' | 'overview' | 'boardSectors' | 'fundFlows' | 'ztStats' | 'fundRanking' | 'swSectors' | 'fearGreed'
+const TOTAL_SECTIONS = 9
 
 // 各分区加载状态：骨架屏按分区独立显示，任一接口完成即渲染对应模块
 const sectionLoading = ref<Record<SectionKey, boolean>>({
   indicators: true,
-  broad: true,
+  indices: true,
   overview: true,
   boardSectors: true,
   fundFlows: true,
   ztStats: true,
   fundRanking: true,
   swSectors: true,
+  fearGreed: true,
 })
 
 const error = ref<string | null>(null)
 const refreshing = ref(false)
+const activeMarket = ref<'a_share' | 'hk' | 'us'>('a_share')
 
 // 各分区失败标记：用于渲染失败兜底（带重试），与加载中/内容互斥
 const sectionError = ref<Record<SectionKey, boolean>>({
   indicators: false,
-  broad: false,
+  indices: false,
   overview: false,
   boardSectors: false,
   fundFlows: false,
   ztStats: false,
   fundRanking: false,
   swSectors: false,
+  fearGreed: false,
 })
 
 // 单分区重试闭包注册表（fetchMacroData 时填充）
@@ -87,13 +99,14 @@ const anySectionLoading = computed(() =>
 
 const hasData = computed(() =>
   !!indicators.value ||
-  broadValuations.value.length > 0 ||
+  indices.value.length > 0 ||
   !!marketOverview.value ||
   boardSectors.value.length > 0 ||
   !!fundFlows.value ||
   !!ztStats.value ||
   fundRanking.value.length > 0 ||
-  swSectors.value.length > 0
+  swSectors.value.length > 0 ||
+  !!fearGreedLatest.value
 )
 
 let failedCount = 0
@@ -152,13 +165,26 @@ async function fetchMacroData() {
   const t0 = performance.now()
   await Promise.all([
     reg('indicators', () => api.getMacroIndicators(), (d) => { indicators.value = d }),
-    reg('broad', () => api.getBroadIndexValuation(), (d) => { broadValuations.value = d }),
+    reg('indices', () => api.getIndices(), (d) => { indices.value = d }),
     reg('overview', () => api.getMarketOverview(), (d) => { marketOverview.value = d }),
     reg('boardSectors', () => api.getMarketBoardSectors(), (d) => { boardSectors.value = d }),
     reg('fundFlows', () => api.getMarketFundFlows(), (d) => { fundFlows.value = d }),
     reg('ztStats', () => api.getMarketZTStats(), (d) => { ztStats.value = d }),
     reg('fundRanking', () => api.getMarketFundRanking(), (d) => { fundRanking.value = d }),
     reg('swSectors', () => api.getSwSectors(), (d) => { swSectors.value = d }),
+    reg('fearGreed', async () => {
+      const [latestRes, historyRes] = await Promise.all([
+        api.getFearGreedLatest(),
+        api.getFearGreedHistory(90),
+      ])
+      return {
+        data: { latest: latestRes.data, history: historyRes.data || [] },
+        meta: latestRes.meta,
+      }
+    }, (d) => {
+      fearGreedLatest.value = d.latest
+      fearGreedHistory.value = d.history
+    }),
   ])
   sysLatency.value = Math.round(performance.now() - t0)
 }
@@ -173,7 +199,7 @@ async function refresh() {
   try {
     await fetchMacroData()
     if (hasData.value) {
-      message.success(`已刷新 ${broadValuations.value.length} 个宽基指数估值`)
+      message.success(`已刷新 ${indices.value.length} 个指数数据`)
     }
   } finally {
     refreshing.value = false
@@ -196,11 +222,29 @@ const dataSourceText = computed(() => {
   return real?.dataSource ?? '实时行情'
 })
 
-const erpColor = computed(() => {
-  if (!indicators.value) return 'var(--color-danger)'
-  if (indicators.value.erp_percentile_3y > 80) return 'var(--color-success)'
-  if (indicators.value.erp_percentile_3y > 50) return 'var(--color-warning)'
-  return 'var(--color-danger)'
+// ERP 股债利差 3年分位：按全局"分位越高色温越高"标准机械映射（高分位=红）。
+// 注：ERP 分位越高=市场越便宜=越好，但视觉上仍显红，属一致性映射，不在此反转。
+const erpColor = computed(() => (indicators.value ? pctColor(indicators.value.erp_percentile_3y) : '#8b919e'))
+
+const filteredIndices = computed(() =>
+  indices.value.filter(idx => idx.market === activeMarket.value)
+)
+
+const marketStats = computed(() => {
+  const list = indices.value.filter(idx => idx.market === activeMarket.value)
+  if (list.length === 0) return null
+  // 仅对具备估值数据的指数求均值（科创板/科创50/中证A500 暂无估值，跳过）
+  const valued = list.filter(idx => idx.hasValuation !== false && idx.pe != null && idx.pb != null)
+  const undervalued = list.filter(idx => idx.category === 'undervalued').length
+  const overvalued = list.filter(idx => idx.category === 'overvalued').length
+  // 无任何具备估值的指数时均值置 null（模板显示"—"），不用 ||1 兜底制造假的 0.0
+  const avgPE = valued.length
+    ? (valued.reduce((sum, idx) => sum + (idx.pe ?? 0), 0) / valued.length).toFixed(1)
+    : null
+  const avgPB = valued.length
+    ? (valued.reduce((sum, idx) => sum + (idx.pb ?? 0), 0) / valued.length).toFixed(2)
+    : null
+  return { avgPE, avgPB, undervalued, overvalued, total: list.length }
 })
 
 // 真实派生指标（取代原硬编码的 35% / 1,242 / 428 / 112 / 12ms）
@@ -213,33 +257,145 @@ const marketHeat = computed(() => {
   return total > 0 ? Math.round((ov.upCount / total) * 100) : 0
 })
 
-const indicesTotal = computed(() => broadValuations.value.length)
+const indicesTotal = computed(() => indices.value.length)
 
-// 低估/高估：基于宽基指数本地 PE/PB 历史分位（可靠源，非已下线网关 index_valuation）。
-// 规则：min(PE分位, PB分位) < 30 视为低估；max(PE分位, PB分位) > 70 视为高估；
-// 分位缺失（历史样本不足）的指数不计入，避免失真。
 const undervaluedCount = computed(() =>
-  broadValuations.value.filter((v) => {
-    const pe = v.pe_percentile
-    const pb = v.pb_percentile
-    if (pe == null && pb == null) return false
-    return Math.min(pe ?? 101, pb ?? 101) < 30
-  }).length
+  indices.value.filter(i => i.category === 'undervalued' || i.category === 'opportunity').length
 )
 const overvaluedCount = computed(() =>
-  broadValuations.value.filter((v) => {
-    const pe = v.pe_percentile
-    const pb = v.pb_percentile
-    if (pe == null && pb == null) return false
-    return Math.max(pe ?? -1, pb ?? -1) > 70
-  }).length
+  indices.value.filter(i => i.category === 'overvalued').length
 )
+
+// 指数估值区数据时间：优先展示真实数据日期（行情快照 + 估值快照），
+// 二者都缺失时才回退到接口响应时间（updateTime 是后端响应时刻，并非数据时刻）
+const indicesUpdateMeta = computed(() => {
+  const src = sectionSources.value.indices
+  const time = src?.updateTime || src?.mockTime
+  const dataDate = indices.value.find(i => i.valuation_date)?.valuation_date
+  const peAsOf = indices.value.find(i => i.pe_as_of)?.pe_as_of
+  const parts: string[] = []
+  if (dataDate) parts.push(`行情 ${dataDate}`)
+  if (peAsOf) parts.push(`估值快照 ${peAsOf}`)
+  if (parts.length > 0) return parts.join(' · ')
+  return time ? `Last update: ${time}` : 'Last update: —'
+})
 
 // 宏观指标区是否有有效数据：空对象/无关键利率数据时不渲染4个指标卡片
 const hasIndicatorsData = computed(() => {
   return !!indicators.value && Object.keys(indicators.value).length > 0 &&
     (indicators.value.erp !== undefined || indicators.value.dr007 !== undefined || indicators.value.gc001 !== undefined)
 })
+
+// CATEGORY 估值分类本地化（后端返回 undervalued/overvalued/normal/opportunity）
+const CATEGORY_LABEL: Record<string, string> = {
+  undervalued: '低估',
+  opportunity: '极度低估',
+  normal: '正常',
+  overvalued: '高估',
+  unknown: '—',
+}
+
+const columns = [
+  { title: 'INDEX NAME', key: 'name', width: 160, render: (row: any) => row.name },
+  { title: 'LEVEL', key: 'level', width: 100, align: 'right' as const,
+    // ⚠️ 判空：上游降级 / 字段缺失时 level 可能为 undefined，`undefined.toLocaleString()` 会抛
+    render: (row: any) => (row.level == null ? '—' : Number(row.level).toLocaleString()) },
+  { title: 'CHG%', key: 'change_pct', width: 90, align: 'right' as const,
+    render: (row: any) => {
+      // ⚠️ 上游 `index_realtime_sw` 超时/挂掉时，后端会降级返回**只有估值、没有涨跌幅**
+      //   的数据（price / change_pct 为 null，后端 2026-08 新增的兜底）。
+      //   这里**必须显式判空**——直接 `.toFixed()` 会在 null 上抛 TypeError **整页白屏**。
+      const v = row.change_pct
+      if (v == null || Number.isNaN(Number(v))) {
+        return h('span', { style: { color: 'var(--text-tertiary)' } }, '—')
+      }
+      // 涨红跌绿（A股惯例，与全站其余面板一致）
+      const color = v >= 0 ? 'var(--color-danger)' : 'var(--color-success)'
+      return h('span', { style: { color } },
+        `${v >= 0 ? '+' : ''}${Number(v).toFixed(2)}%`)
+    },
+  },
+  { title: titleWithHelp('PE PERCENTILE', 'pe_percentile'), key: 'pe_percentile', width: 130, align: 'center' as const,
+    render: (row: any) =>
+      row.hasValuation === false || row.pe_percentile == null
+        ? h('span', { class: 'percentile-label' }, '—')
+        : h('div', { class: 'percentile-cell' }, [
+            h('div', { class: 'percentile-track' }, [
+              h('div', { class: 'percentile-needle', style: { left: `${row.pe_percentile}%`, background: pctColor(row.pe_percentile) } }),
+            ]),
+            h('span', { class: 'percentile-label', style: { color: pctColor(row.pe_percentile) } }, `${row.pe_percentile}%`),
+          ]),
+  },
+  { title: titleWithHelp('PB PERCENTILE', 'pb_percentile'), key: 'pb_percentile', width: 130, align: 'center' as const,
+    render: (row: any) =>
+      row.hasValuation === false || row.pb_percentile == null
+        ? h('span', { class: 'percentile-label' }, '—')
+        : h('div', { class: 'percentile-cell' }, [
+            h('div', { class: 'percentile-track' }, [
+              h('div', { class: 'percentile-needle', style: { left: `${row.pb_percentile}%`, background: pctColor(row.pb_percentile) } }),
+            ]),
+            h('span', { class: 'percentile-label', style: { color: pctColor(row.pb_percentile) } }, `${row.pb_percentile}%`),
+          ]),
+  },
+  { title: 'CATEGORY', key: 'category', width: 120,
+    render: (row: any) => {
+      // 高分红类指数（上证红利/深证红利等）PE 分位触顶多因基数极低（盈利上行期 PE 仍翻倍），
+      // 绝对 PE < 12 时软化为「高估·PE绝对低」橙色警示，避免一律标红误导（2026-10-13）
+      if (row.category === 'overvalued' && row.pe != null && Number(row.pe) < 12) {
+        return h('span', { class: ['category-tag', 'overvalued-soft'] }, '高估·PE绝对低')
+      }
+      return h('span', { class: ['category-tag', row.category] }, CATEGORY_LABEL[row.category] ?? row.category)
+    },
+  },
+  { title: titleWithHelp('近3月涨跌', 'change_3m_pct'), key: 'change_3m_pct', width: 110, align: 'right' as const,
+    render: (row: any) => {
+      // ⚠️ 同 CHG%：上游降级时可能为 null，必须判空（否则整页白屏）
+      const v = row.change_3m_pct
+      if (v == null || Number.isNaN(Number(v))) {
+        return h('span', { style: { color: 'var(--text-tertiary)' } }, '—')
+      }
+      const color = v >= 0 ? 'var(--color-danger)' : 'var(--color-success)'
+      return h('span', { style: { color } },
+        `${v >= 0 ? '+' : ''}${Number(v).toFixed(2)}%`)
+    },
+  },
+  { title: titleWithHelp('近1年涨跌', 'change_1y_pct'), key: 'change_1y_pct', width: 110, align: 'right' as const,
+    render: (row: any) => {
+      // 同口径 PB/PE 历史序列月度桶实算（替代原 win_rate——250日上涨日占比恒≈50% 无区分度）；
+      // ⚠️ 判空：无历史序列的指数（科创综指）为 null，直接 toFixed 会抛
+      const v = row.change_1y_pct
+      if (v == null || Number.isNaN(Number(v))) {
+        return h('span', { style: { color: 'var(--text-tertiary)' } }, '—')
+      }
+      const color = v >= 0 ? 'var(--color-danger)' : 'var(--color-success)'
+      return h('span', { style: { color } },
+        `${v >= 0 ? '+' : ''}${Number(v).toFixed(2)}%`)
+    },
+  },
+  { title: titleWithHelp('估值胜率', 'win_rate'), key: 'win_rate', width: 100, align: 'center' as const,
+    render: (row: any) => {
+      // 条件胜率：历史上与当前 PE 相当(±10%)的月份持有 3 个月的正收益占比（同口径月度序列实算）；
+      // ⚠️ 判空：无历史序列 / 可比样本<10 个月（科创综指等）为 null
+      const v = row.win_rate
+      if (v == null || Number.isNaN(Number(v))) {
+        return h('span', { style: { color: 'var(--text-tertiary)' } }, '—')
+      }
+      // >60% 历史统计有利（蓝），<40% 谨慎（橙），中间默认色
+      const style: Record<string, string> = { fontWeight: '700' }
+      if (v >= 60) style.color = 'var(--tag-blue-text)'
+      else if (v < 40) style.color = 'var(--tag-orange-text)'
+      return h('span', { style }, `${Number(v).toFixed(1)}%`)
+    },
+  },
+]
+
+function handleCheckedChange(keys: (string | number)[]) {
+  if (keys.length === 0) return
+  const names = indices.value
+    .filter(idx => keys.includes(idx.name))
+    .map(idx => idx.name)
+  message.info(`已选 ${keys.length} 个指数: ${names.join(', ')}`)
+}
 </script>
 
 <template>
@@ -284,6 +440,18 @@ const hasIndicatorsData = computed(() => {
       <SectionSkeleton v-if="sectionLoading.overview" key="skeleton" variant="overview" />
       <MarketOverview v-else-if="marketOverview" key="content" :overview="marketOverview" />
       <SectionFallback v-else key="fallback" :error="sectionError.overview ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.overview?.isMock && sectionSources.overview?.gatewayEmpty" :min-height="200" @retry="retrySection('overview')" />
+    </Transition>
+
+    <!-- 贪婪恐惧指数（情绪温度计；完整口径/历史见详情页 /fear-greed） -->
+    <Transition name="fade" mode="out-in">
+      <SectionSkeleton v-if="sectionLoading.fearGreed" key="skeleton" variant="card" :rows="4" />
+      <FearGreedPanel
+        v-else-if="fearGreedLatest"
+        key="content"
+        :latest="fearGreedLatest"
+        :history="fearGreedHistory"
+      />
+      <SectionFallback v-else key="fallback" :error="sectionError.fearGreed ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.fearGreed?.isMock && sectionSources.fearGreed?.gatewayEmpty" :min-height="160" @retry="retrySection('fearGreed')" />
     </Transition>
 
     <!-- 新布局：板块 + 资金 + 涨跌停 + 龙虎榜 -->
@@ -351,17 +519,36 @@ const hasIndicatorsData = computed(() => {
       <SectionFallback v-else key="fallback" :error="sectionError.swSectors ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.swSectors?.isMock && sectionSources.swSectors?.gatewayEmpty" :min-height="160" @retry="retrySection('swSectors')" />
     </Transition>
 
-    <!-- 宏观指标（ERP/利率/市场热度，默认收起） -->
+    <!-- 跨市场指数估值（默认收起） -->
     <div class="market-valuation-section">
       <div class="section-header" @click="valuationCollapsed = !valuationCollapsed" :class="{ collapsed: valuationCollapsed }">
         <h3 class="section-title">
-          宏观指标
+          跨市场指数估值
           <n-icon :component="valuationCollapsed ? ChevronDownOutline : ChevronUpOutline" size="18" class="section-chevron" />
         </h3>
+        <div v-if="marketStats && !valuationCollapsed" class="market-stats">
+          <span class="stat-item">平均PE: {{ marketStats.avgPE ?? '—' }}</span>
+          <span class="stat-item">平均PB: {{ marketStats.avgPB ?? '—' }}</span>
+          <span class="stat-item undervalued">低估: {{ marketStats.undervalued }}</span>
+          <span class="stat-item overvalued">高估: {{ marketStats.overvalued }}</span>
+        </div>
       </div>
       
       <div v-show="!valuationCollapsed">
-      <!-- ERP & Rate Cards（骨架屏 ↔ 内容平滑过渡） -->
+      <n-tabs v-model:value="activeMarket" type="segment" class="market-tabs">
+        <n-tab-pane name="a_share" tab="A股">
+          <div class="market-description">中国A股市场主要宽基指数</div>
+        </n-tab-pane>
+        <n-tab-pane name="hk" tab="港股">
+          <div class="market-description">香港股市主要指数</div>
+        </n-tab-pane>
+        <n-tab-pane name="us" tab="美股">
+          <div class="market-description">美国股市主要指数</div>
+        </n-tab-pane>
+      </n-tabs>
+
+      <!-- ERP & Rate Cards (仅A股显示，骨架屏 ↔ 内容平滑过渡) -->
+      <div v-if="activeMarket === 'a_share'">
         <Transition name="fade" mode="out-in">
           <SectionSkeleton v-if="sectionLoading.indicators" key="skeleton" variant="metric" />
           <div v-else-if="hasIndicatorsData" key="content" class="metric-grid">
@@ -413,10 +600,28 @@ const hasIndicatorsData = computed(() => {
           <SectionFallback v-else key="fallback" :error="sectionError.indicators ? '加载失败，请点击重试' : null" :min-height="120" @retry="retrySection('indicators')" />
         </Transition>
       </div>
-    </div>
 
-    <!-- A股行业热力图趋势（每日行业涨跌幅排名，本地快照累积） -->
-    <SwRankTrend />
+      <!-- Index Valuation Table -->
+      <DataPanel :title="`${activeMarket === 'a_share' ? 'A股' : activeMarket === 'hk' ? '港股' : '美股'}指数估值`" :meta="indicesUpdateMeta">
+        <Transition name="fade" mode="out-in">
+          <SectionSkeleton v-if="sectionLoading.indices" key="skeleton" variant="table" :rows="6" />
+          <n-data-table
+            v-else-if="filteredIndices.length > 0"
+            key="content"
+            :columns="columns"
+          :data="filteredIndices"
+          :row-key="(row: any) => row.name"
+          :bordered="false"
+          :single-line="false"
+          size="small"
+          :row-class-name="() => 'data-row'"
+          @update:checked-row-keys="handleCheckedChange"
+          />
+          <SectionFallback v-else key="fallback" :error="sectionError.indices ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.indicators?.isMock && sectionSources.indicators?.gatewayEmpty" :min-height="240" :empty-text="filteredIndices.length === 0 ? '当前市场暂无指数数据' : '暂无数据'" @retry="retrySection('indices')" />
+        </Transition>
+      </DataPanel>
+      </div>
+    </div>
 
     <!-- Bottom Stats -->
     <div class="bottom-stats">
@@ -434,12 +639,12 @@ const hasIndicatorsData = computed(() => {
         <span class="stat-value">{{ indicesTotal }}</span>
       </div>
       <div class="stat-divider" />
-      <div class="stat-item" title="宽基指数中 PE/PB 历史分位（本地2005年起）较小者 < 30 的数量">
+      <div class="stat-item">
         <span class="stat-label text-blue">低估</span>
         <span class="stat-value text-blue">{{ undervaluedCount }}</span>
       </div>
       <div class="stat-divider" />
-      <div class="stat-item" title="宽基指数中 PE/PB 历史分位（本地2005年起）较大者 > 70 的数量">
+      <div class="stat-item">
         <span class="stat-label text-red">高估</span>
         <span class="stat-value text-red">{{ overvaluedCount }}</span>
       </div>
@@ -450,6 +655,67 @@ const hasIndicatorsData = computed(() => {
     </div>
   </div>
 </template>
+
+<!-- Global styles for h()-rendered table cells (not scoped so VNodes get the styles) -->
+<style>
+.percentile-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.percentile-track {
+  width: 80px;
+  height: 4px;
+  background: var(--border-default);
+  border-radius: 2px;
+  position: relative;
+}
+
+.percentile-needle {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 10px;
+  background: var(--color-primary);
+  border-radius: 1px;
+  transition: left 0.3s ease;
+}
+
+.percentile-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.category-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 2px;
+  font-family: 'Work Sans', sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+}
+.category-tag.undervalued,
+.category-tag.opportunity {
+  background: var(--tag-blue-bg);
+  color: var(--tag-blue-text);
+}
+.category-tag.normal {
+  background: var(--tag-gray-bg);
+  color: var(--tag-gray-text);
+}
+.category-tag.overvalued {
+  background: var(--tag-red-bg);
+  color: var(--tag-red-text);
+}
+/* 高分红类指数：分位触顶但绝对 PE 仍低（<12），软化为橙色警示而非红色高估 */
+.category-tag.overvalued-soft {
+  background: var(--tag-orange-bg);
+  color: var(--tag-orange-text);
+}
+</style>
 
 <style scoped>
 .dashboard-page {

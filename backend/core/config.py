@@ -7,6 +7,10 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "database" / "quantterminal.duckdb"))
 
+# 业务/事务（biz_*）数据专用 SQLite 库，与列存 OLAP 的 DuckDB（base_* 行情/估值）分离。
+# 默认放在与 DuckDB 同目录（容器里即 /data 持久卷），可通过环境变量 BIZ_DB_PATH 覆盖。
+BIZ_DB_PATH = os.getenv("BIZ_DB_PATH", str(Path(DB_PATH).parent / "quantterminal_biz.sqlite"))
+
 JWT_SECRET = os.getenv("JWT_SECRET", "quantterminal-secret-key-change-in-production")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "24"))

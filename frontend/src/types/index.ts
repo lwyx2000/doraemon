@@ -37,6 +37,14 @@ export interface AdminResetPasswordResponse {
 export interface DataSourceStatus {
   akshareConnected: boolean
   jisiluLoggedIn: boolean
+  /** 上游细分状态：no_cookie（未配置）/ cookie_invalid（已失效）/ logged_in */
+  jisiluStatus?: string | null
+  /** 上游给的中文说明 */
+  jisiluMessage?: string | null
+  /** 是否已配置 cookie（区分「没配」与「过期」） */
+  jisiluHasCookie?: boolean | null
+  /** 上游是否支持动态登录（支持则无需人工刷新） */
+  jisiluCanDynamicLogin?: boolean | null
   timestamp: string
 }
 
@@ -125,17 +133,25 @@ export interface MonitorDashboard {
 export interface IndexValuation {
   name: string
   code: string
-  level: number
-  change_pct: number
+  // 上游行情缺失时为 null（显示"—"），与后端 models.IndexValuation 一致
+  level: number | null
+  change_pct: number | null
   pe: number | null
   pb: number | null
   pe_percentile: number | null
   pb_percentile: number | null
   category: 'undervalued' | 'normal' | 'overvalued' | 'opportunity' | 'unknown'
-  change_3m_pct: number
-  win_rate: number
+  change_3m_pct: number | null
+  /** 条件胜率（±10% PE 区间持有 3 个月正收益占比），后端同口径实算；样本不足或无历史序列时为 null */
+  win_rate: number | null
+  /** 近1年涨跌幅（%）：同口径 PB/PE 历史序列月度桶实算，替代 win_rate 列 */
+  change_1y_pct?: number | null
   hasValuation?: boolean
   market: 'a_share' | 'hk' | 'us'
+  /** 上游行情快照日期（YYYY-MM-DD），如 2026-10-13 */
+  valuation_date?: string | null
+  /** PE/PB 历史快照日期（YYYY-MM-DD，每日 18:35 写入），分位即基于该序列 */
+  pe_as_of?: string | null
 }
 
 // 指数估值历史序列点（乐咕乐股真实数据，PE TTM / PB）
@@ -439,6 +455,17 @@ export interface EtfFund {
   val_category?: 'undervalued' | 'normal' | 'overvalued' | null
   dividend_rate?: number | null
   change_pct?: number
+  // 申赎 / 费率（后端新列：麦蕊日度快照 + 本地费率库）
+  nav_date?: string | null              // 净值披露日期
+  share?: number | null                 // 最新份额(亿份)
+  scale?: number | null                 // 最新规模(亿元)
+  mgmt_fee?: number | null              // 管理费率(%)
+  custody_fee?: number | null           // 托管费率(%)
+  subscribe_fee?: number | null         // 最高申购费率(%)
+  redemption_fee?: number | null        // 最高赎回费率(%)
+  net_subscribe_share?: number | null   // 日净申赎份额(亿份，正=净申购/流入)
+  net_subscribe_amount?: number | null  // 日净申赎额(亿元，正=净申购/流入)
+  net_subscribe_date?: string | null    // 快照截止日期
 }
 
 
@@ -672,6 +699,23 @@ export interface HoldingSnapshot {
   created_at: string
 }
 
+// 历史持仓（已平仓，从「当前持仓」删除动作归档而来）
+export interface HoldingHistory {
+  id: string
+  code: string
+  name: string
+  type: HoldingType
+  broker: string
+  account: string
+  quantity: number
+  cost_price: number
+  close_price: number | null
+  realized_pnl: number | null
+  open_date: string | null
+  currency: string
+  closed_at: string | null
+}
+
 // 宏观指标（/api/v1/market/macro/indicators）
 export interface MacroIndicators {
   erp: number
@@ -807,6 +851,46 @@ export interface DTStock {
   marketCap: number
   continuousDt: number
   industry: string
+}
+
+// 贪婪恐惧指数（Fear & Greed Index）：6 指标 min-max 加权情绪温度计
+// 计分：上涨占比 0.25 + 涨停(剔ST) 0.20 + 指数距52周高点 0.15 + 量能比 0.20
+//       + 融资余额20日变化 0.10 + (100 − 波动率得分) 0.10；缺失分项按权重归一化
+export interface FearGreedPoint {
+  date: string
+  // 原始指标
+  rawAdvanceRatio: number | null // 上涨家数占比（0-1）
+  rawLimitUp: number | null // 涨停家数（剔 ST）
+  rawPosition: number | null // 上证指数距 52 周高点（%）
+  rawTurnoverRatio: number | null // 量能比：当日成交额 ÷ 20 日均
+  rawMarginChg20: number | null // 沪市融资余额 20 日变化率（%）
+  rawVol20: number | null // 上证指数 20 日年化波动率（%）
+  // 分项得分（0-100，波动率已反向）
+  advance: number | null
+  limitUp: number | null
+  position: number | null
+  turnover: number | null
+  margin: number | null
+  vol: number | null
+  totalScore: number | null // 恐贪总值（缺失分项按权重归一化）
+  componentsUsed: number // 参与合计的分项数（<6 即回填近似日）
+  source: string | null // live=定时采集 / backfill=历史回填
+  capturedAt: string | null
+}
+
+export interface FearGreedLatest extends FearGreedPoint {
+  label?: string // 档位：极度恐慌 / 均衡 / 极度贪婪
+}
+
+export interface FearGreedStatus {
+  rows: number
+  firstDate: string | null
+  lastDate: string | null
+  scheduler?: {
+    running: boolean
+    collectTime: string
+    backfill: { running: boolean }
+  }
 }
 
 // 龙虎榜数据（useMarketData 使用）
@@ -1109,6 +1193,220 @@ export interface TrackedLibrary {
   current_holding?: HoldingSuggestion | null
   curve?: { date: string[]; strategy_nav: number[]; benchmark_nav: number[] }
   history?: { date: string; cum_return_pct?: number; excess_pct?: number; max_drawdown_pct?: number; avg_double_low?: number }[]
+}
+
+// ===================== 红利策略研究（红利基金研究页） =====================
+export interface DividendSignal {
+  action: 'add' | 'hold_low' | 'hold' | 'stop' | 'reduce'
+  label: string
+  color: string
+  reason: string
+}
+
+export interface DividendIndexMetric {
+  code: string
+  name: string
+  pe: number | null
+  pe_date: string | null
+  pe_percentile: number | null
+  pe_min: number | null
+  pe_max: number | null
+  pe_p25: number | null
+  pe_median: number | null
+  pe_p75: number | null
+  window_days: number | null
+  window_start: string | null
+  /** PE 数据陈旧标记：中证接口不可用，PE 沿用本地序列最后一期 */
+  pe_stale: boolean
+  dividend_yield: number | null
+  dy_date: string | null
+  dy_stale: boolean
+  yield_10y: number | null
+  eb_ratio: number | null
+  dy_spread: number | null
+  signals: { eb: DividendSignal | null; pe: DividendSignal | null; dy: DividendSignal | null }
+  conflict: boolean
+  pe_series: { date: string; pe: number | null }[]
+}
+
+export interface DividendFund {
+  code: string
+  name: string
+  type: string
+  market: string
+  share_class: string
+  index_code: string | null
+  index_name: string | null
+  pe: number | null
+  pe_percentile: number | null
+  dividend_yield: number | null
+  eb_ratio: number | null
+  signals: DividendIndexMetric['signals'] | null
+  // 规模 / 费率：由 fund_fee_service 后台渐进补全（同花顺 fund_info_ths，落 DuckDB）
+  scale: number | null
+  scale_date: string | null
+  mgmt_fee: number | null
+  custody_fee: number | null
+  subscribe_fee: number | null
+  manager: string | null
+  /** 识别不上时它实际跟踪的指数原文（如「标普中国A股红利机会指数收益率」），用于说明留空原因 */
+  tracking_text?: string | null
+  // 三类补充指标（fund_extra_metrics_service 后台渐进补全，落 DuckDB）
+  tracking_error: number | null
+  tracking_error_n?: number | null
+  payout_freq: number | null
+  sector_concentration: number | null
+  sector_count?: number | null
+  /** 现金流线专用：股息率拿不到时，后端给出的具体原因（前端据此显示「为什么是 —」） */
+  dy_reason?: string | null
+  dy_date?: string | null
+  /** 现金流线专用：指数 PE 的估值日期（红利的同名指标也用它提示新鲜度） */
+  pe_date?: string | null
+}
+
+export interface DividendFeeProgress {
+  filled: number
+  total: number
+  running: boolean
+  round_done: number
+  round_total: number
+  ok: number
+  fail: number
+  skipped: number
+  rounds: number
+  started_at: string | null
+  finished_at: string | null
+  last_error: string | null
+  /** 上一轮是否因疑似限流而中止 */
+  throttled: boolean
+  /** 连续被限流中止的次数 */
+  throttle_streak: number
+  /** 下一次自动续跑还需等待的小时数（0 = 无需等待） */
+  retry_in_hours: number
+  /** 永久失败、后台不再重试的基金只数（上游彻底无数据等不可恢复原因） */
+  perm_failed: number
+}
+
+/**
+ * 现金流基金名录（独立一条线，2026-10-07 用户拍板「单开 Tab」）。
+ * 复用 DividendFund 字段结构：规模/费率同样是后台补全列位（当前未纳入补全清单，显示 —）。
+ */
+export interface CashflowOverview {
+  /** ⚠️ 只吐 etf（场内 ETF）：场外 A/C/E 份额不进这条线（2026-10-07 用户拍板「只要场内」） */
+  funds: { etf: DividendFund[] }
+  counts: {
+    etf: number
+    /** 已回填到真实跟踪指数的不同指数个数（中证 932365/932366/932367/932368/932369 + 国证 980092） */
+    index: number
+    /** 拿到官方 PE 估值的指数个数（只有中证那 5 个；国证 / 富时两个源都不覆盖） */
+    index_valued: number
+    excluded: number
+    excluded_detail: Record<string, number>
+  }
+  /**
+   * 现金流指数估值（2026-10-07 用户拍板「要补估值」）。
+   * 只有 PE 一路：中证官方「滚动市盈率」（随指数日频发布）。
+   * ⚠️ 股息率恒 None——现金流类不是股息导向，中证不披露官方股息率，且官方估值接口当前不可用。
+   */
+  indices: DividendIndexMetric[]
+  /** 估值源覆盖不到的指数 → 带 reason，前端照着解释「为什么没有」，不假填数 */
+  no_data_indices: { code: string; name: string; reason: string }[]
+  yield_10y: number | null
+  /** 口径说明原文本，前端 Tab 顶部直接展示，避免被当成官方编制 */
+  gate: string
+  updated_at: string
+  /** 指数估值的更新时间（与名录各自独立缓存，分开展示） */
+  index_updated_at: string
+  fee_progress: DividendFeeProgress | null
+  extra_progress: DividendFeeProgress | null
+}
+
+/** 中证官方指数信息（编制说明 / 简称全称 / 调样频率），null = 中证取数失败，不 mock */
+export interface DividendIndexCompilation {
+  code: string
+  name: string | null
+  full_name: string | null
+  desc: string | null
+  adj_freq: string | null
+  weighting: string | null
+  compliance: string | null
+  fetched_at: string | null
+}
+
+/** 点指数行弹窗：跟踪该指数的场内/场外基金 + 编制说明 + 代表基金业绩比较基准 */
+export interface DividendIndexFunds {
+  code: string
+  name: string | null
+  pe: number | null
+  pe_percentile: number | null
+  dividend_yield: number | null
+  eb_ratio: number | null
+  signals: DividendIndexMetric['signals'] | null
+  compilation: DividendIndexCompilation | null
+  benchmark_samples: { code: string; name: string | null; benchmark: string }[]
+  funds: { onshore: DividendFund[]; offshore: DividendFund[] }
+  counts: { onshore: number; offshore: number; total: number }
+}
+
+/** 「业绩比较基准 → 跟踪指数」识别进度 */
+export interface DividendIndexMapProgress {
+  ok: boolean
+  matched: number
+  this_round: number
+  throttled: boolean
+  retry_in_hours: number
+}
+
+/** 单只红利基金的季报持仓（东财 fund_portfolio_hold_em，T-1 季度口径） */
+export interface DividendFundHoldings {
+  code: string
+  quarter: string | null
+  source: string | null
+  stock_count: number
+  row_count: number
+  fetched_at: string | null
+  stale: boolean
+  rows: {
+    stock_code: string
+    stock_name: string | null
+    pct: number | null
+    shares: number | null
+    mv: number | null
+    quarter: string | null
+    seq: number | null
+  }[]
+}
+
+export interface DividendOverview {
+  updated_at: string
+  yield_10y: number | null
+  yield_10y_date: string | null
+  indices: DividendIndexMetric[]
+  funds: { etf: DividendFund[]; passive: DividendFund[]; active: DividendFund[] }
+  fee_progress: DividendFeeProgress | null
+  extra_progress: DividendFeeProgress | null
+  counts: {
+    etf: number
+    passive: number
+    /** ⚠️ 名录口径（2026-10-06）：纯债/主动不进名录，该桶恒为 0 */
+    active: number
+    index: number
+    /** 被闸门剔除的只数合计（不含「名字不命中红利关键词」的全市场其余基金） */
+    excluded: number
+    /** 剔除明细：non_passive=主动 / bond=纯债 / money=货币 / no_name_hit=名字不命中 */
+    excluded_detail: { non_passive: number; bond: number; money: number; no_name_hit: number }
+  }
+  thresholds: {
+    eb_add: number
+    eb_low: number
+    eb_risk: number
+    pe_reduce: number
+    pe_stop: number
+    pe_add: number
+    dy_hold: number
+    dy_stop: number
+  } | null
+  pending_fields: string[]
 }
 
 // ===================== 后台任务监控（任务监控页） =====================

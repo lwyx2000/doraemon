@@ -41,6 +41,10 @@ function logout() {
   localStorage.removeItem(USER_KEY)
   localStorage.removeItem(IS_ADMIN_KEY)
   localStorage.removeItem(FORCE_CHANGE_KEY)
+  // 收口跳转：清空本地状态后直接跳登录页（避免各调用点遗漏 / SPA 守卫边缘情况）。
+  // 用整页导航而非 router.push，规避 useAuth 与 router 的循环依赖；
+  // 未登录访问非 public 路由时守卫也会兜底 302 到 /login。
+  window.location.href = '/login'
 }
 
 async function login(uname: string, pwd: string) {

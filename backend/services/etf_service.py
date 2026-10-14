@@ -57,6 +57,44 @@ def _map_etf(item: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def get_all_etf_codes() -> list[str]:
+    """ETF 全量代码（供后台费率补全任务拉取目标集）。"""
+    raw = _fetch_etf_raw()
+    if not raw:
+        return []
+    codes: list[str] = []
+    for item in raw:
+        code = str(_pick(item, "代码", "基金代码", default=""))
+        if code:
+            codes.append(code)
+    return codes
+
+
+def _attach_fee_info(etfs: list[dict]) -> None:
+    """把已落库的费率/规模写回 ETF 条目，并顺手触发一轮后台费率补全（auto 受冷却限制）。
+
+    复用 ``fund_fee_service``（与红利基金同库 base_fund_fee_info），ETF 费率经
+    ``start_fill(etf_codes)`` 渐进补全；不调用 ``attach_fees``（那会污染红利补全队列）。
+    """
+    if not etfs:
+        return
+    from services.fund_fee_service import get_fee_map, start_fill
+
+    codes = [str(e.get("code")) for e in etfs if e.get("code")]
+    if not codes:
+        return
+    fee_map = get_fee_map(codes)
+    for e in etfs:
+        f = fee_map.get(str(e.get("code")))
+        if f:
+            e["mgmt_fee"] = f.get("mgmt_fee")
+            e["custody_fee"] = f.get("custody_fee")
+            e["subscribe_fee"] = f.get("subscribe_fee")
+            e["redemption_fee"] = f.get("redemption_fee")
+    # 顺手补一批缺口（auto 受 10min 冷却限制，不会每次刷新都打上游）
+    start_fill(codes, auto=True)
+
+
 def _fetch_etf_raw() -> list[dict] | None:
     """拉取 ETF 原始数据：53 fund_rank(etf)（fund_etf_spot_em 在 53 上长期 500，弃用）。"""
     raw = _processed_data_request("fund_rank", {"subtype": "etf"}, retries=2)
@@ -92,6 +130,11 @@ def get_etfs(
         item = {**etf, "arbitrage_analysis": analysis}
         result.append(item)
 
+    # 附加份额/规模/每日净申赎（麦蕊日度快照）+ 费率（本地库定时补全）
+    from services.etf_subscription_service import attach_subscription
+
+    attach_subscription(result)
+    _attach_fee_info(result)
     return result
 
 
@@ -118,4 +161,9 @@ def get_etf_arbitrage_opportunities() -> list[dict]:
             -x["arbitrage_analysis"]["net_yield_after_costs"],
         )
     )
+    # 附加份额/规模/每日净申赎 + 费率
+    from services.etf_subscription_service import attach_subscription
+
+    attach_subscription(result)
+    _attach_fee_info(result)
     return result

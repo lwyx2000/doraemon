@@ -22,6 +22,13 @@ export const glossaryByPage: Record<string, GlossaryItem[]> = {
     { abbr: 'PE', full: 'Price to Earnings Ratio', cn: '市盈率，股价/每股收益，衡量估值高低' },
     { abbr: 'PB', full: 'Price to Book Ratio', cn: '市净率，股价/每股净资产，适合重资产行业' },
   ],
+  indexAnalysis: [
+    { abbr: 'PE', full: 'Price to Earnings Ratio', cn: '市盈率，股价/每股收益，衡量估值高低' },
+    { abbr: 'PB', full: 'Price to Book Ratio', cn: '市净率，股价/每股净资产，适合重资产行业' },
+    { abbr: 'ERP', full: 'Equity Risk Premium', cn: '股权风险溢价，股票收益率减无风险利率' },
+    { abbr: 'DR007', full: 'Depository Institutions 7-Day Repo Rate', cn: '银行间7天质押式回购利率' },
+    { abbr: 'TTM', full: 'Trailing Twelve Months', cn: '滚动十二个月，指最近4个季度的财务数据' },
+  ],
   indexValuation: [
     { abbr: 'PE', full: 'Price to Earnings Ratio', cn: '市盈率，股价/每股收益，衡量估值高低（越高越贵）' },
     { abbr: 'PB', full: 'Price to Book Ratio', cn: '市净率，股价/每股净资产，重资产行业更看 PB' },
@@ -129,5 +136,12 @@ export const glossaryByPage: Record<string, GlossaryItem[]> = {
     { abbr: 'SGE', full: 'Shanghai Gold Exchange', cn: '上海黄金交易所，国内贵金属现货交易场所' },
     { abbr: 'Au99.99', full: '99.99% Purity Gold Spot', cn: '上海黄金交易所纯度99.99%黄金现货合约，报价单位元/克' },
     { abbr: 'Ag99.99', full: '99.99% Purity Silver Spot', cn: '上海黄金交易所纯度99.99%白银现货合约，原始报价元/千克' },
+  ],
+  fearGreed: [
+    { abbr: 'F&G', full: 'Fear & Greed Index', cn: '贪婪恐惧指数，0-100 的市场情绪温度计' },
+    { abbr: 'min-max', full: 'Min-Max Normalization', cn: 'min-max 归一化：把指标线性映射到 0-100（窗口=过去一年）' },
+    { abbr: '量能比', full: 'Turnover Ratio', cn: '当日成交额 ÷ 过去 20 日均成交额' },
+    { abbr: '两融', full: 'Margin Trading & Securities Lending', cn: '融资融券余额，融资余额上升代表加杠杆做多意愿强' },
+    { abbr: '年化波动率', full: 'Annualized Volatility', cn: '日收益率标准差 × √252，衡量近期波动剧烈程度' },
   ],
 }

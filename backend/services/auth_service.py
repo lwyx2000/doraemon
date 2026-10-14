@@ -22,7 +22,7 @@ from passlib.context import CryptContext
 
 from core.config import ADMIN_USERS
 from core.deps import create_access_token
-from database.connection import get_db
+from database.sqlite_connection import get_biz_db
 
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -53,7 +53,7 @@ def _is_admin(username: str) -> bool:
 
 def _fetch_user_fields(pk: str) -> Optional[dict]:
     """按 pk_user 取 (username, must_change_password, token_version)，不存在返回 None。"""
-    db = get_db()
+    db = get_biz_db()
     row = db.fetchone(
         "SELECT username, must_change_password, token_version "
         "FROM biz_users WHERE pk_user = ?",
@@ -75,26 +75,26 @@ def _generate_temp_password(length: int = 10) -> str:
 
 
 def _fetch_hash_by_username(username: str) -> str | None:
-    db = get_db()
+    db = get_biz_db()
     row = db.fetchone("SELECT password_hash FROM biz_users WHERE username = ?", [username])
     return row[0] if row else None
 
 
 def _fetch_pk(username: str) -> str | None:
     """username -> pk_user（UUID 字符串）。不存在返回 None。"""
-    db = get_db()
+    db = get_biz_db()
     row = db.fetchone("SELECT pk_user FROM biz_users WHERE username = ?", [username])
     return str(row[0]) if row and row[0] is not None else None
 
 
 def _fetch_hash_by_pk(pk: str) -> str | None:
-    db = get_db()
+    db = get_biz_db()
     row = db.fetchone("SELECT password_hash FROM biz_users WHERE pk_user = ?", [pk])
     return row[0] if row else None
 
 
 def _fetch_username_by_pk(pk: str) -> str | None:
-    db = get_db()
+    db = get_biz_db()
     row = db.fetchone("SELECT username FROM biz_users WHERE pk_user = ?", [pk])
     return row[0] if row else None
 
@@ -157,7 +157,7 @@ def register(username: str, password: str) -> dict:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="用户名仅限字母/数字/下划线，2-50 位")
     if _fetch_pk(username) is not None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="用户名已存在")
-    db = get_db()
+    db = get_biz_db()
     db.execute(
         "INSERT INTO biz_users (username, password_hash) VALUES (?, ?)",
         [username, _hash(password)],
@@ -185,7 +185,7 @@ def change_password(
     """
     if not new_password or len(new_password) < 6:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="新密码至少 6 位")
-    db = get_db()
+    db = get_biz_db()
     h = _fetch_hash_by_pk(user_pk)
     if h is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
@@ -229,7 +229,7 @@ def ensure_seed_users(db) -> None:
 
 def admin_list_users() -> list[dict]:
     """列出全部用户（不含密码哈希）。is_admin 由环境变量 ADMIN_USERS 决定。"""
-    db = get_db()
+    db = get_biz_db()
     rows = db.fetchall(
         "SELECT pk_user, username, must_change_password "
         "FROM biz_users ORDER BY pk_user"
@@ -252,7 +252,7 @@ def admin_reset_password(target_username: str, new_password: Optional[str] = Non
     - 重置后强制用户下次登录改密（must_change_password = TRUE）。
     - token_version + 1，使该用户所有已签发 token 立即失效（防旧 token 续用）。
     """
-    db = get_db()
+    db = get_biz_db()
     row = db.fetchone(
         "SELECT pk_user, token_version FROM biz_users WHERE username = ?",
         [target_username],

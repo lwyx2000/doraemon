@@ -1,7 +1,7 @@
 # QuantTerminal Pro — 项目技术文档
 
 > **量化终端 Pro — 套利交易分析平台**
-> 版本：1.0.0 | 最后更新：2026-10-03
+> 版本：1.0.0 | 最后更新：2026-08-15
 
 ---
 
@@ -167,7 +167,7 @@ frontend/src/
 │   └── PercentileIndicator.vue # 百分位指示器
 ├── composables/         # 组合式函数（8 个）
 │   ├── useApi.ts              # API 请求封装
-│   ├── useMockData.ts         # Mock 数据（历史遗留，已无任何页面引用）
+│   ├── useMockData.ts         # Mock 数据
 │   ├── useMarketData.ts       # 市场数据
 │   ├── useDarkMode.ts         # 暗色模式
 │   ├── useSidebar.ts          # 侧边栏状态
@@ -461,12 +461,11 @@ AI 报告生成 + 配置管理：
 
 ### 6.3 组合式函数
 
-- `useAsyncData<T>(fetcher)`：封装 API 调用，提供 `data`、`loading`、`error`、`meta`、`refresh` 响应式状态；**信封感知**——自动拆 `{data, meta}`，并暴露 `meta`（含 `isMock` / `gatewayEmpty`）供「网关无数据」等 UI 判定
+- `useAsyncData<T>(fetcher)`：封装 API 调用，提供 `data`、`loading`、`error`、`refresh` 响应式状态
+- `useAsyncMock<T>(mockData, delay)`：Mock 异步 composable，模拟网络延迟
 - `useMarketData()`：市场数据获取
 - `useDarkMode()`：暗色模式切换
 - `useSidebar()`：侧边栏状态管理（移动端开/关）
-
-> 注：`composables/useMockData.ts` 文件虽仍存在，但**已无任何页面引用**（历史遗留），前端当前不依赖任何 mock 数据 composable。
 
 ### 6.4 布局组件
 
@@ -559,23 +558,10 @@ python -m database.init_db --verify     # 仅验证现有 Schema
   "meta": {
     "isMock": false,
     "dataSource": "AkShare WebAPI (192.168.3.53:8000)",
-    "updateTime": "2026-08-15 14:30:00",
-    "gatewayEmpty": false,
-    "note": null
+    "updateTime": "2026-08-15 14:30:00"
   }
 }
 ```
-
-`meta` 字段说明：
-
-| 字段 | 类型 | 含义 |
-|------|------|------|
-| `isMock` | boolean | `true` = 后端处于 Mock 演示模式（仅 `USE_MOCK_DATA=true` 时为 true）；`false` = 真实数据 |
-| `dataSource` | string | 数据真实来源（如 AkShare WebAPI 地址、腾讯/东财行情源等） |
-| `updateTime` | string | 数据更新时间 |
-| `gatewayEmpty` | boolean | **仅真实模式下有意义**：上游网关本身未返回任何数据时为 `true`；若只是过滤/筛选后为空，则为 `false`（属正常空） |
-| `note` | string | 附加说明（如降级、冷却期、近似值提示） |
-| `stale` / `breakerOpen`（图表类） | boolean | 数据陈旧 / 熔断已开启（市场复盘图表专用） |
 
 ### 8.2 认证接口
 
@@ -720,16 +706,11 @@ python -m database.init_db --verify     # 仅验证现有 Schema
 
 系统严格遵循 **"真实优先、失败返回空"** 原则：
 
-1. **默认连接真实数据源**：`USE_MOCK_DATA=false`（默认），部署后看到的永远是真实数据，没有任何 mock 填充。
-2. **取数失败返回空/缺省结构**：绝不使用 mock 数据填充（仅 `USE_MOCK_DATA=true` 时使用）。
-3. **缺失字段返回 null**：不虚构数值（如 REITs 基本面字段、成交额等）。
-4. **近似值明确标注**：如可转债 YTM 近似估算标记 `ytm_approx=True`。
-5. **数据来源标记**：通过 `ApiResponse.meta` 返回 `isMock`、`dataSource`、`gatewayEmpty`、`note` 供前端展示与判定。
-6. **「网关无数据」与「正常空」严格区分**：
-   - `meta.gatewayEmpty === true`（且 `isMock === false`）→ 上游数据源本身没返回任何数据，前端对应分区/图表显示橙底「网关无数据」+ 重试按钮（如 LOF/封闭/ETF/可转债/REITs 列表、市场复盘单图）。
-   - `gatewayEmpty === false`（且列表为空）→ 只是本次筛选/过滤后无结果，属正常空态，前端显示普通空态，不应误报成「网关无数据」。
-   - 前端判定函数：`isGatewayNoData(meta) = !meta.isMock && meta.gatewayEmpty === true`。
-7. **前端无硬编码假数据**：所有展示型数值（市场统计卡片、可转债中位价格/溢价率、Dashboard 派生指标等）均由真实数据动态计算，不再内置任何写死的示例数组。前端 `composables/useMockData.ts` 虽仍存在但**已无任何页面引用**（历史遗留，可忽略）。
+1. **默认连接真实数据源**：`USE_MOCK_DATA=false`（默认）
+2. **取数失败返回空/缺省结构**：绝不使用 mock 数据填充（仅 `USE_MOCK_DATA=true` 时使用）
+3. **缺失字段返回 null**：不虚构数值（如 REITs 基本面字段、成交额等）
+4. **近似值明确标注**：如可转债 YTM 近似估算标记 `ytm_approx=True`
+5. **数据来源标记**：通过 `ApiResponse.meta` 返回 `isMock`、`dataSource` 供前端展示
 
 ---
 
@@ -916,36 +897,13 @@ npm run preview
 VITE_API_BASE=http://localhost:8001
 ```
 
-### 12.3 Mock 数据与数据真实性
+### 12.3 Mock 数据模式
 
-#### 12.3.1 默认就是真实数据（重要）
-
-**默认部署 `USE_MOCK_DATA=false`，系统中不存在任何激活的 mock 数据**：
-- 后端所有 `if USE_MOCK_DATA:` 分支（fund / market / holdings / valuation / reits / convertible_bond / strategy / account 等服务）均为休眠状态，不执行。
-- 前端**没有任何写死的假数据**：所有统计卡片、列表、图表数值都来自真实接口动态计算（代码中多处已标注「不再使用硬编码假数据」）。
-- 前端 `meta.isMock` 只是**读取**后端回传的标志（用于显示「MOCK」角标 / 判定「网关无数据」），前端自身不构造任何 mock 数据集。
-- 自查方法：正常模式下任何页面**不应出现「MOCK」角标**；`/health` 或状态接口返回的 `mock_mode` 应为 `false`。
-
-#### 12.3.2 `USE_MOCK_DATA=true`：离线演示模式
-
-仅在显式开启时才进入 Mock 模式，用于无网络/无网关的纯演示：
-- 后端跳过 DuckDB 与 AkShare WebAPI 连接，所有接口返回 `backend/mock_data.py` 中的预设数据。
-- 受保护接口使用固定 demo 用户 (`demo-user`)。
-- 此时 `meta.isMock` 为 `true`，前端据此显示「MOCK」角标。
-
-> ⚠️ **不要把 Mock 模式和「网关无数据」混淆**：
-> - Mock 模式是**人为开启**的演示态（`isMock=true`）。
-> - 「网关无数据」是**真实模式下**上游真的没返回数据（`isMock=false` 且 `gatewayEmpty=true`），是真实的故障/空源信号，前端显示橙底提示而非假数据。
-
-#### 12.3.3 配置位置
-
-| 变量名 | 默认值 | 说明 |
-|--------|--------|------|
-| `USE_MOCK_DATA` | `false` | `false`=真实数据（默认）；`true`=离线 Mock 演示模式 |
-
-- 环境变量：`backend/core/config.py` 读取 `os.getenv("USE_MOCK_DATA", "false")`。
-- 容器编排：`docker-compose.yml` 中固定为 `USE_MOCK_DATA=false`。
-- 本地 `.env`：复制 `.env.example` 为 `.env` 后按需修改（默认不设置即 `false`）。
+设置 `USE_MOCK_DATA=true` 启用离线模式：
+- 后端不连接数据库和 AkShare WebAPI
+- 所有接口返回 `mock_data.py` 中的预设数据
+- 受保护接口使用固定 demo 用户 (`demo-user`)
+- 适用于纯演示/离线场景
 
 ---
 

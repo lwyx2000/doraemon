@@ -70,17 +70,24 @@ class AccountNameRequest(BaseModel):
 class IndexValuation(BaseModel):
     name: str
     code: str
-    level: float
-    change_pct: float
+    # 上游行情缺失时置 None（前端显示"—"），绝不伪造为 0（Pydantic 亦须为可选，否则 None 触发 500）
+    level: Optional[float] = None
+    change_pct: Optional[float] = None
     pe: float | None = None
     pb: float | None = None
     pe_percentile: float | None = None
     pb_percentile: float | None = None
     category: str
-    change_3m_pct: float
-    win_rate: float
+    change_3m_pct: float | None = None
+    # win_rate：条件胜率（±10% PE 区间持有 3 个月正收益占比），
+    # 由 _enrich_valuation_with_history 用同口径历史序列实算；样本<10 个月或无历史序列时为 None
+    win_rate: float | None = None
+    # 近1年涨跌幅(%)：同口径 PB/PE 历史序列月度桶实算
+    change_1y_pct: float | None = None
     market: str = "a_share"  # a_share, hk, us
-    hasValuation: bool | None = None  # False=实时行情补录（科创板等），无估值数据，前端显示"—"
+    hasValuation: bool | None = None  # False=实时行情补录（科创综指等），无估值数据，前端显示"—"
+    valuation_date: str | None = None  # 上游行情快照日期 YYYY-MM-DD
+    pe_as_of: str | None = None        # PE/PB 历史快照日期（分位基于该序列）
 
 
 class MarketIndex(BaseModel):
@@ -100,6 +107,7 @@ class MarketOverview(BaseModel):
     flatCount: int
     totalVolume: float
     volumeChange: Optional[float] = None
+    prevDayVolume: Optional[float] = None
 
 
 class BoardSector(BaseModel):
@@ -272,7 +280,7 @@ class ClosedFundAnalysis(BaseModel):
     price: float = 0
     iopv: float = 0
     premium_pct: float = 0          # 折价率(%)：负值=折价
-    premium_percentile: float = 50
+    premium_percentile: Optional[float] = None  # 需历史溢价率序列，无源时为 None（前端显示 -）
     net_arbitrage_yield: float = 0
     remaining_term: Optional[str] = None   # 剩余期限(如 "312 Days")，源缺失时为 None
     annualized: Optional[float] = None     # 年化收益
@@ -322,6 +330,17 @@ class EtfFund(BaseModel):
     val_category: Optional[str] = None
     dividend_rate: Optional[float] = None
     arbitrage_analysis: Optional[ArbitrageAnalysis] = None
+    # ETF 申赎 / 费率（麦蕊日度快照 + 本地费率库，定时补全）
+    nav_date: Optional[str] = None                # 净值披露日期
+    share: Optional[float] = None                 # 最新份额(亿份)
+    scale: Optional[float] = None                 # 最新规模(亿元)
+    mgmt_fee: Optional[float] = None              # 管理费率(%)
+    custody_fee: Optional[float] = None           # 托管费率(%)
+    subscribe_fee: Optional[float] = None         # 最高申购费率(%)
+    redemption_fee: Optional[float] = None        # 最高赎回费率(%)
+    net_subscribe_share: Optional[float] = None   # 日净申赎份额(亿份，正=净申购)
+    net_subscribe_amount: Optional[float] = None  # 日净申赎额(亿元，正=净申购/流入)
+    net_subscribe_date: Optional[str] = None      # 快照截止日期
 
 
 # ============================================================

@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from database.connection import get_db
+from database.sqlite_connection import get_biz_db
 from services.market_service import get_kline
 
 
@@ -483,7 +483,7 @@ def generate_signal(symbol: str, strategy_id: str, params: dict | None = None) -
 # ============================================================
 
 def _ensure_tables() -> None:
-    db = get_db()
+    db = get_biz_db()
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS biz_signal_subscriptions (
@@ -502,7 +502,7 @@ def _ensure_tables() -> None:
 
 def get_tracked(user_id: str) -> list[dict]:
     _ensure_tables()
-    db = get_db()
+    db = get_biz_db()
     rows = db.fetchall(
         "SELECT id, symbol, name, strategy_id, params_json, created_at FROM "
         "biz_signal_subscriptions WHERE fk_user = ? ORDER BY created_at DESC",
@@ -528,7 +528,7 @@ def add_tracked(user_id: str, symbol: str, name: str | None, strategy_id: str, p
         raise ValueError(f"未知策略: {strategy_id}")
     now = datetime.now(timezone.utc).isoformat()
     rec_id = str(uuid.uuid4())
-    db = get_db()
+    db = get_biz_db()
     db.execute(
         "INSERT INTO biz_signal_subscriptions (id, fk_user, symbol, name, strategy_id, params_json, created_at, updated_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -540,7 +540,7 @@ def add_tracked(user_id: str, symbol: str, name: str | None, strategy_id: str, p
 
 def remove_tracked(user_id: str, rec_id: str) -> bool:
     _ensure_tables()
-    db = get_db()
+    db = get_biz_db()
     db.execute(
         "DELETE FROM biz_signal_subscriptions WHERE id = ? AND fk_user = ?",
         [rec_id, user_id],

@@ -11,6 +11,7 @@ from services.holdings_service import (
     HOLDING_TYPES,
     build_holdings_view,
     delete_holding,
+    get_holding_history,
     get_snapshots,
     import_holdings,
     take_snapshot,
@@ -33,6 +34,12 @@ def list_holdings(
         raise HTTPException(status_code=400, detail=f"未知持仓类型: {type}")
     data = build_holdings_view(user_id, type_filter=type, broker_filter=broker, account_filter=account)
     return ApiResponse(data=data)
+
+
+@router.get("/history", response_model=ApiResponse[list[dict]])
+def list_holding_history(user_id: str = Depends(get_current_user)):
+    """历史持仓（已平仓）：含平仓价与已实现盈亏，按平仓时间倒序。"""
+    return ApiResponse(data=get_holding_history(user_id))
 
 
 @router.post("/import", response_model=ApiResponse[dict])

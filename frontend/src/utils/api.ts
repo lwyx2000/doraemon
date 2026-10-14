@@ -18,6 +18,27 @@ export class ApiError extends Error {
   }
 }
 
+// ============================================================
+// 全局 401 拦截：会话过期（token 在服务端已失效）时清掉失效 token 并自动跳登录页，
+// 避免所有需要登录的页面（持仓/预警/策略/AI 配置…）裸显「401」错误。
+// 仅触发一次跳转；removeItem 幂等，重复 401 不会循环导航。
+// 排除 /auth/login、/auth/register 自身，否则登录/注册失败会被误判为过期而循环跳转。
+// ============================================================
+let _sessionExpiredHandled = false
+function handleSessionExpired(path: string): void {
+  if (_sessionExpiredHandled) return
+  if (path.includes('/auth/login') || path.includes('/auth/register')) return
+  _sessionExpiredHandled = true
+  localStorage.removeItem('qt_token')
+  const redirect = typeof window !== 'undefined' ? window.location.pathname + window.location.search : '/'
+  // 动态 import 避免 api.ts 与 router 形成静态循环依赖（只在出错时加载）
+  import('../router')
+    .then((m) => m.default.push({ path: '/login', query: { redirect } }))
+    .catch(() => {
+      if (typeof window !== 'undefined') window.location.href = '/login'
+    })
+}
+
 /**
  * 发送请求并返回 { data, meta }。
  * meta 为后端 ApiResponse 中的附加信息（如数据来源标记 isMock/dataSource）。
@@ -48,6 +69,10 @@ async function requestWithMeta<T>(
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
+    // 会话过期：清失效 token 并自动导向登录页（登录/注册请求除外）
+    if (res.status === 401) {
+      handleSessionExpired(path)
+    }
     throw new ApiError(
       res.status,
       body.message || `HTTP ${res.status}`,
@@ -131,6 +156,82 @@ export const api = {
   // 贵金属：黄金/白银现货价格 + 金银比（上海黄金交易所 Au99.99 / Ag99.99）
   getPreciousMetals: () =>
     requestWithMeta<PreciousMetals>('/api/v1/market/precious-metals'),
+
+  // 贪婪恐惧指数：最新一日（含 6 分项得分 + 原始指标）
+  getFearGreedLatest: () =>
+    requestWithMeta<FearGreedLatest>('/api/v1/market/fear-greed/latest'),
+
+  // 贪婪恐惧指数：历史序列（升序，供曲线）
+  getFearGreedHistory: (days = 120) =>
+    requestWithMeta<FearGreedPoint[]>('/api/v1/market/fear-greed/history', { days }),
+
+  // 贪婪恐惧指数：落库情况 + 定时任务/回填线程状态
+  getFearGreedStatus: () =>
+    requestWithMeta<FearGreedStatus>('/api/v1/market/fear-greed/status'),
+
+  // 贪婪恐惧指数：手动采集当日（收盘后调用最佳）
+  collectFearGreed: () =>
+    requestWithMeta<{ ok: boolean; totalScore: number | null; label: string | null }>(
+      '/api/v1/market/fear-greed/collect',
+      undefined,
+      { method: 'POST' }
+    ),
+
+  // 贪婪恐惧指数：后台回填历史（涨停池仅近数月有历史）
+  backfillFearGreed: (days = 120) =>
+    requestWithMeta<{ started: boolean; message?: string }>(
+      `/api/v1/market/fear-greed/backfill?days=${days}`,
+      undefined,
+      { method: 'POST' }
+    ),
+
+  // 红利策略研究：红利指数估值 + 全市场红利基金名录
+  getDividendOverview: () =>
+    requestWithMeta<DividendOverview>('/api/v1/dividend/overview'),
+
+  refreshDividend: () =>
+    requestWithMeta<{ ok: boolean }>('/api/v1/dividend/refresh', undefined, { method: 'POST' }),
+
+  // 点指数行弹窗：该指数跟踪的场内/场外基金 + 中证官方编制说明
+  getDividendIndexFunds: (code: string) =>
+    requestWithMeta<DividendIndexFunds>(`/api/v1/dividend/index-funds?code=${encodeURIComponent(code)}`),
+
+  // 双击基金行弹窗：该基金的季报持仓明细（逐只后台补全，落库后纯读）
+  getDividendFundHoldings: (code: string) =>
+    requestWithMeta<DividendFundHoldings>(`/api/v1/dividend/fund-holdings?code=${encodeURIComponent(code)}`),
+
+  // 「业绩比较基准 → 跟踪指数」识别进度 / 手动触发
+  getDividendIndexMapProgress: () =>
+    requestWithMeta<DividendIndexMapProgress>('/api/v1/dividend/index-map-progress'),
+
+  fillDividendIndexMap: (limit = 40) =>
+    requestWithMeta<{ matched: number }>(`/api/v1/dividend/fill-index-map?limit=${limit}`, undefined, {
+      method: 'POST',
+    }),
+
+  // 红利基金规模/费率：后台渐进补全（同花顺 fund_info_ths，逐只查询）
+  fillDividendFees: (limit = 80) =>
+    requestWithMeta<DividendFeeProgress>(`/api/v1/dividend/fill-fees?limit=${limit}`, undefined, {
+      method: 'POST',
+    }),
+
+  getDividendFeeProgress: () =>
+    requestWithMeta<DividendFeeProgress>('/api/v1/dividend/fee-progress'),
+
+  // 红利/现金流三类补充指标：跟踪误差 / 分红频率 / 行业集中度（后台渐进补全）
+  fillExtraMetrics: (limit = 80) =>
+    requestWithMeta<DividendFeeProgress>(`/api/v1/dividend/fill-extra-metrics?limit=${limit}`, undefined, {
+      method: 'POST',
+    }),
+
+  getExtraMetricsProgress: () =>
+    requestWithMeta<DividendFeeProgress>('/api/v1/dividend/extra-metrics-progress'),
+
+  // 现金流基金名录：独立一条线（名称含「现金流」+ 被动指数型），与红利名录互不干扰
+  getCashflowFunds: (force = false) =>
+    requestWithMeta<CashflowOverview>(
+      `/api/v1/dividend/cashflow-funds${force ? '?force=1' : ''}`,
+    ),
 
   // 申万一级行业热力图（实时涨跌幅 + PE/PB/股息率，本地 akshare）
   getSwSectors: () =>
@@ -318,6 +419,9 @@ export const api = {
 
   takeHoldingSnapshot: () =>
     request<HoldingSnapshot>('/api/v1/holdings/snapshot', undefined, { method: 'POST' }),
+
+  getHoldingHistory: () =>
+    request<HoldingHistory[]>('/api/v1/holdings/history'),
 
   // ============================================================
   // 系统设置（SystemSettings）
@@ -633,6 +737,9 @@ import type {
   BoardSector,
   FundFlows,
   ZTStats,
+  FearGreedPoint,
+  FearGreedLatest,
+  FearGreedStatus,
   FundRankingItem,
   SectionSourceMeta,
   ConvertibleBond,
@@ -647,6 +754,7 @@ import type {
   HoldingsView,
   HoldingImportResult,
   HoldingSnapshot,
+  HoldingHistory,
   DataSourceStatus,
   CacheConfig,
   MonitorDashboard,
@@ -677,4 +785,10 @@ import type {
   LoginResult,
   AdminListUsersResponse,
   AdminResetPasswordResponse,
+  CashflowOverview,
+  DividendOverview,
+  DividendFeeProgress,
+  DividendIndexFunds,
+  DividendIndexMapProgress,
+  DividendFundHoldings,
 } from '../types'

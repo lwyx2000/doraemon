@@ -217,6 +217,35 @@ const displayEtfs = computed(() => {
 })
 
 // 各 tab 列定义
+// ---- 申赎 / 费率 共享新列（8 列：管理/托管/申购/赎回费率% + 份额(亿份)/规模(亿元) + 日净申赎(亿份)/日净申赎额(亿元)）----
+// 净申赎：正=净申购/资金流入（红，内地习惯涨红），负=净赎回/流出（绿）；仅最新两日快照有 delta 时才显示。
+const feeCols = [
+  { title: '管理费率', key: 'mgmt_fee', align: 'right' as const, render: (row: EtfFund) => row.mgmt_fee != null ? `${row.mgmt_fee}%` : '-' },
+  { title: '托管费率', key: 'custody_fee', align: 'right' as const, render: (row: EtfFund) => row.custody_fee != null ? `${row.custody_fee}%` : '-' },
+  { title: '申购费率', key: 'subscribe_fee', align: 'right' as const, render: (row: EtfFund) => row.subscribe_fee != null ? `${row.subscribe_fee}%` : '-' },
+  { title: '赎回费率', key: 'redemption_fee', align: 'right' as const, render: (row: EtfFund) => row.redemption_fee != null ? `${row.redemption_fee}%` : '-' },
+  { title: '份额(亿份)', key: 'share', align: 'right' as const, render: (row: EtfFund) => row.share != null ? row.share.toFixed(2) : '-' },
+  { title: '规模(亿元)', key: 'scale', align: 'right' as const, render: (row: EtfFund) => row.scale != null ? row.scale.toFixed(2) : '-' },
+  {
+    title: '日净申赎(亿份)', key: 'net_subscribe_share', align: 'right' as const,
+    render: (row: EtfFund) => {
+      if (row.net_subscribe_share == null) return '-'
+      const v = row.net_subscribe_share
+      const color = v > 0 ? 'var(--color-danger)' : v < 0 ? 'var(--color-success)' : 'var(--text-secondary)'
+      return h('span', { style: { color, fontWeight: 700 } }, `${v > 0 ? '+' : ''}${v.toFixed(2)}`)
+    },
+  },
+  {
+    title: '日净申赎(亿元)', key: 'net_subscribe_amount', align: 'right' as const,
+    render: (row: EtfFund) => {
+      if (row.net_subscribe_amount == null) return '-'
+      const v = row.net_subscribe_amount
+      const color = v > 0 ? 'var(--color-danger)' : v < 0 ? 'var(--color-success)' : 'var(--text-secondary)'
+      return h('span', { style: { color, fontWeight: 700 } }, `${v > 0 ? '+' : ''}${v.toFixed(2)}`)
+    },
+  },
+]
+
 const arbitrageColumns = [
   { title: '基金名称', key: 'name', render: (row: EtfFund) => h('span', { class: 'etf-name' }, row.name) },
   { title: '代码', key: 'code', render: (row: EtfFund) => h('span', { class: 'etf-code' }, row.code) },
@@ -312,6 +341,7 @@ const arbitrageColumns = [
     },
   },
   { title: titleWithHelp('成交量', 'volume'), key: 'volume', align: 'right' as const, render: (row: EtfFund) => formatVol(row.volume) },
+  ...feeCols,
 ]
 
 const gridColumns = [
@@ -334,6 +364,7 @@ const gridColumns = [
       ? h(PercentileIndicator, { value: row.pe_percentile })
       : '-',
   },
+  ...feeCols,
 ]
 
 const rotationColumns = [
@@ -358,6 +389,7 @@ const rotationColumns = [
   },
   { title: titleWithHelp('PE', 'pe'), key: 'pe', align: 'right' as const, render: (row: EtfFund) => row.pe?.toFixed(1) ?? '-' },
   { title: titleWithHelp('成交量', 'volume'), key: 'volume', align: 'right' as const, render: (row: EtfFund) => formatVol(row.volume) },
+  ...feeCols,
 ]
 
 const valuationColumns = [
@@ -400,6 +432,7 @@ const valuationColumns = [
       return h(NTag, { size: 'small', type: item.type, round: true, bordered: false }, { default: () => item.text })
     },
   },
+  ...feeCols,
 ]
 
 // 战术信号列：身份三列（名称/代码/现价）+ 共享信号四列（偏离度/RSI/布林/信号）
@@ -419,6 +452,7 @@ const tacticalColumns = [
     getSignal: code => tacticalMap.value.get(code),
     symbolOf: row => row.code,
   }),
+  ...feeCols,
 ]
 
 // ---- 胜率/凯利列（扫描完成后追加到战术信号表，列定义共享于 signalDisplay）----
@@ -509,17 +543,31 @@ const pagination = ref<PaginationProps>({
 // 切换 tab 或筛选变化时回到第一页
 watch(activeTab, () => { pagination.value.page = 1 })
 
+// 申赎/费率 8 列（CSV 导出复用）
+function feeRow(e: EtfFund): (string | number)[] {
+  return [
+    e.mgmt_fee != null ? `${e.mgmt_fee}%` : '',
+    e.custody_fee != null ? `${e.custody_fee}%` : '',
+    e.subscribe_fee != null ? `${e.subscribe_fee}%` : '',
+    e.redemption_fee != null ? `${e.redemption_fee}%` : '',
+    e.share != null ? e.share.toFixed(2) : '',
+    e.scale != null ? e.scale.toFixed(2) : '',
+    e.net_subscribe_share != null ? e.net_subscribe_share.toFixed(2) : '',
+    e.net_subscribe_amount != null ? e.net_subscribe_amount.toFixed(2) : '',
+  ]
+}
+
 function exportEtf() {
   if (activeTab.value === 'tactical' && !tacticalLoaded.value) {
     message.warning('战术信号尚未计算完成，请稍后再导出')
     return
   }
   const headersMap: Record<string, string[]> = {
-    arbitrage: ['基金名称', '代码', '折溢价率', '溢价百分位', '收益下限%', '收益上限%', '资金容量', 'T+N', '敞口风险%', '可行性', '陷阱', '成交量'],
-    grid: ['基金名称', '子类', '现价', '网格下限', '网格上限', '间距', '预估年化', '成交量', '估值百分位'],
-    rotation: ['排名', '基金名称', '子类', '动量得分', '估值百分位', 'PE', '成交量'],
-    valuation: ['基金名称', '代码', '估值分类', 'PE', 'PE百分位', '股息率', '现价', '定投建议'],
-    tactical: ['基金名称', '代码', '现价', 'MA20偏离度%', 'RSI14', '布林位置%', '当前信号'],
+    arbitrage: ['基金名称', '代码', '折溢价率', '溢价百分位', '收益下限%', '收益上限%', '资金容量', 'T+N', '敞口风险%', '可行性', '陷阱', '成交量', '管理费率%', '托管费率%', '申购费率%', '赎回费率%', '份额(亿份)', '规模(亿元)', '日净申赎(亿份)', '日净申赎(亿元)'],
+    grid: ['基金名称', '子类', '现价', '网格下限', '网格上限', '间距', '预估年化', '成交量', '估值百分位', '管理费率%', '托管费率%', '申购费率%', '赎回费率%', '份额(亿份)', '规模(亿元)', '日净申赎(亿份)', '日净申赎(亿元)'],
+    rotation: ['排名', '基金名称', '子类', '动量得分', '估值百分位', 'PE', '成交量', '管理费率%', '托管费率%', '申购费率%', '赎回费率%', '份额(亿份)', '规模(亿元)', '日净申赎(亿份)', '日净申赎(亿元)'],
+    valuation: ['基金名称', '代码', '估值分类', 'PE', 'PE百分位', '股息率', '现价', '定投建议', '管理费率%', '托管费率%', '申购费率%', '赎回费率%', '份额(亿份)', '规模(亿元)', '日净申赎(亿份)', '日净申赎(亿元)'],
+    tactical: ['基金名称', '代码', '现价', 'MA20偏离度%', 'RSI14', '布林位置%', '当前信号', '管理费率%', '托管费率%', '申购费率%', '赎回费率%', '份额(亿份)', '规模(亿元)', '日净申赎(亿份)', '日净申赎(亿元)'],
   }
   const headers = [...headersMap[activeTab.value]]
   if (activeTab.value === 'tactical' && winrateLoaded.value) {
@@ -534,6 +582,7 @@ function exportEtf() {
         a.adjustedYieldLow, a.adjustedYieldHigh, a.capitalLabel,
         `T+${a.holdingDays}`, a.riskExposure, a.feasibilityLabel,
         a.traps.join('; '), e.volume ?? '',
+        ...feeRow(e),
       ]
     }
     if (activeTab.value === 'tactical') {
@@ -544,11 +593,13 @@ function exportEtf() {
       if (winrateLoaded.value) {
         base.push(...winrateExportCells(winrateMap.value.get(e.code)))
       }
+      base.push(...feeRow(e))
       return base
     }
     return [
       e.name, e.code, e.price, e.iopv, e.premium_pct, e.premium_percentile ?? '',
       e.net_arbitrage_yield, e.subscribe_limit ?? '', e.volume ?? '',
+      ...feeRow(e),
     ]
   })
   exportToCSV(`etf_${activeTab.value}_${new Date().toISOString().slice(0, 10)}`, headers, rows)

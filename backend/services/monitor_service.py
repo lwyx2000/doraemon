@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from database.connection import get_db
+from database.sqlite_connection import get_biz_db
 
 # 缓存配置在 biz_config 表中的键
 _CACHE_CONFIG_KEY = "monitor_cache_config"
@@ -39,7 +39,7 @@ def load_cache_config() -> None:
     if _loaded:
         return
     try:
-        db = get_db()
+        db = get_biz_db()
         row = db.fetchone(
             "SELECT value_json FROM biz_config WHERE key = ?", [_CACHE_CONFIG_KEY]
         )
@@ -60,10 +60,10 @@ def load_cache_config() -> None:
 
 def _persist_cache_config() -> None:
     """将内存 _cache_config 原子 upsert 到 biz_config（ON CONFLICT 指定 PK，安全）。"""
-    db = get_db()
+    db = get_biz_db()
     payload = json.dumps(_cache_config, ensure_ascii=False)
     db.execute(
-        "INSERT INTO biz_config (key, value_json, updated_at) VALUES (?, ?, now()) "
+        "INSERT INTO biz_config (key, value_json, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) "
         "ON CONFLICT (key) DO UPDATE SET value_json = excluded.value_json, "
         "updated_at = excluded.updated_at",
         [_CACHE_CONFIG_KEY, payload],

@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from database.connection import get_db
+from database.sqlite_connection import get_biz_db
 from core.config import USE_MOCK_DATA
 from mock_data import (
     MOCK_STRATEGIES,
@@ -147,7 +147,7 @@ def _ensure_tables() -> None:
     global _TABLES_READY
     if _TABLES_READY or USE_MOCK_DATA:
         return
-    db = get_db()
+    db = get_biz_db()
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS biz_strategies (
@@ -161,7 +161,7 @@ def _ensure_tables() -> None:
             limit_count   INTEGER,
             active        BOOLEAN DEFAULT TRUE,
             ai_tracking   BOOLEAN DEFAULT FALSE,
-            created_at    TIMESTAMP DEFAULT now()
+            created_at    TEXT DEFAULT CURRENT_TIMESTAMP
         )
         """
     )
@@ -269,7 +269,7 @@ def get_strategies(user_id: str) -> list[dict]:
     if USE_MOCK_DATA:
         return list(_mock_strategies)
     _ensure_tables()
-    db = get_db()
+    db = get_biz_db()
     rows = db.fetchall(
         "SELECT id, name, target_asset, rules, sort_by, sort_order, limit_count, "
         "active, ai_tracking, created_at "
@@ -300,7 +300,7 @@ def create_strategy(
         _mock_strategies.append(strategy)
         return strategy
     _ensure_tables()
-    db = get_db()
+    db = get_biz_db()
     db.execute(
         "INSERT INTO biz_strategies "
         "(id, fk_user, name, target_asset, rules, sort_by, sort_order, limit_count, active, ai_tracking, created_at) "
@@ -351,7 +351,7 @@ def update_strategy(
         return target
 
     _ensure_tables()
-    db = get_db()
+    db = get_biz_db()
     sets: list[str] = []
     params: list[Any] = []
     if name is not None:
@@ -401,7 +401,7 @@ def delete_strategy(user_id: str, strategy_id: str) -> bool:
                 return True
         return False
     _ensure_tables()
-    db = get_db()
+    db = get_biz_db()
     row = db.fetchone(
         "SELECT count(*) FROM biz_strategies WHERE id = ? AND fk_user = ?",
         [strategy_id, user_id],

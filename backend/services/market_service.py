@@ -86,8 +86,18 @@ def _check_akshare_reachable(timeout: int = _STATUS_CHECK_TIMEOUT) -> bool:
         return False
 
 
-def _fetch_jisilu_login_status(timeout: int = _STATUS_CHECK_TIMEOUT) -> bool | None:
-    """读取 53 侧 /api/jisilu/auth-status 的严格登录标志；不可用返回 None。"""
+def _fetch_jisilu_auth_detail(timeout: int = _STATUS_CHECK_TIMEOUT) -> dict | None:
+    """读取 53 侧 /api/jisilu/auth-status 的**完整**详情。
+
+    上游能区分三种状态（2026-10-08 实测）：
+      - ``no_cookie``      : 压根没配 cookie → 需从零配置
+      - ``cookie_invalid`` : 配了但已失效     → 只需刷新 cookie
+      - ``logged_in``      : 正常             → 不必打扰
+    ⚠️ 旧实现只取 ``logged_in`` 一个布尔值，丢掉 ``has_cookie`` /
+      ``can_dynamic_login`` / ``status`` / ``message``，导致前端只能显示
+      「失效/未配置」这种笼统提示，无法区分「没配」和「过期」，指引方向会错。
+    返回 None 表示该接口不可用（调用方回退到旧的推断方式）。
+    """
     try:
         r = requests.get(
             f"{AKSHARE_API_BASE}/api/jisilu/auth-status",
@@ -96,12 +106,25 @@ def _fetch_jisilu_login_status(timeout: int = _STATUS_CHECK_TIMEOUT) -> bool | N
         if r.status_code != 200:
             return None
         data = r.json().get("data") or {}
-        # 显式 true/false 才采信，字段缺失视为不可用
+        # 显式有 logged_in 字段才采信，缺失视为接口不可用
         if "logged_in" not in data:
             return None
-        return bool(data.get("logged_in"))
+        return {
+            "loggedIn": bool(data.get("logged_in")),
+            "hasCookie": bool(data.get("has_cookie")),
+            "canDynamicLogin": bool(data.get("can_dynamic_login")),
+            "status": str(data.get("status") or ""),
+            "message": str(data.get("message") or ""),
+            "checkedAt": str(data.get("checked_at") or ""),
+        }
     except Exception:
         return None
+
+
+def _fetch_jisilu_login_status(timeout: int = _STATUS_CHECK_TIMEOUT) -> bool | None:
+    """（保留旧签名）只要是否登录；不可用返回 None。"""
+    d = _fetch_jisilu_auth_detail(timeout)
+    return None if d is None else d["loggedIn"]
 
 
 def get_data_source_status() -> dict:
@@ -112,14 +135,18 @@ def get_data_source_status() -> dict:
       优先读取 53 侧新增的 /api/jisilu/auth-status（直接依据 Cookie 配置/动态登录
       能力判定，而非"能否取到数据"——游客态也能取到部分数据，故旧推断不可靠）；
       若该接口不可用则回退到旧推断(能否取到 jisilu 数据)。
+    - jisiluStatus / jisiluMessage: 上游给的具体状态与说明（供前端按状态给不同指引；
+      上游接口不可用时为 None）。
 
     两项探测并行执行，超时均缩短为 5s，避免数据源不可达时长时间阻塞设置页。
     """
     with ThreadPoolExecutor(max_workers=2) as pool:
         akshare_future = pool.submit(_check_akshare_reachable)
-        jisilu_future = pool.submit(_fetch_jisilu_login_status)
+        detail_future = pool.submit(_fetch_jisilu_auth_detail)
         akshare_connected = akshare_future.result()
-        jisilu_logged_in = jisilu_future.result()
+        detail = detail_future.result()
+
+    jisilu_logged_in = None if detail is None else detail["loggedIn"]
 
     if jisilu_logged_in is None:
         # 兜底：旧推断（能否取到 jisilu 数据）
@@ -138,6 +165,11 @@ def get_data_source_status() -> dict:
     return {
         "akshareConnected": akshare_connected,
         "jisiluLoggedIn": bool(jisilu_logged_in),
+        # 详情（上游不可用时为 None，前端据此退化为通用提示）
+        "jisiluStatus": (detail or {}).get("status"),
+        "jisiluMessage": (detail or {}).get("message"),
+        "jisiluHasCookie": (detail or {}).get("hasCookie"),
+        "jisiluCanDynamicLogin": (detail or {}).get("canDynamicLogin"),
         "timestamp": datetime.now().isoformat(),
     }
 
@@ -394,8 +426,11 @@ def _get_index_code(name: str) -> str:
         "中证800": "000906",
         "中证A500": "000510",
         "科创50": "000688",
-        "科创综指": "000699",
-        "科创板": "000699",
+        # ⚠️ 000699 在腾讯行情里名称是「科创200」，不是科创综指！
+        # 科创综指=000680、科创50=000688、科创200=000699（2026-10-13 腾讯名称实证）
+        "科创综指": "000680",
+        "科创板": "000680",
+        "科创200": "000699",
         "北证50": "899050",
     }
     return mapping.get(name, "")
@@ -412,7 +447,7 @@ _A_SHARE_OVERVIEW_INDICES = [
     ("中证A500", "000510"),
     ("上证50", "000016"),
     ("科创50", "000688"),
-    ("科创板", "000699"),
+    ("科创综指", "000680"),
     ("深证100", "399330"),
     ("北证50", "899050"),
 ]
@@ -442,7 +477,7 @@ def _fetch_index_quote(code: str) -> dict | None:
 
 
 def _ensure_overview_indices(indices: list[dict]) -> list[dict]:
-    """补齐/替换大盘看板指数：剔除无数据的上证380，确保科创板/科创50/中证A500等存在"""
+    """补齐/替换大盘看板指数：剔除无数据的上证380，确保科创综指/科创50/中证A500等存在"""
     by_code: dict[str, dict] = {}
     for idx in indices:
         c = idx.get("code", "")
@@ -453,7 +488,7 @@ def _ensure_overview_indices(indices: list[dict]) -> list[dict]:
     for name, code in _A_SHARE_OVERVIEW_INDICES:
         if code in by_code:
             item = by_code[code]
-            # 使用期望展示名称（如上游叫"科创综指"，展示为"科创板"）
+            # 使用期望展示名称（统一为 _A_SHARE_OVERVIEW_INDICES 的规范名）
             item["name"] = name
             result.append(item)
         else:
@@ -462,7 +497,6 @@ def _ensure_overview_indices(indices: list[dict]) -> list[dict]:
             # 跳过无实时行情的指数（如北证50 上游未返回名称/价格）
             if not quote or not quote.get("name") or quote.get("price") in (None, 0):
                 continue
-            # 使用期望展示名称（如上游叫"科创200"，展示为"科创板"）
             quote["name"] = name
             # 实时行情补录的指数无估值数据，置 None 让前端显示 '—'
             quote["pe"] = None
@@ -470,8 +504,9 @@ def _ensure_overview_indices(indices: list[dict]) -> list[dict]:
             quote["pePercentile"] = None
             quote["pbPercentile"] = None
             quote.setdefault("category", "")
-            quote.setdefault("change3mPct", 0.0)
-            quote.setdefault("winRate", 0.0)
+            # 无历史序列可算的派生指标一律置 None（前端显示"—"），绝不伪造 0
+            quote["change3mPct"] = None
+            quote["winRate"] = None
             quote["hasValuation"] = False
             result.append(quote)
     return result
@@ -845,6 +880,17 @@ _MACRO_TTL = 3600
 # 避免把「不完整结果」按 1 小时缓存住，导致刷新完成后还要等满 1 小时才生效。
 _MACRO_TTL_INCOMPLETE = 60
 
+# 申万一级行业缓存（2026-10-08 新增）
+# ⚠️ 为什么加：实测 `GET /api/v1/market/sw-sectors` **每次调用固定 ~20s**
+#   （两次连测20.07s / 20.02s，确认是真在重拉而非偶发），而该接口被
+#   **Dashboard.vue（首页）** 使用 → 每次打开首页都要干等 20 秒。
+#   原因是它每次都打 2 个上游（index_realtime_sw + sw_index_first_info）且**无缓存**。
+#   行业数据日内变化有限，缓存 10 分钟足够；「刷新」按钮仍走 force=True 穿透。
+_SW_SECTORS_CACHE: dict = {"data": None, "ts": 0.0, "lock": threading.Lock(), "fail": False}
+_SW_SECTORS_TTL = 600
+#: 上游拿不到时的短缓存（秒）—— 失败不该被缓存 10 分钟，但也不该让首页每次白等
+_SW_SECTORS_TTL_FAIL = 30
+
 
 def _compute_erp() -> tuple[float | None, float | None, float | None, float | None]:
     """股权风险溢价 ERP = 1/CSI300PE_TTM - 10Y 国债收益率；并计算 3Y/5Y/10Y 历史分位
@@ -1088,7 +1134,8 @@ def get_market_overview_with_meta() -> tuple[dict, dict]:
         if vol_change is None:
             pct = market_stats.get("turnoverChangePct")
             if pct is not None and total_e:
-                vol_change = round(total_e * pct / 100, 2)
+                # pct 相对昨日成交额，正确反推：abs = total * pct / (100 + pct)
+                vol_change = round(total_e * pct / (100 + pct), 2)
             # pct 也为 None → 上游未提供变化数据，保持 None
         data = {
             "date": market_stats["date"],
@@ -1129,21 +1176,88 @@ def get_market_overview_with_meta() -> tuple[dict, dict]:
         }, gateway_no_data_meta()
 
 
-def get_sw_sectors() -> tuple[list[dict], dict]:
+def get_sw_sectors(force: bool = False) -> tuple[list[dict], dict]:
     """申万一级行业基础数据（实时涨跌幅 + PE / PB / 股息率），用于行业热力图。
 
     数据源：远程 AkShare WebAPI 网关（core.config.AKSHARE_API_BASE 的 /api/ak），不依赖本地 akshare。
       - ``index_realtime_sw(symbol='一级行业')`` 取 31 个申万一级行业实时价 → 计算涨跌幅；
       - ``sw_index_first_info()`` 取各行业的 PE / PB / 股息率 / 成份数。
     网关返回 list[dict]，无需 pandas。
+
+    ⚠️ **带 10 分钟进程内缓存**（2026-10-08）：这两个上游合计要 ~20s，
+    而本接口是**首页 Dashboard** 的数据源——原来每次打开首页都干等 20 秒。
+    ``force=True``（点「刷新」）时穿透缓存。
     """
     if USE_MOCK_DATA:
         return [], _build_meta(True, "MOCK(模拟数据)")
 
+    #缓存命中则直接返回（2026-08 新增）
+    if not force:
+        with _SW_SECTORS_CACHE["lock"]:
+            if _SW_SECTORS_CACHE["data"] is not None:
+                age = time.time() - _SW_SECTORS_CACHE["ts"]
+                # 失败态用短 TTL，成功态用长 TTL
+                ttl = _SW_SECTORS_TTL_FAIL if _SW_SECTORS_CACHE.get("fail") else _SW_SECTORS_TTL
+                if age <= ttl:
+                    return _SW_SECTORS_CACHE["data"]
+
     # 1) 实时一级行业（最新价 / 昨收盘）
-    rt = _akshare_request("index_realtime_sw", {"symbol": "一级行业"}, timeout=20)
+    # ⚠️ 超时从 20s 降到 8s（2026-10-08）：实测 akshare-webapi 侧对
+    #   `index_realtime_sw` 硬编码 30s 超时且重试 2 次（源站慢/挂），
+    #   doraemon 这边 timeout=20 等满 → 首页 Dashboard 每次干等 20s+。
+    #   行业日内变化有限，取不到就退化为「只有估值、没有涨跌幅」，可接受。
+    rt = _akshare_request("index_realtime_sw", {"symbol": "一级行业"}, timeout=8)
+
+    # 2) 一级行业估值（PE / PB / 股息率 / 成份数）
+    #⚠️ 放在 rt 判断**之前**（2026-10-08）：`index_realtime_sw` 挂掉时，
+    #   `sw_index_first_info` 往往仍可用（实测返回 31 行）——原来 rt 空就
+    #   直接 return，把能拿到的估值也一起丢了，白等 20s 还什么都拿不到。
+    #   现在 rt 空时**用估值兜底**（无涨跌幅），至少热力图能显示 PE/PB。
+    val_map: dict[str, dict] = {}
+    try:
+        first = _akshare_request("sw_index_first_info", timeout=8)
+        if first:
+            for row in first:
+                val_map[row.get("行业名称")] = {
+                    "count": _safe_int(row.get("成份个数")),
+                    "pe": _safe_float(row.get("静态市盈率")),
+                    "ttm_pe": _safe_float(row.get("TTM(滚动)市盈率")),
+                    "pb": _safe_float(row.get("市净率")),
+                    "dividend_yield": _safe_float(row.get("静态股息率")),
+                }
+    except Exception:
+        val_map = {}  # 估值取不到不影响涨跌幅热力图
+
     if not rt:
-        return [], _build_meta(False, f"网关 index_realtime_sw 无返回 ({AKSHARE_HOST})")
+        #上游实时行情拿不到 → 用估值数据兜底（至少 PE/PB 能显示），并短缓存
+        sectors_fallback = [
+            {
+                "code": "",
+                "name": name,
+                "price": None,
+                "prev_close": None,
+                "change_pct": None,
+                "pe": v.get("pe"),
+                "ttm_pe": v.get("ttm_pe"),
+                "pb": v.get("pb"),
+                "dividend_yield": v.get("dividend_yield"),
+                "count": v.get("count"),
+            }
+            for name, v in val_map.items()
+        ]
+        note = (
+            f"网关 index_realtime_sw 无返回 ({AKSHARE_HOST})，已降级为仅估值数据"
+            if sectors_fallback
+            else f"网关 index_realtime_sw 无返回 ({AKSHARE_HOST})"
+        )
+        result = (sectors_fallback, _build_meta(False, note))
+        # ⚠️ 上游拿不到时也要**短缓存失败态**：否则首页每次打开都要白等
+        #   （该接口在 akshare-webapi 侧硬编码 30s 超时 + 重试 2 次）。
+        with _SW_SECTORS_CACHE["lock"]:
+            _SW_SECTORS_CACHE["data"] = result
+            _SW_SECTORS_CACHE["ts"] = time.time()
+            _SW_SECTORS_CACHE["fail"] = True
+        return result
 
     rt_map: dict[str, dict] = {}
     for row in rt:
@@ -1158,23 +1272,8 @@ def get_sw_sectors() -> tuple[list[dict], dict]:
             "change_pct": chg,
         }
 
-    # 2) 一级行业估值（PE / PB / 股息率 / 成份数）
-    val_map: dict[str, dict] = {}
-    try:
-        first = _akshare_request("sw_index_first_info", timeout=20)
-        if first:
-            for row in first:
-                val_map[row.get("行业名称")] = {
-                    "count": _safe_int(row.get("成份个数")),
-                    "pe": _safe_float(row.get("静态市盈率")),
-                    "ttm_pe": _safe_float(row.get("TTM(滚动)市盈率")),
-                    "pb": _safe_float(row.get("市净率")),
-                    "dividend_yield": _safe_float(row.get("静态股息率")),
-                }
-    except Exception:
-        val_map = {}  # 估值取不到不影响涨跌幅热力图
-
     # 3) 合并（以实时行情为主，估值缺失则补 None）
+    #    （第2 步的估值取数已上移到 rt 判断之前，以便实时行情挂掉时仍能兜底）
     sectors: list[dict] = []
     for name, rt_info in rt_map.items():
         v = val_map.get(name, {})
@@ -1194,7 +1293,14 @@ def get_sw_sectors() -> tuple[list[dict], dict]:
     # 将当日快照写入 DuckDB（同日去重）
     _save_sw_sector_snapshot(sectors)
 
-    return sectors, _build_meta(False, f"网关 {AKSHARE_HOST} (index_realtime_sw)")
+    result = (sectors, _build_meta(False, f"网关 {AKSHARE_HOST} (index_realtime_sw)"))
+    # 写缓存（仅成功取到数据时用长 TTL）
+    if sectors:
+        with _SW_SECTORS_CACHE["lock"]:
+            _SW_SECTORS_CACHE["data"] = result
+            _SW_SECTORS_CACHE["ts"] = time.time()
+            _SW_SECTORS_CACHE["fail"] = False
+    return result
 
 
 # ⚠️ 该表同时有 PRIMARY KEY(代理主键) 和 UNIQUE(sector_code, trade_date) 两个唯一约束，
@@ -1982,43 +2088,239 @@ def _fetch_index_valuation_data() -> tuple[list[dict], list[dict]]:
 
 
 
+# ============================================================
+# 指数估值：同口径 PE/PB 分位重算（2026-10-13，对齐指数分析页口径）
+# ============================================================
+# 背景：上游 processed_data index_valuation/all 的 pe 取腾讯实时口径，
+# 而 pe_percentile 按中证官网(index-perf)序列末值计算——同一行两个口径
+# （沪深300 曾显示 PE 13.1 + 分位 66%，但腾讯口径 12.5 的真实分位是 69.5%；
+#   上证红利更曾被标 100% 分位，同口径实际仅 74.7%）。
+# 指数分析页(/index-analysis)数据"全都是好的"原因：它走 valuation_service，
+# PB/PE 取值与分位都取自网关 /api/index-valuation/{code}/history（腾讯口径
+# 月度快照，197-237 个样本），分位由 doraemon 侧对**同一序列**计算，永远自洽。
+# 此处让宏观看板复用同一口径：pe/pb 与分位全部来自该历史序列；
+# 无历史序列的指数（如科创综指网关未覆盖）分位置空显示"—"，宁缺勿假。
+
+_PB_PE_HIST_CACHE: dict[str, tuple[float, dict | None]] = {}
+_PB_PE_HIST_TTL = 1800  # 30 分钟（上游序列每日更新，无需更频繁拉取）
+_PB_PE_HIST_LOCK = threading.Lock()
+_MIN_VALUATION_SAMPLES = 24  # 与 valuation_service.MIN_HISTORY_SAMPLES 对齐：不足 2 年不算分位
+_COND_WIN_BAND = 0.10        # 条件胜率：±10% 相对 PE 区间视为「同一估值水平」
+_COND_WIN_MIN_SAMPLES = 10   # 可比样本不足 10 个月则置 None（宁缺勿假）
+_COND_WIN_FORWARD = 3        # 前向持有期：3 个月
+
+
+def _percentile_rank(value: float, values: list[float]) -> float:
+    """升序百分位（与 valuation_service._percentile 同口径）：≤value 的样本占比×100"""
+    if not values:
+        return 0.0
+    below = sum(1 for v in values if v is not None and v <= value)
+    return below / len(values) * 100.0
+
+
+def _chg_from_month_buckets(rows: list[dict], months_back: int) -> float | None:
+    """月度快照序列的 N 月涨跌幅（%）：末值 vs N 个桶前的值。
+
+    桶值为当月最后收盘（当前月桶=最新收盘），与精确交易日复算有少量误差，
+    仅作看板 glance 级展示；样本不足返回 None。
+    """
+    vals = [float(r["index_value"]) for r in rows if r.get("index_value") is not None]
+    if len(vals) <= months_back:
+        return None
+    base = vals[-(months_back + 1)]
+    if base <= 0:
+        return None
+    return round((vals[-1] - base) / base * 100, 2)
+
+
+def _conditional_win_rate_3m(rows: list[dict]) -> float | None:
+    """条件胜率（%）：历史上与当前 PE 水平相当（±10%）的月份，持有 3 个月正收益的占比
+
+    替代原 win_rate（近 250 日上涨日占比，数学上恒≈50%、零区分度）。
+    输入为腾讯口径月度快照（date/pe_ttm/index_value 升序）：
+    以 pe_ttm 落在 [cur×(1±10%)] 的月份为可比样本，
+    前向收益 = 3 个桶后的 index_value / 样本月 index_value - 1 > 0 记为正。
+    样本不足 _COND_WIN_MIN_SAMPLES 返回 None（前端显示"—"），宁缺勿假。
+    """
+    pts = [
+        (float(r["pe_ttm"]), float(r["index_value"]))
+        for r in rows
+        if r.get("pe_ttm") is not None and r.get("index_value") is not None
+    ]
+    if len(pts) <= _COND_WIN_FORWARD:
+        return None
+    cur_pe = pts[-1][0]
+    if cur_pe <= 0:
+        return None
+    hits = total = 0
+    for i in range(len(pts) - _COND_WIN_FORWARD):
+        pe_i, iv_i = pts[i]
+        if pe_i <= 0 or iv_i <= 0:
+            continue
+        if abs(pe_i - cur_pe) / cur_pe > _COND_WIN_BAND:
+            continue
+        fwd_iv = pts[i + _COND_WIN_FORWARD][1]
+        if fwd_iv <= 0:
+            continue
+        total += 1
+        if fwd_iv / iv_i - 1 > 0:
+            hits += 1
+    if total < _COND_WIN_MIN_SAMPLES:
+        return None
+    return round(hits / total * 100, 1)
+
+
+def _chg_3m_from_sina(code: str) -> float | None:
+    """新浪日线实算近 3 月涨跌幅（63 个交易日间隔）；样本不足返回 None"""
+    bars = _fetch_real_kline("stock_zh_index_daily", {"symbol": _index_sina_symbol(code)}, count=70)
+    closes = [b["close"] for b in bars if b.get("close")]
+    if len(closes) < 64:
+        return None
+    base = closes[-64]
+    if base <= 0:
+        return None
+    return round((closes[-1] - base) / base * 100, 2)
+
+
+def _index_pb_pe_snapshot(code: str) -> dict | None:
+    """单指数 PB/PE 历史快照：末值 + 全史升序分位（带 30 分钟进程内缓存）
+
+    数据源与指数分析页 valuation_service 完全相同：网关
+    /api/index-valuation/{code}/history（腾讯口径月度快照）。
+
+    Returns:
+        {"pe","pb","pe_percentile","pb_percentile","pe_samples","pb_samples",
+         "as_of","chg_1y_pct","win_rate"}；无数据返回 None。
+        pe/pb 为序列末值；分位=末值在全史中的升序百分位（样本不足 24 个月置 None）；
+        win_rate=条件胜率（与当前 PE ±10% 区间持有 3 个月正收益占比，样本<10 置 None）。
+    """
+    code = (code or "").strip()
+    if not code:
+        return None
+    now = time.time()
+    with _PB_PE_HIST_LOCK:
+        cached = _PB_PE_HIST_CACHE.get(code)
+        if cached and (now - cached[0]) < _PB_PE_HIST_TTL:
+            return cached[1]
+
+    from services.index_pb_pe import get_index_pb_pe_meta
+
+    data = get_index_pb_pe_meta(code, timeout=15)
+    snap: dict | None = None
+    if data:
+        pb_rows = [r for r in (data.get("pb") or []) if isinstance(r, dict) and r.get("pb") is not None]
+        pe_rows = [r for r in (data.get("pe") or []) if isinstance(r, dict) and r.get("pe_ttm") is not None]
+        if pb_rows or pe_rows:
+            pb_vals = [float(r["pb"]) for r in pb_rows]
+            pe_vals = [float(r["pe_ttm"]) for r in pe_rows]
+            last_pb = pb_vals[-1] if pb_vals else None
+            last_pe = pe_vals[-1] if pe_vals else None
+            updated = str(data.get("updated_at") or "")
+            snap = {
+                "pe": last_pe,
+                "pb": last_pb,
+                "pe_percentile": round(_percentile_rank(last_pe, pe_vals), 2)
+                if (last_pe is not None and len(pe_vals) >= _MIN_VALUATION_SAMPLES) else None,
+                "pb_percentile": round(_percentile_rank(last_pb, pb_vals), 2)
+                if (last_pb is not None and len(pb_vals) >= _MIN_VALUATION_SAMPLES) else None,
+                "pe_samples": len(pe_vals),
+                "pb_samples": len(pb_vals),
+                "as_of": updated[:10] or None,
+                "chg_1y_pct": _chg_from_month_buckets(pb_rows or pe_rows, 12),
+                "win_rate": _conditional_win_rate_3m(pe_rows),
+            }
+    with _PB_PE_HIST_LOCK:
+        _PB_PE_HIST_CACHE[code] = (now, snap)
+    return snap
+
+
+def _valuation_category(pe_pct: float | None, pe: float | None) -> str:
+    """按 PE 分位判定估值类别；高分红类指数（绝对 PE<10）分位>80 也不标「高估」"""
+    if pe_pct is None:
+        return "unknown"
+    if pe_pct < 20:
+        return "opportunity"   # 极度低估
+    if pe_pct < 40:
+        return "undervalued"   # 低估
+    if pe_pct > 80:
+        # 上证红利等同口径分位曾达 100% 系红利股大涨所致，绝对 PE 仍低——
+        # 「比自己历史贵」≠「贵」，PE<10 降档为 normal，避免前端标红误导
+        if pe is not None and pe < 10:
+            return "normal"
+        return "overvalued"    # 高估
+    return "normal"            # 正常
+
+
+def _enrich_valuation_with_history(indices: list[dict]) -> list[dict]:
+    """用同口径历史序列重算估值行的 pe/pb/分位/类别（见上方模块头说明）。
+
+    - 有历史序列：pe/pb 取序列末值，分位=末值全史升序百分位（≥24 个月守卫）
+    - 无历史序列（如科创综指）：分位置空、category=unknown，不采用上游混合口径值
+    """
+    for idx in indices:
+        if idx.get("hasValuation") is False:
+            continue
+        code = idx.get("code") or ""
+        snap = _index_pb_pe_snapshot(code) if code else None
+        if not snap:
+            idx["pe_percentile"] = None
+            idx["pb_percentile"] = None
+            idx["category"] = "unknown"
+            # 无历史序列不保留上游 win_rate（250 日上涨日占比恒≈50%，零信息）
+            idx["win_rate"] = None
+            continue
+        if snap["pe"] is not None:
+            idx["pe"] = snap["pe"]
+        if snap["pb"] is not None:
+            idx["pb"] = snap["pb"]
+        idx["pe_percentile"] = snap["pe_percentile"]
+        idx["pb_percentile"] = snap["pb_percentile"]
+        idx["category"] = _valuation_category(snap["pe_percentile"], snap["pe"])
+        if snap.get("as_of"):
+            idx["pe_as_of"] = snap["as_of"]
+        if snap.get("chg_1y_pct") is not None:
+            idx["change_1y_pct"] = snap["chg_1y_pct"]
+        # 条件胜率覆盖上游 win_rate（可比样本<10 个月时为 None，前端显示"—"）
+        idx["win_rate"] = snap.get("win_rate")
+    return indices
+
+
 def _map_index_valuation(data: list, category: str | None = None) -> list[dict]:
     """将 index_valuation 原始数据映射为前端 IndexValuation 格式，并按 category 过滤
 
-    pe/pb/百分位上游缺失时保留 None（前端显示"—"），绝不伪造为 0；
-    无百分位时 category 标记为 unknown（避免被误归入"极度低估"）。
+    pe/pb/百分位上游缺失时保留 None（前端显示"—"），绝不伪造为 0。
+    ⚠️ 此处的 pe_percentile 是上游混合口径值（腾讯 PE + 中证序列分位），
+    category 亦由此推导——调用方必须随后执行 _enrich_valuation_with_history
+    重算为同口径分位与类别，并在重算后再做 category 过滤。
     """
     indices = []
     for item in data:
         idx_name = item.get("index_name", "")
-        # 上证380 无 PE 数据、已弃用，由科创板替代（见 _swap_380_for_star_board）
+        # 上证380 无 PE 数据、已弃用，由科创综指替代（见 _swap_380_for_star_board）
         if idx_name == "上证380" or _get_index_code(idx_name) == "000009":
             continue
-        # 根据PE百分位判断估值类别
+        # 根据PE百分位判断估值类别（初判；随后会被同口径重算覆盖）
         pe_pct = _safe_float_or_none(item.get("pe_percentile"))
-        if pe_pct is None:
-            cat = "unknown"       # 上游无百分位数据
-        elif pe_pct < 20:
-            cat = "opportunity"   # 极度低估
-        elif pe_pct < 40:
-            cat = "undervalued"   # 低估
-        elif pe_pct > 80:
-            cat = "overvalued"    # 高估
-        else:
-            cat = "normal"        # 正常
+        pe_val = _safe_float_or_none(item.get("pe"))
 
         indices.append({
             "name": idx_name,
             "code": _get_index_code(idx_name),
-            "level": _safe_float(item.get("latest_price")),  # 当前点位(上游 latest_price)
-            "change_pct": _safe_float(item.get("chg_pct")),
-            "pe": _safe_float_or_none(item.get("pe")),
+            # 上游行情缺失时置 None（前端显示"—"），与 docstring「绝不伪造为 0」一致
+            "level": _safe_float_or_none(item.get("latest_price")),
+            "change_pct": _safe_float_or_none(item.get("chg_pct")),
+            "pe": pe_val,
             "pe_percentile": pe_pct,
             "pb": _safe_float_or_none(item.get("pb")),
             "pb_percentile": _safe_float_or_none(item.get("pb_percentile")),
-            "category": cat,
-            "change_3m_pct": _safe_float(item.get("3m_change_pct")),
-            "win_rate": _safe_float(item.get("win_rate")),
+            "category": _valuation_category(pe_pct, pe_val),
+            "change_3m_pct": _safe_float_or_none(item.get("3m_change_pct")),
+            # win_rate：此处透传上游混合口径值（250 日上涨日占比，恒≈50%），
+            # 随后 _enrich_valuation_with_history 会用同口径序列实算的条件胜率覆盖；
+            # 无历史序列时置 None（不保留零信息量的上游值）
+            "win_rate": _safe_float_or_none(item.get("win_rate")),
+            # 上游快照日期（行情口径），供前端展示「行情截至」
+            "valuation_date": str(item.get("date") or "")[:10] or None,
         })
 
     if category:
@@ -2027,24 +2329,25 @@ def _map_index_valuation(data: list, category: str | None = None) -> list[dict]:
 
 
 def _swap_380_for_star_board(indices: list[dict], category: str | None = None) -> list[dict]:
-    """上证380 已在 _map_index_valuation 剔除；此处补入科创板。
+    """上证380 已在 _map_index_valuation 剔除；此处补入科创综指(000680)。
 
-    科创板的 PE/PB 上游 index_valuation 与乐咕 stock_index_pe_lg 均无源，
-    故仅用实时行情补录点位/涨跌幅，估值字段置 None（category=unknown，前端显示"—"），
-    与原上证380（同样无 PE）的展示保持对称，绝不伪造估值。
+    科创综指的 PE/PB 上游 index_valuation 与网关 index-valuation 历史均无源
+    （000680 history 实测 months=None），故仅用实时行情补录点位/涨跌幅，
+    估值字段置 None（category=unknown，前端显示"—"），绝不伪造估值。
+    近3月涨跌幅用新浪日线实算（63 交易日间隔）；win_rate 不伪造 0，置 None。
     已含科创系列、或按非 unknown 分类过滤时不补录。
     """
-    # 按分类过滤时，科创板(unknown) 仅在未过滤或过滤 unknown 时加入
+    # 按分类过滤时，科创综指(unknown) 仅在未过滤或过滤 unknown 时加入
     if category and category != "unknown":
         return indices
     if any(idx.get("name") in ("科创板", "科创综指", "科创50") for idx in indices):
         return indices
-    quote = _fetch_index_quote("000699")
+    quote = _fetch_index_quote("000680")
     if not quote or not quote.get("price"):
         return indices
     indices.append({
-        "name": "科创板",
-        "code": "000699",
+        "name": "科创综指",
+        "code": "000680",
         "level": quote.get("price") or 0,
         "change_pct": quote.get("changePct") or 0,
         "pe": None,
@@ -2052,8 +2355,9 @@ def _swap_380_for_star_board(indices: list[dict], category: str | None = None) -
         "pb": None,
         "pb_percentile": None,
         "category": "unknown",
-        "change_3m_pct": 0,
-        "win_rate": 0,
+        "change_3m_pct": _chg_3m_from_sina("000680"),  # 新浪日线实算；取不到置 None（显示"—"）
+        "win_rate": None,                              # 上游无此字段，不伪造 0
+        "hasValuation": False,
     })
     return indices
 
@@ -2075,9 +2379,15 @@ def get_indices_with_meta(category: str | None = None, date: str | None = None) 
     data = _processed_data_request("index_valuation", {"subtype": "all", "period": 5}, retries=1, timeout=15)
 
     if data and isinstance(data, list):
-        indices = _map_index_valuation(data, category)
-        # 上证380 换成科创板（上游 index_valuation 无科创板估值，用实时行情补录，PE/PB 显示"—"）
-        indices = _swap_380_for_star_board(indices, category)
+        # 顺序很重要：先映射(不过滤) → 补录科创综指 → 同口径重算 pe/pb/分位/类别，
+        # 最后才按 category 过滤——保证过滤作用于重算后的正确类别
+        # （上游 pe_percentile 是腾讯 PE + 中证序列分位的混合口径，不可直接用于分类）
+        indices = _map_index_valuation(data)
+        # 上证380 换成科创综指（上游 index_valuation 无该指数，用实时行情补录，PE/PB 显示"—"）
+        indices = _swap_380_for_star_board(indices)
+        indices = _enrich_valuation_with_history(indices)
+        if category:
+            indices = [idx for idx in indices if idx.get("category") == category]
         print(f"[Indices] 成功获取 {len(indices)} 个指数估值")
         return indices, _build_meta(False, f"AkShare WebAPI ({AKSHARE_HOST})")
 
@@ -2218,8 +2528,6 @@ def get_kline(
 # 贵金属缓存(5分钟): SGE 历史每次拉全量(~2500行), 加缓存避免频繁打 AkShare
 _PRECIOUS_CACHE: dict = {"data": None, "ts": 0, "lock": threading.Lock()}
 _PRECIOUS_TTL = 300
-# 走势图展示用的历史长度(近 1 年交易日)
-_PRECIOUS_HISTORY_N = 250
 
 
 def get_precious_metals_with_meta() -> tuple[dict, dict]:
@@ -2273,8 +2581,9 @@ def get_precious_metals_with_meta() -> tuple[dict, dict]:
         if pp:
             s_change = round((s_price_raw - pp) / pp * 100, 2)
     silver_hist = [
-        {"date": r.get("date"), "price": round(_safe_float(r.get("close"), None) / 1000, 2)}
+        {"date": r.get("date"), "price": round(v / 1000, 2)}
         for r in silver_rows
+        if (v := _safe_float(r.get("close"), None)) is not None
     ]
 
     # --- 金银比: 基于完整对齐窗口(不截断), 以白银(数据更稀缺)为锚匹配黄金 ---
@@ -2285,7 +2594,10 @@ def get_precious_metals_with_meta() -> tuple[dict, dict]:
         d = r.get("date")
         ag_raw = ag_map.get(d)
         if ag_raw and ag_raw > 0:
-            ratio = _safe_float(r.get("close"), None) / (ag_raw / 1000)
+            g_close = _safe_float(r.get("close"), None)
+            if g_close is None:
+                continue
+            ratio = g_close / (ag_raw / 1000)
             ratio_hist.append({"date": d, "ratio": round(ratio, 2)})
 
     current_ratio = ratio_hist[-1]["ratio"] if ratio_hist else None

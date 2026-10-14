@@ -15,7 +15,6 @@ const { username, isLoggedIn, logout } = useAuth()
 function onLogout() {
   logout()
   message.success('已退出登录')
-  router.push('/login')
 }
 
 // ---- 修改密码 ----

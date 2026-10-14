@@ -19,6 +19,9 @@ backend/_claw_backend.log
 .vscode/
 *.swp
 
+# Agent working memory（不应入库）
+.workbuddy/
+
 # Env
 .env
 .env.local
@@ -36,6 +39,3 @@ backend/out.log
 frontend/_diag_*.py
 frontend/_verify_*.py
 frontend/public/_diag_*.html
-
-# WorkBuddy AI 工作目录（记忆/日志等本地文件，不入库）
-.workbuddy/

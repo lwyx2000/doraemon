@@ -640,7 +640,7 @@ def _build_closed_funds_from_jisilu() -> list[dict]:
             "price": price or 0,
             "iopv": 0,
             "premium_pct": premium,
-            "premium_percentile": 50,
+            "premium_percentile": None,
             "net_arbitrage_yield": premium,
             "volume": volume,
             # 剩余年限统一为 parse_remaining_days 可解析的 "X Years" 字符串
@@ -717,7 +717,7 @@ def _build_closed_funds_from_rank() -> list[dict]:
             "price": _safe_float(_pick(item, "最新价")) or 0,
             "iopv": 0,
             "premium_pct": 0,
-            "premium_percentile": 50,
+            "premium_percentile": None,
             "net_arbitrage_yield": 0,
             "volume": 0,
             "remaining_term": remaining_term,

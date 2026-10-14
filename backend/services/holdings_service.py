@@ -18,7 +18,7 @@ from typing import Any, Optional
 
 import requests
 
-from database.connection import get_db
+from database.sqlite_connection import get_biz_db
 from core.config import USE_MOCK_DATA
 from services.akshare_client import akshare_request
 
@@ -54,7 +54,7 @@ def _ensure_tables() -> None:
     global _TABLES_READY
     if _TABLES_READY or USE_MOCK_DATA:
         return
-    db = get_db()
+    db = get_biz_db()
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS biz_holdings (
@@ -74,15 +74,32 @@ def _ensure_tables() -> None:
             currency         VARCHAR(8) DEFAULT 'CNY',
             created_at       VARCHAR,
             updated_at       VARCHAR,
-            fair_value       DOUBLE
+            fair_value       DOUBLE,
+            is_closed        INTEGER NOT NULL DEFAULT 0,
+            closed_at        VARCHAR,
+            realized_pnl     DOUBLE,
+            close_price      DOUBLE
         )
         """
     )
     # 兼容旧库：缺失新列时增量迁移（DuckDB 不支持 ADD COLUMN IF NOT EXISTS）
-    for col, dtype in (("stop_loss_pct", "DOUBLE"), ("take_profit_pct", "DOUBLE"), ("fair_value", "DOUBLE"),
-                       ("grid_lower", "DOUBLE"), ("grid_upper", "DOUBLE"), ("grid_step", "DOUBLE")):
+    for col, dtype, default in (
+        ("stop_loss_pct", "DOUBLE", None),
+        ("take_profit_pct", "DOUBLE", None),
+        ("fair_value", "DOUBLE", None),
+        ("grid_lower", "DOUBLE", None),
+        ("grid_upper", "DOUBLE", None),
+        ("grid_step", "DOUBLE", None),
+        ("is_closed", "INTEGER", "0"),
+        ("closed_at", "VARCHAR", None),
+        ("realized_pnl", "DOUBLE", None),
+        ("close_price", "DOUBLE", None),
+    ):
         try:
-            db.execute(f"ALTER TABLE biz_holdings ADD COLUMN {col} {dtype}")
+            if default is None:
+                db.execute(f"ALTER TABLE biz_holdings ADD COLUMN {col} {dtype}")
+            else:
+                db.execute(f"ALTER TABLE biz_holdings ADD COLUMN {col} {dtype} DEFAULT {default}")
         except Exception as e:  # noqa: BLE001
             if "already exists" not in str(e).lower() and "duplicate" not in str(e).lower():
                 import sys
@@ -119,12 +136,12 @@ def _load_holdings(user_id: str) -> list[dict]:
     if USE_MOCK_DATA:
         return _mock_holdings.setdefault(user_id, [])
     _ensure_tables()
-    db = get_db()
+    db = get_biz_db()
     rows = db.fetchall(
         "SELECT id, code, name, type, broker, account, quantity, cost_price, "
         "manual_price, stop_loss_pct, take_profit_pct, open_date, currency, created_at, updated_at, fair_value, "
-        "grid_lower, grid_upper, grid_step "
-        "FROM biz_holdings WHERE fk_user = ? ORDER BY created_at",
+        "grid_lower, grid_upper, grid_step, is_closed, closed_at, realized_pnl, close_price "
+        "FROM biz_holdings WHERE fk_user = ? AND (is_closed = 0 OR is_closed IS NULL) ORDER BY created_at",
         [user_id],
     )
     return [
@@ -140,6 +157,10 @@ def _load_holdings(user_id: str) -> list[dict]:
             "grid_lower": None if r[16] is None else float(r[16]),
             "grid_upper": None if r[17] is None else float(r[17]),
             "grid_step": None if r[18] is None else float(r[18]),
+            "is_closed": r[19] if r[19] is not None else 0,
+            "closed_at": r[20],
+            "realized_pnl": None if r[21] is None else float(r[21]),
+            "close_price": None if r[22] is None else float(r[22]),
         }
         for r in rows
     ]
@@ -155,7 +176,7 @@ def _save_holding(user_id: str, item: dict) -> None:
         holdings.append(item)
         return
     _ensure_tables()
-    db = get_db()
+    db = get_biz_db()
     db.execute("DELETE FROM biz_holdings WHERE id = ?", [item["id"]])
     db.execute(
         "INSERT INTO biz_holdings "
@@ -202,7 +223,7 @@ def import_holdings(user_id: str, items: list[dict]) -> dict:
             failed.append({"index": idx, "code": code, "reason": "quantity/cost_price 缺失或为0"})
             continue
 
-        key = f"{code}|{htype}|{account}"
+        key = f"{code}|{htype}|{str(raw.get('broker') or '')}|{account}"
         now = _now_iso()
         if key in existing:
             item = existing[key]
@@ -258,21 +279,72 @@ def update_holding(user_id: str, holding_id: str, fields: dict) -> Optional[dict
 
 
 def delete_holding(user_id: str, holding_id: str) -> bool:
+    """软删除（平仓）：保留记录到历史持仓，记录平仓价与已实现盈亏。
+
+    平仓价优先取实时行情，取不到则退回 manual_price；已实现盈亏 = (平仓价 - 成本价) × 数量。
+    原硬删除语义改为平仓归档，便于「历史持仓」标签展示已平仓标的。
+    """
     holdings = _load_holdings(user_id)
+    target = next((h for h in holdings if h["id"] == holding_id), None)
     if USE_MOCK_DATA:
-        before = len(holdings)
+        if target is None:
+            return False
         holdings[:] = [h for h in holdings if h["id"] != holding_id]
-        return len(holdings) < before
+        return True
     _ensure_tables()
-    db = get_db()
+    db = get_biz_db()
     row = db.fetchone(
         "SELECT count(*) FROM biz_holdings WHERE id = ? AND fk_user = ?",
         [holding_id, user_id],
     )
     if not row or row[0] == 0:
         return False
-    db.execute("DELETE FROM biz_holdings WHERE id = ?", [holding_id])
+    close_price = target.get("manual_price")
+    realized_pnl = None
+    try:
+        q = _fetch_quotes([target]) if not USE_MOCK_DATA else {}
+        price = q.get(_digits(target["code"]), {}).get("price")
+        if price is not None:
+            close_price = price
+    except Exception:  # noqa: BLE001
+        pass
+    if close_price is not None:
+        realized_pnl = (close_price - target["cost_price"]) * target["quantity"]
+    db.execute(
+        "UPDATE biz_holdings SET is_closed = 1, closed_at = ?, realized_pnl = ?, close_price = ? "
+        "WHERE id = ?",
+        [_now_iso(), realized_pnl, close_price, holding_id],
+    )
     return True
+
+
+def get_holding_history(user_id: str) -> list[dict]:
+    """已平仓（历史）持仓：按平仓时间倒序。"""
+    if USE_MOCK_DATA:
+        return []
+    _ensure_tables()
+    db = get_biz_db()
+    rows = db.fetchall(
+        "SELECT id, code, name, type, broker, account, quantity, cost_price, "
+        "manual_price, open_date, currency, created_at, updated_at, fair_value, "
+        "closed_at, realized_pnl, close_price "
+        "FROM biz_holdings WHERE fk_user = ? AND is_closed = 1 ORDER BY closed_at DESC",
+        [user_id],
+    )
+    return [
+        {
+            "id": r[0], "code": r[1], "name": r[2], "type": r[3],
+            "broker": r[4] or "", "account": r[5] or "", "quantity": float(r[6]), "cost_price": float(r[7]),
+            "manual_price": None if r[8] is None else float(r[8]),
+            "open_date": r[9], "currency": r[10] or "CNY",
+            "created_at": r[11], "updated_at": r[12],
+            "fair_value": None if r[13] is None else float(r[13]),
+            "closed_at": r[14],
+            "realized_pnl": None if r[15] is None else float(r[15]),
+            "close_price": None if r[16] is None else float(r[16]),
+        }
+        for r in rows
+    ]
 
 
 # ============================================================
@@ -693,7 +765,7 @@ def _upsert_snapshot(
         snaps.append(snap)
     else:
         _ensure_tables()
-        db = get_db()
+        db = get_biz_db()
         db.execute(
             "DELETE FROM biz_holding_snapshots WHERE fk_user = ? AND snap_date = ?",
             [user_id, snap_date],
@@ -714,7 +786,7 @@ def get_snapshots(user_id: str) -> list[dict]:
     if USE_MOCK_DATA:
         return sorted(_mock_snapshots.get(user_id, []), key=lambda s: s["snap_date"])
     _ensure_tables()
-    db = get_db()
+    db = get_biz_db()
     rows = db.fetchall(
         "SELECT id, snap_date, total_market_value, total_cost, total_pnl, "
         "total_pnl_pct, daily_pnl, holding_count, priced_count, created_at "

@@ -7,6 +7,7 @@ Run:
 Doraemon 后端使用 8001 端口，通过 AKSHARE_API_BASE (默认 http://192.168.3.53:8000) 获取数据。
 """
 
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from core.config import APP_NAME, APP_VERSION, API_PREFIX, USE_MOCK_DATA
 from database.connection import close_db, get_db
+from database.sqlite_connection import get_biz_db, close_biz_db
 
 
 # ============================================================
@@ -34,15 +36,19 @@ async def lifespan(app: FastAPI):
         from database.init_db import ensure_schema
 
         ensure_schema(db)
-        # 启动期幂等种子默认账号（trader / sos）到 biz_users，仅当不存在时插入
-        from services.auth_service import ensure_seed_users
-        ensure_seed_users(db)
         # 用户绑定迁移：pk_users(UUID) -> pk_user(BIGINT 自增)；fk_users(UUID) -> fk_user(BIGINT)，幂等
         from database.init_db import migrate_pk_user_schema
         migrate_pk_user_schema(db)
         # 用户安全列迁移：增加 must_change_password / token_version（强制改密 + 令牌失效），幂等
         from database.init_db import migrate_user_security_columns
         migrate_user_security_columns(db)
+        # 业务（biz_*）数据迁至独立 SQLite 库：建表 + 从 DuckDB 拷贝现有业务数据（幂等，重启保留）。
+        # 必须在上面的 DuckDB 用户迁移之后执行，确保拷入 SQLite 的 biz_users 已是正确 pk_user 结构。
+        from database.init_sqlite import init_biz_database
+        init_biz_database()
+        # 启动期幂等种子默认账号（trader / sos）到 biz_users（SQLite），仅当不存在时插入
+        from services.auth_service import ensure_seed_users
+        ensure_seed_users(get_biz_db())
         # 申万行业快照：定时收盘落库 + 首次启动自动回填历史
         from jobs.sw_snapshot_job import start_sw_snapshot_scheduler
 
@@ -51,6 +57,38 @@ async def lifespan(app: FastAPI):
         from jobs.turnover_snapshot_job import start_turnover_snapshot_scheduler
 
         start_turnover_snapshot_scheduler()
+        # 贪婪恐惧指数：每交易日收盘后采集 6 指标情绪温度计（历史需首次回填，见 /fear-greed/backfill）
+        from jobs.fear_greed_job import start_fear_greed_scheduler
+
+        start_fear_greed_scheduler()
+        # 红利基金规模/费率：每日凌晨后台渐进补全（同花顺只能逐只查询）
+        from jobs.dividend_fee_job import start_dividend_fee_scheduler
+
+        start_dividend_fee_scheduler()
+        # 红利基金跟踪指数识别：每日凌晨后台渐进补全（天天基金 F10 逐只取「跟踪标的」）
+        from jobs.dividend_index_map_job import start_dividend_index_map_scheduler
+
+        start_dividend_index_map_scheduler()
+        # 红利基金季报持仓：每日凌晨后台渐进补全（东财 fund_portfolio_hold_em 逐只取）
+        from jobs.dividend_holdings_job import start_dividend_holdings_scheduler
+
+        start_dividend_holdings_scheduler()
+        # 红利/现金流三类补充指标（跟踪误差 / 分红频率 / 行业集中度）：每日凌晨后台渐进补全
+        from jobs.dividend_extra_metrics_job import start_dividend_extra_metrics_scheduler
+
+        start_dividend_extra_metrics_scheduler()
+        # 红利指数 PE 历史序列回填：每日 07:20 小批量推进（中证官网长期限流，不能一次拉完）
+        from jobs.dividend_pe_backfill_job import start_dividend_pe_backfill_scheduler
+
+        start_dividend_pe_backfill_scheduler()
+        # ETF 每日申赎快照：每天 19:00 快照份额/规模/净值（麦蕊 fund_rank etf）
+        from jobs.etf_subscription_job import start_etf_subscription_scheduler
+
+        start_etf_subscription_scheduler()
+        # ETF 费率后台渐进补全：每天 05:00 补一批（复用 fund_fee_service 三源互备）
+        from jobs.etf_fee_job import start_etf_fee_scheduler
+
+        start_etf_fee_scheduler()
         # 监控缓存配置：从 biz_config 恢复（重启保留用户改过的配置）
         from services.monitor_service import load_cache_config
 
@@ -66,7 +104,32 @@ async def lifespan(app: FastAPI):
         from jobs.turnover_snapshot_job import stop_turnover_snapshot_scheduler
 
         stop_turnover_snapshot_scheduler()
+        from jobs.fear_greed_job import stop_fear_greed_scheduler
+
+        stop_fear_greed_scheduler()
+        from jobs.dividend_fee_job import stop_dividend_fee_scheduler
+
+        stop_dividend_fee_scheduler()
+        from jobs.dividend_index_map_job import stop_dividend_index_map_scheduler
+
+        stop_dividend_index_map_scheduler()
+        from jobs.dividend_holdings_job import stop_dividend_holdings_scheduler
+
+        stop_dividend_holdings_scheduler()
+        from jobs.dividend_extra_metrics_job import stop_dividend_extra_metrics_scheduler
+
+        stop_dividend_extra_metrics_scheduler()
+        from jobs.dividend_pe_backfill_job import stop_dividend_pe_backfill_scheduler
+
+        stop_dividend_pe_backfill_scheduler()
+        from jobs.etf_subscription_job import stop_etf_subscription_scheduler
+
+        stop_etf_subscription_scheduler()
+        from jobs.etf_fee_job import stop_etf_fee_scheduler
+
+        stop_etf_fee_scheduler()
     close_db()
+    close_biz_db()
     print("[Shutdown] Database connection closed")
 
 
@@ -81,16 +144,25 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS — allow frontend dev server
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
+# CORS — 仅放行显式来源，禁止 `*` + allow_credentials 的危险组合。
+# 生产环境前端经 nginx 同源反代 /api，不触发跨域；
+# 开发态 Vite 跑在 localhost:5173/5174；如需额外来源用环境变量 CORS_ALLOW_ORIGINS 注入（逗号分隔）。
+def _cors_allow_origins() -> list[str]:
+    env = os.getenv("CORS_ALLOW_ORIGINS")
+    if env:
+        return [o.strip() for o in env.split(",") if o.strip()]
+    return [
         "http://localhost:5173",
         "http://localhost:5174",
         "http://127.0.0.1:5173",
         "http://127.0.0.1:5174",
-        "*",  # 开发环境允许所有来源
-    ],
+        "http://192.168.3.53:9080",  # 生产环境前端同源 nginx 反代 /api，此处仅作兜底白名单
+    ]
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_allow_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -123,6 +195,7 @@ from routers.valuation_router import router as valuation_router
 from routers.charts_router import router as charts_router
 from routers.datasource_router import router as datasource_router
 from routers.jobs_router import router as jobs_router
+from routers.dividend_router import router as dividend_router
 
 app.include_router(auth_router, prefix=f"{API_PREFIX}/auth")
 app.include_router(broker_account_router, prefix=API_PREFIX)
@@ -146,6 +219,7 @@ app.include_router(valuation_router, prefix=f"{API_PREFIX}/valuation")
 app.include_router(charts_router, prefix=f"{API_PREFIX}/charts")
 app.include_router(datasource_router, prefix=f"{API_PREFIX}/datasources")
 app.include_router(jobs_router, prefix=f"{API_PREFIX}/jobs")
+app.include_router(dividend_router, prefix=f"{API_PREFIX}/dividend")
 
 
 # ============================================================

@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from database.connection import get_db
+from database.sqlite_connection import get_biz_db
 from core.config import USE_MOCK_DATA
 
 # In-memory storage for mock mode.
@@ -21,7 +21,7 @@ def get_portfolios(user_id: str) -> list[dict]:
     if USE_MOCK_DATA:
         return _mock_portfolios.get(user_id, [])
 
-    db = get_db()
+    db = get_biz_db()
     rows = db.fetchall(
         "SELECT pk_portfolios AS id, fk_user AS user_id, name, created_at "
         "FROM biz_portfolios WHERE fk_user = ? ORDER BY created_at DESC",
@@ -74,7 +74,7 @@ def add_portfolio_item(
         _mock_portfolio_items.setdefault(portfolio_id, []).append(item)
         return item
 
-    db = get_db()
+    db = get_biz_db()
     # 确保组合记录存在（若不存在则按 portfolio_id 创建，与 mock 行为一致）
     db.execute(
         "INSERT OR IGNORE INTO biz_portfolios "

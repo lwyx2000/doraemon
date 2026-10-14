@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { NIcon } from 'naive-ui'
 import {
 StatsChartOutline,
+Analytics,
 TrendingUp,
 WalletOutline,
   LockClosedOutline,
@@ -20,9 +21,9 @@ WalletOutline,
   SettingsOutline,
   DiamondOutline,
   FlashOutline,
+  GiftOutline,
   PeopleOutline,
   BarChartOutline,
-  TimeOutline,
 } from '@vicons/ionicons5'
 import { useSidebar } from '../composables/useSidebar'
 import { useTabs } from '../composables/useTabs'
@@ -48,6 +49,18 @@ async function loadDataSourceStatus() {
 }
 onMounted(loadDataSourceStatus)
 
+// 构建信息（2026-09 由 vite.config.ts 的 `define` 在**构建时**注入）
+// 目的：一眼判断 53 上跑的是不是最新部署的 —— 构建时间每次部署都会变。
+const buildTime = __BUILD_TIME__
+const buildCommit = __COMMIT__
+const buildBranch = __BRANCH__
+// `define` 的值不能含空格/减号（会被当 JS 表达式），注入格式为 `20261009T0012`，
+//   这里还原成 `2026-10-09 00:12` 便于阅读。
+const buildTimeDisplay = (() => {
+  const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})$/.exec(buildTime)
+  return m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}` : buildTime
+})()
+
 // 集思录登录/可用态展示
 const jisiluLoggedIn = computed(() => dataSourceStatus.value?.jisiluLoggedIn ?? false)
 const jisiluLabel = computed(() => {
@@ -69,12 +82,14 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { name: 'Dashboard', path: '/dashboard', icon: StatsChartOutline, label: '宏观看板' },
+  { name: 'IndexAnalysis', path: '/index-analysis', icon: Analytics, label: '指数分析' },
   { name: 'IndexValuation', path: '/index-valuation', icon: TrendingUp, label: '宽基估值分位' },
   { name: 'LofFunds', path: '/lof-funds', icon: WalletOutline, label: 'LOF基金' },
   { name: 'ClosedFunds', path: '/closed-funds', icon: LockClosedOutline, label: '封闭基金' },
   { name: 'ConvertibleBonds', path: '/convertible-bonds', icon: CashOutline, label: '可转债' },
   { name: 'EtfFunds', path: '/etf-funds', icon: SwapHorizontalOutline, label: 'ETF基金' },
   { name: 'Reits', path: '/reits', icon: Wallet, label: '公募REITs' },
+  { name: 'DividendFundHub', path: '/dividend-funds', icon: GiftOutline, label: '红利基金' },
   { name: 'PortfolioWatchlist', path: '/portfolio-watchlist', icon: Star, label: '投资组合' },
   { name: 'HoldingsAnalysis', path: '/holdings', icon: BriefcaseOutline, label: '持仓分析' },
   { name: 'StrategyCenter', path: '/strategy-center', icon: OptionsOutline, label: '策略中心' },
@@ -84,7 +99,6 @@ const navItems: NavItem[] = [
   { name: 'DataSources', path: '/data-sources', icon: ServerOutline, label: '数据来源' },
   { name: 'PreciousMetals', path: '/precious-metals', icon: DiamondOutline, label: '贵金属' },
   { name: 'MarketCharts', path: '/market-charts', icon: BarChartOutline, label: '市场复盘' },
-  { name: 'JobsMonitor', path: '/jobs-monitor', icon: TimeOutline, label: '任务监控' },
   { name: 'SystemSettings', path: '/system-settings', icon: SettingsOutline, label: '系统设置' },
 ]
 
@@ -157,6 +171,13 @@ if (typeof window !== 'undefined') {
       <div class="market-status" :title="jisiluTitle">
         <span :class="['status-dot', { 'status-dot-off': !jisiluLoggedIn }]" />
         <span class="status-text">集思录 {{ jisiluLabel }}</span>
+      </div>
+      <!-- 构建版本（2026-10-09）：一眼看出53 上跑的是不是最新部署的 -->
+      <div
+        class="build-info"
+        :title="`构建 ${buildTimeDisplay}｜分支 ${buildBranch}｜提交 ${buildCommit}`"
+      >
+        v1.0.0 · 构建 {{ buildTimeDisplay }}
       </div>
     </div>
   </aside>
@@ -298,6 +319,20 @@ if (typeof window !== 'undefined') {
   padding: 12px 16px;
   margin-top: auto;
   border-top: 1px solid var(--border-default);
+}
+
+/* 构建版本号（2026-09）：判断部署是否最新用 */
+.build-info {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-default);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text-tertiary, var(--text-secondary));
+  text-align: center;
+  cursor: default;
+  user-select: none;
 }
 
 .market-status {

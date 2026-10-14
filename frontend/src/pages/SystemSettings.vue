@@ -13,6 +13,7 @@ import {
   MoonOutline,
   SunnyOutline,
   InformationCircleOutline,
+  WarningOutline,
   CheckmarkCircleOutline,
   CloseCircleOutline,
   SaveOutline,
@@ -137,6 +138,36 @@ async function loadDataSourceStatus() {
     dataSourceLoading.value = false
   }
 }
+
+// 集思录未登录时，按上游细分状态给出**不同的**指引
+// （「没配」要从零配置，「已失效」只需刷新，两者不能混为一谈）
+const jisiluGuide = computed(() => {
+  const st = dataSourceStatus.value
+  if (!st || st.jisiluLoggedIn) return null
+  const status = st.jisiluStatus ?? ''
+  if (status === 'cookie_invalid' || st.jisiluHasCookie) {
+    return {
+      title: '集思录 Cookie 已失效',
+      desc: 'Cookie 是集思录的动态登录态，会定期过期，程序无法自动续期，需人工刷新一次：',
+      steps: [
+        '在服务器 192.168.3.53 上，用浏览器登录 jisilu.cn 并复制 Cookie',
+        '更新 akshareWebApi 的 Cookie 配置（akshareWebApi/.env 里的 JISILU_COOKIE）',
+        '重建 akshare-webapi 容器使配置生效',
+        '回到本页点检测，应显示「已登录」',
+      ],
+    }
+  }
+  return {
+    title: '集思录 Cookie 未配置',
+    desc: '当前尚未配置集思录 Cookie，只能拿到游客数据。若需要可转债 YTM / 溢价率等深度数据，请按下列步骤配置：',
+    steps: [
+      '在服务器 192.168.3.53 上，用浏览器登录 jisilu.cn 并复制 Cookie',
+      '写入 akshareWebApi 的 Cookie 配置（akshareWebApi/.env 里的 JISILU_COOKIE）',
+      '重建 akshare-webapi 容器使配置生效',
+      '回到本页点检测，应显示「已登录」',
+    ],
+  }
+})
 
 // ============================================================
 // 缓存配置
@@ -492,7 +523,11 @@ onMounted(async () => {
                           ? { background: 'var(--tag-green-bg)', color: 'var(--tag-green-text)' }
                           : { background: 'var(--tag-red-bg)', color: 'var(--tag-red-text)' }"
                       >
-                        {{ dataSourceStatus?.jisiluLoggedIn ? '已登录' : '未登录' }}
+                        {{ dataSourceStatus?.jisiluLoggedIn
+                        ? '已登录'
+                        : (dataSourceStatus?.jisiluStatus === 'cookie_invalid' || dataSourceStatus?.jisiluHasCookie
+                            ? '已失效'
+                            : '未配置') }}
                       </n-tag>
                       <span class="ds-endpoint">可转债 YTM / 溢价率数据源</span>
                     </div>
@@ -504,6 +539,25 @@ onMounted(async () => {
                 </div>
                 <div v-else-if="dataSourceLoading" class="ds-timestamp">
                   正在检测数据源连接...
+                </div>
+
+                <!-- 集思录未登录 → 一键引导（按「未配置」/「已失效」给不同指引） -->
+                <div v-if="jisiluGuide" class="jisilu-guide">
+                  <div class="jg-title">
+                    <n-icon :component="WarningOutline" size="15" />
+                    <span>{{ jisiluGuide.title }}</span>
+                  </div>
+                  <div class="jg-body">{{ jisiluGuide.desc }}</div>
+                  <ol class="jg-steps">
+                    <li v-for="(s, i) in jisiluGuide.steps" :key="i">{{ s }}</li>
+                  </ol>
+                  <div v-if="dataSourceStatus?.jisiluMessage" class="jg-upstream">
+                    上游说明：{{ dataSourceStatus.jisiluMessage }}
+                  </div>
+                  <div class="jg-note">
+                    影响范围：仅<b>可转债到期收益率（YTM）/ 溢价率</b>等集思录深度数据；
+                    行情、ETF/LOF、指数估值等 AkShare 数据源不受影响，可正常使用。
+                  </div>
                 </div>
 
                 <div class="setting-hint">
@@ -1048,6 +1102,71 @@ onMounted(async () => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+/* 集思录 Cookie 失效引导 */
+.jisilu-guide {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-warning, #d97706);
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: var(--bg-hover);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
+.jisilu-guide .jg-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--color-warning, #d97706);
+  margin-bottom: 6px;
+}
+
+.jisilu-guide .jg-body b,
+.jisilu-guide .jg-note b {
+  color: var(--text-primary);
+}
+
+.jisilu-guide .jg-steps {
+  margin: 8px 0;
+  padding-left: 20px;
+  color: var(--text-secondary);
+}
+
+.jisilu-guide .jg-steps li {
+  margin: 3px 0;
+}
+
+.jisilu-guide code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  background: var(--bg-tertiary, var(--bg-hover));
+  padding: 2px 6px;
+  border-radius: 3px;
+  color: var(--color-primary);
+}
+
+.jisilu-guide .jg-upstream {
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: var(--bg-tertiary, var(--bg-hover));
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.jisilu-guide .jg-note {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-color, rgba(128, 128, 128, 0.25));
+  font-size: 11px;
+  opacity: 0.9;
 }
 
 .form-value {

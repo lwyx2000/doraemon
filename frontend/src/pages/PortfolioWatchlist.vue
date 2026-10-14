@@ -8,6 +8,7 @@ import { useAsyncData } from '../composables/useApi'
 import { api, isGatewayNoData } from '../utils/api'
 import type { FundItem } from '../types'
 import { exportToCSV } from '../utils/export'
+import { pctColor } from '../utils/percentile'
 import PageHeader from '../components/PageHeader.vue'
 import StatCard from '../components/StatCard.vue'
 import DataPanel from '../components/DataPanel.vue'
@@ -156,7 +157,7 @@ const columns = computed(() => [
     align: 'center' as const,
     render: (row: FundItem) => row.premium_percentile != null
       ? h('div', { class: 'perc-bar' }, [
-        h('div', { class: 'perc-fill', style: { width: row.premium_percentile + '%' } }),
+        h('div', { class: 'perc-fill', style: { width: row.premium_percentile + '%', background: pctColor(row.premium_percentile) } }),
       ])
       : h('span', { class: 'text-muted' }, '-'),
   },
@@ -166,86 +167,43 @@ const columns = computed(() => [
 // ECharts options — replace static SVG donut + sparkline
 // ============================================================
 
-// Asset allocation donut chart — 动态按基金类型分布计算
-const allocationChartOption = computed(() => {
-  const list = funds.value ?? []
-  const counts: Record<string, number> = { lof: 0, closed: 0, cb: 0, reits: 0 }
-  list.forEach(f => {
-    if (f.type === 'lof' || f.type === 'qdii') counts.lof++
-    else if (f.type === 'closed') counts.closed++
-    else counts.lof++
-  })
-  const total = list.length || 1
-  const data = [
-    { value: counts.lof, name: 'LOF基金', itemStyle: { color: '#005ea1' } },
-    { value: counts.closed, name: '封闭基金', itemStyle: { color: '#585e6c' } },
-  ].filter(d => d.value > 0)
-  if (!data.length) {
-    data.push({ value: 1, name: '暂无数据', itemStyle: { color: '#d0d0d0' } })
-  }
-  return {
-    tooltip: {
-      trigger: 'item',
-      formatter: '{b}: {c} ({d}%)',
-    },
-    legend: { show: false },
-    series: [
-      {
-        type: 'pie',
-        radius: ['55%', '78%'],
-        avoidLabelOverlap: false,
-        label: { show: false },
-        labelLine: { show: false },
-        itemStyle: {
-          borderColor: 'transparent',
-          borderWidth: 2,
-        },
-        data,
+// Asset allocation donut chart
+const allocationChartOption = computed(() => ({
+  tooltip: {
+    trigger: 'item',
+    formatter: '{b}: {c} ({d}%)',
+  },
+  legend: { show: false },
+  series: [
+    {
+      type: 'pie',
+      radius: ['55%', '78%'],
+      avoidLabelOverlap: false,
+      label: { show: false },
+      labelLine: { show: false },
+      itemStyle: {
+        borderColor: 'transparent',
+        borderWidth: 2,
       },
-    ],
-  }
-})
+      data: [
+        { value: 45, name: 'LOF基金', itemStyle: { color: '#005ea1' } },
+        { value: 30, name: '封闭基金', itemStyle: { color: '#585e6c' } },
+        { value: 15, name: '可转债', itemStyle: { color: '#864f00' } },
+        { value: 10, name: 'REITs', itemStyle: { color: '#2178c3' } },
+      ],
+    },
+  ],
+}))
 
-// 持仓概览统计（动态计算）
-const portfolioStats = computed(() => {
-  const list = funds.value ?? []
-  if (!list.length) {
-    return { total: 0, avgPremium: 0, avgPremiumStr: '—', opportunityCount: 0, avgDiscountStr: '—' }
-  }
-  const total = list.length
-  // 平均溢价率
-  const avgPremium = list.reduce((s, f) => s + f.premium_pct, 0) / total
-  // 套利机会数（|折溢价| > 3%）
-  const opportunityCount = list.filter(f => Math.abs(f.premium_pct) > 3).length
-  // 平均折价（仅封闭/LOF）
-  const discounts = list.filter(f => f.premium_pct < 0).map(f => Math.abs(f.premium_pct))
-  const avgDiscountStr = discounts.length
-    ? `${(discounts.reduce((a, b) => a + b, 0) / discounts.length).toFixed(2)}%`
-    : '—'
-  return {
-    total, avgPremium,
-    avgPremiumStr: `${avgPremium >= 0 ? '+' : ''}${avgPremium.toFixed(2)}%`,
-    opportunityCount, avgDiscountStr,
-  }
-})
-
-// Discount convergence trend — 按折价率降序取前6只，归一化为百分比高度
-const convergenceData = computed(() => {
-  const list = funds.value ?? []
-  if (!list.length) return []
-  const discounted = list.filter(f => f.premium_pct < 0).slice(0, 6)
-  if (!discounted.length) return []
-  const maxVal = Math.max(...discounted.map(f => Math.abs(f.premium_pct)), 1)
-  return discounted.map(f => Math.round((Math.abs(f.premium_pct) / maxVal) * 100))
-})
-
+// Discount convergence trend — line chart with area gradient
+const convergenceData = [75, 60, 80, 55, 85, 95]
 const convergenceChartOption = computed(() => ({
   tooltip: { trigger: 'axis', formatter: (p: any) => `第${p[0].index + 1}期: ${p[0].value}%` },
   grid: { top: 8, right: 8, bottom: 8, left: 24 },
   xAxis: {
     type: 'category',
     show: false,
-    data: convergenceData.value.map((_, i) => i + 1),
+    data: convergenceData.map((_, i) => i + 1),
   },
   yAxis: {
     type: 'value',
@@ -260,7 +218,7 @@ const convergenceChartOption = computed(() => ({
       symbol: 'circle',
       symbolSize: 6,
       showSymbol: true,
-      data: convergenceData.value,
+      data: convergenceData,
       lineStyle: { width: 2, color: '#005ea1' },
       itemStyle: { color: '#005ea1' },
       areaStyle: {
@@ -314,37 +272,39 @@ const convergenceChartOption = computed(() => ({
         <div class="donut-container">
           <BaseChart :option="allocationChartOption" :height="140" />
           <div class="donut-center">
-            <span class="donut-total">{{ portfolioStats.total }}</span>
+            <span class="donut-total">14</span>
             <span class="donut-label">总计</span>
           </div>
         </div>
         <div class="allocation-legend">
-          <div class="legend-item"><span class="legend-dot" style="background: var(--color-primary)" />LOF基金 ({{ funds?.filter(f => f.type === 'lof' || f.type === 'qdii').length ?? 0 }})</div>
-          <div class="legend-item"><span class="legend-dot" style="background:#585e6c" />封闭基金 ({{ funds?.filter(f => f.type === 'closed').length ?? 0 }})</div>
+          <div class="legend-item"><span class="legend-dot" style="background: var(--color-primary)" />LOF基金 (45%)</div>
+          <div class="legend-item"><span class="legend-dot" style="background:#585e6c" />封闭基金 (30%)</div>
+          <div class="legend-item"><span class="legend-dot" style="background:#864f00" />可转债 (15%)</div>
+          <div class="legend-item"><span class="legend-dot" style="background: var(--color-primary-hover)" />REITs (10%)</div>
         </div>
       </div>
 
       <!-- Performance Cards -->
       <div class="bento-card">
         <span class="bento-label">总盈亏</span>
-        <span class="bento-value" style="color: var(--color-success)">—</span>
+        <span class="bento-value" style="color: var(--color-success)">+¥1.24M</span>
         <div class="bento-trend">
           <n-icon :component="TrendingUpOutline" size="16" />
-          暂未接入盈亏数据
+          2.4% 今日
         </div>
-        <div class="progress-bar"><div class="progress-fill success" style="width:0%" /></div>
+        <div class="progress-bar"><div class="progress-fill success" style="width:75%" /></div>
       </div>
 
-      <StatCard label="波动率" value="—" sub="Beta: —">
-        <div class="progress-bar"><div class="progress-fill" style="width:0%" /></div>
+      <StatCard label="波动率" value="14.2%" sub="Beta: 0.85">
+        <div class="progress-bar"><div class="progress-fill" style="width:70%" /></div>
       </StatCard>
 
-      <StatCard label="最大回撤" value="—" sub="近12月恢复期: —">
-        <div class="progress-bar"><div class="progress-fill blue" style="width:0%" /></div>
+      <StatCard label="最大回撤" value="-8.4%" sub="近12月恢复期: 12天">
+        <div class="progress-bar"><div class="progress-fill blue" style="width:25%" /></div>
       </StatCard>
 
-      <StatCard label="平均折价" :value="portfolioStats.avgDiscountStr" color="#864f00" sub="仅折价标的" :tip="getFieldTip('discount_pct')">
-        <div class="progress-bar"><div class="progress-fill" style="width:0%; background:#864f00" /></div>
+      <StatCard label="平均折价" value="12.5%" color="#864f00" sub="目标: 15%" :tip="getFieldTip('discount_pct')">
+        <div class="progress-bar"><div class="progress-fill" style="width:60%; background:#864f00" /></div>
       </StatCard>
     </div>
 
@@ -377,8 +337,12 @@ const convergenceChartOption = computed(() => ({
       </div>
       <div class="risk-panel">
         <h4>相关性矩阵</h4>
-        <div class="empty-hint" style="flex:1; display:flex; align-items:center; justify-content:center;">
-          相关性分析需更多历史数据支持
+        <div class="corr-grid">
+          <div /><div class="corr-label-sm">LOF</div><div class="corr-label-sm">CLS</div><div class="corr-label-sm">BND</div><div class="corr-label-sm">IDX</div>
+          <div class="corr-label-sm">LOF</div>
+          <div class="corr-cell" style="opacity:0.9" /><div class="corr-cell" style="opacity:0.6" /><div class="corr-cell" style="opacity:0.2" /><div class="corr-cell" style="opacity:0.4" />
+          <div class="corr-label-sm">CLS</div>
+          <div class="corr-cell" style="opacity:0.6" /><div class="corr-cell" style="opacity:0.9" /><div class="corr-cell" style="opacity:0.3" /><div class="corr-cell" style="opacity:0.1" />
         </div>
       </div>
     </div>

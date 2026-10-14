@@ -1,7 +1,8 @@
 """Market router — macro, indices, and K-line endpoints."""
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
+from core.deps import get_current_user
 from models import (
     ApiResponse,
     BoardSector,
@@ -119,9 +120,13 @@ def data_source_status() -> ApiResponse[dict]:
 
 
 @router.get("/sw-sectors", response_model=ApiResponse[list[dict]])
-def sw_sectors() -> ApiResponse[list[dict]]:
-    """申万一级行业基础数据（PE / PB / 股息率）——估值热力图数据源。"""
-    data, meta = get_sw_sectors()
+def sw_sectors(force: bool = Query(False)) -> ApiResponse[list[dict]]:
+    """申万一级行业基础数据（PE / PB / 股息率）——估值热力图数据源。
+
+    默认走 10 分钟缓存（原来每次调用要 ~20s，首页 Dashboard 干等）；
+    ``?force=1`` 穿透缓存（点「刷新」时用）。
+    """
+    data, meta = get_sw_sectors(force=force)
     return ApiResponse(data=data, meta=meta)
 
 
@@ -185,6 +190,7 @@ def sw_sector_snapshot_stats() -> ApiResponse[dict]:
 
 @router.post("/sw-sectors/backfill", response_model=ApiResponse[dict])
 def sw_sector_backfill(
+    user_id: str = Depends(get_current_user),
     days: int = Query(default=250, ge=5, le=2000, description="每个行业回填最近多少个交易日"),
     async_mode: bool = Query(default=True, description="True=后台线程执行并立即返回；False=同步执行并等待结果"),
 ) -> ApiResponse[dict]:
@@ -227,3 +233,80 @@ def kline(
         code=code, type=type, start_date=start_date, end_date=end_date
     )
     return ApiResponse(data=data)
+
+
+# ============================================================
+# 贪婪恐惧指数（Fear & Greed Index）
+# 6 指标 min-max 加权情绪温度计，落库 base_fear_greed_daily，
+# 每交易日 15:40 定时采集（首次部署需调 /backfill 回填历史）。
+# ============================================================
+
+
+@router.get("/fear-greed/latest", response_model=ApiResponse[dict])
+def fear_greed_latest() -> ApiResponse[dict]:
+    """最新一日恐贪值 + 6 分项得分 + 原始指标。无数据返回 None（尚未回填/采集）。"""
+    from services import fear_greed_service
+
+    data = fear_greed_service.get_latest()
+    return ApiResponse(data=data)
+
+
+@router.get("/fear-greed/history", response_model=ApiResponse[list[dict]])
+def fear_greed_history(
+    days: int = Query(default=120, ge=5, le=500, description="最近多少个交易日"),
+) -> ApiResponse[list[dict]]:
+    """恐贪值历史序列（升序，含 6 分项得分与原始指标，供前端画曲线）。"""
+    from services import fear_greed_service
+
+    data = fear_greed_service.get_history(days=days)
+    return ApiResponse(data=data)
+
+
+@router.get("/fear-greed/status", response_model=ApiResponse[dict])
+def fear_greed_status() -> ApiResponse[dict]:
+    """落库情况（行数/日期范围）+ 定时任务与回填线程状态。"""
+    from services import fear_greed_service
+    from jobs.fear_greed_job import scheduler_status
+
+    stats = fear_greed_service.snapshot_stats()
+    stats["scheduler"] = scheduler_status()
+    return ApiResponse(data=stats)
+
+
+@router.post("/fear-greed/collect", response_model=ApiResponse[dict])
+def fear_greed_collect(
+    user_id: str = Depends(get_current_user),
+) -> ApiResponse[dict]:
+    """手动采集当日恐贪指标（等价于定时任务主体，收盘后调用最佳）。"""
+    from services import fear_greed_service
+
+    data = fear_greed_service.collect_today()
+    return ApiResponse(data=data)
+
+
+@router.post("/fear-greed/backfill", response_model=ApiResponse[dict])
+def fear_greed_backfill(
+    user_id: str = Depends(get_current_user),
+    days: int = Query(default=120, ge=5, le=400, description="回填最近多少个交易日"),
+    async_mode: bool = Query(default=True, description="True=后台线程执行并立即返回；False=同步执行并等待结果"),
+) -> ApiResponse[dict]:
+    """回填恐贪指数历史（可重复执行，不清空已有 live 值）。
+
+    涨停池仅近数月有历史；上涨占比无免费历史源（回填日按权重归一化近似）。
+    """
+    from services import fear_greed_service
+
+    if async_mode:
+        from jobs.fear_greed_job import run_backfill_async
+
+        started = run_backfill_async(days=days)
+        return ApiResponse(data={
+            "started": started,
+            "mode": "async",
+            "days": days,
+            "message": "已在后台开始回填，用 GET /fear-greed/status 查看进度"
+                      if started else "已有回填任务正在运行",
+        })
+
+    result = fear_greed_service.backfill(days=days)
+    return ApiResponse(data={"started": result.get("ok", False), "mode": "sync", **result})

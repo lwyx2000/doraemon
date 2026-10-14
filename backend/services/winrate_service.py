@@ -32,7 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any
 
-from database.connection import get_db
+from database.sqlite_connection import get_biz_db
 from services.market_service import get_kline
 from services.signal_service import EVALUATORS
 
@@ -53,7 +53,7 @@ SCAN_SCHEMA_VERSION = 2
 
 
 def _ensure_tables() -> None:
-    get_db().execute(
+    get_biz_db().execute(
         """
         CREATE TABLE IF NOT EXISTS biz_winrate_scan (
             id VARCHAR PRIMARY KEY,
@@ -173,7 +173,7 @@ def scan_winrate(symbols: list[str], strategy_id: str, params: dict | None = Non
     # 缓存键带结构版本号：统计结构升级（如 v2 增加样本内外/分年度）时旧缓存自动失效
     params_json = json.dumps({"v": SCAN_SCHEMA_VERSION, "p": params or {}},
                              sort_keys=True, ensure_ascii=False)
-    db = get_db()
+    db = get_biz_db()
     row = db.fetchone(
         "SELECT result_json FROM biz_winrate_scan "
         "WHERE scan_date = ? AND strategy_id = ? AND params_json = ?",

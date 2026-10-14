@@ -26,7 +26,7 @@ const refreshing = ref(false)
 const { isDark, toggle: toggleDarkMode } = useDarkMode()
 const { toggleMobile } = useSidebar()
 const { openTab } = useTabs()
-const { isLoggedIn, userInitial, isAdmin, logout } = useAuth()
+const { isLoggedIn, username, userInitial, isAdmin, logout } = useAuth()
 
 const userMenuOptions = computed(() =>
   isAdmin.value
@@ -44,7 +44,6 @@ function handleUserMenu(key: string) {
   } else if (key === 'logout') {
     logout()
     message.success('已退出登录')
-    router.push('/login')
   }
 }
 
@@ -113,6 +112,7 @@ function refreshAll() {
       <n-dropdown v-if="isLoggedIn" :options="userMenuOptions" @select="handleUserMenu">
         <div class="user-trigger" aria-label="用户菜单">
           <n-tag v-if="isAdmin" size="small" type="warning" :bordered="false" class="admin-badge">管理员</n-tag>
+          <span class="user-name" v-if="username">{{ username }}</span>
           <n-avatar round size="small" style="background: #2178c3; color: white; font-weight: 700; font-size: 12px;">
             {{ userInitial }}
           </n-avatar>
@@ -222,6 +222,16 @@ function refreshAll() {
 }
 .user-trigger:hover {
   box-shadow: 0 0 0 2px var(--color-primary);
+}
+.user-name {
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  margin-right: 8px;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .login-link {
   color: var(--text-secondary);

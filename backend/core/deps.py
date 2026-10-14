@@ -14,7 +14,7 @@ from core.config import JWT_SECRET, JWT_ALGORITHM, JWT_EXPIRE_HOURS, USE_MOCK_DA
 # 注意：业务表 fk_user 为 BIGINT 类型，因此 demo 用户也必须是合法整数，否则写入/查询会因
 # 类型转换失败而 500。
 DEMO_USER_ID = "1"
-from database.connection import get_db, Database
+from database.sqlite_connection import get_biz_db
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"/api/v1/auth/login", auto_error=False)
 
@@ -63,7 +63,7 @@ def _resolve_user(token: Optional[str], require_admin: bool = False) -> str:
             )
     # token_version 校验：管理员重置/用户改密后，让已签发 token 立即失效
     token_version = payload.get("token_version")
-    db = get_db()
+    db = get_biz_db()
     row = db.fetchone("SELECT token_version FROM biz_users WHERE pk_user = ?", [user_id])
     if row is None:
         raise _unauthorized("用户不存在")

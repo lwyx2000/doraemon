@@ -10,6 +10,7 @@ import PercentileIndicator from '../components/PercentileIndicator.vue'
 import BaseChart from '../components/BaseChart.vue'
 import GlossaryPanel from '../components/GlossaryPanel.vue'
 import MethodologyGuide from '../components/MethodologyGuide.vue'
+import { pctColor, pctColorStyle } from '../utils/percentile'
 
 const message = useMessage()
 const loading = ref(false)
@@ -70,25 +71,11 @@ function handleTabChange(tab: string) {
 onMounted(() => { loadData(); loadIndustry() })
 
 // ==================== 估值分位颜色 ====================
-function percentileColor(pct: number | null): 'default' | 'success' | 'warning' | 'error' {
-  if (pct == null) return 'default'
-  if (pct < 30) return 'success'   // 便宜
-  if (pct < 70) return 'warning'   // 正常
-  return 'error'                    // 过热
-}
-
 function percentileLabel(pct: number | null): string {
   if (pct == null) return '—'
   if (pct < 30) return '便宜'
   if (pct < 70) return '正常'
   return '过热'
-}
-
-function crowdingColor(pct: number | null): 'default' | 'success' | 'warning' | 'error' {
-  if (pct == null) return 'default'
-  if (pct < 30) return 'success'
-  if (pct < 70) return 'warning'
-  return 'error'
 }
 
 // ==================== ERP 稳健 Z-score 配色（MAD，最近10年滚动窗口） ====================
@@ -163,7 +150,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
     align: 'center',
     render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
       h(PercentileIndicator, { value: row.valuation_percentile, width: 60 }),
-      h(NTag, { type: percentileColor(row.valuation_percentile), size: 'small', bordered: false }, () => percentileLabel(row.valuation_percentile)),
+      h(NTag, { color: pctColorStyle(row.valuation_percentile), size: 'small', bordered: false }, () => percentileLabel(row.valuation_percentile)),
     ]),
   },
   {
@@ -173,7 +160,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
     align: 'center',
     render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
       h(PercentileIndicator, { value: row.pe_percentile, width: 60 }),
-      h(NTag, { type: percentileColor(row.pe_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pe_percentile)),
+      h(NTag, { color: pctColorStyle(row.pe_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pe_percentile)),
     ]),
   },
   {
@@ -183,7 +170,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
     align: 'center',
     render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
       h(PercentileIndicator, { value: row.pb_percentile, width: 60 }),
-      h(NTag, { type: percentileColor(row.pb_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pb_percentile)),
+      h(NTag, { color: pctColorStyle(row.pb_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pb_percentile)),
     ]),
   },
   {
@@ -193,7 +180,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
     align: 'center',
     render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
       h(PercentileIndicator, { value: row.crowding, width: 60 }),
-      h(NTag, { type: crowdingColor(row.crowding), size: 'small', bordered: false }, () => row.crowding != null ? row.crowding.toFixed(0) + '%' : '—'),
+      h(NTag, { color: pctColorStyle(row.crowding), size: 'small', bordered: false }, () => row.crowding != null ? row.crowding.toFixed(0) + '%' : '—'),
     ]),
   },
   {
@@ -217,12 +204,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
 ]
 
 // ==================== 行业估值表格列 ====================
-function pctColor(pct: number | null): string {
-  if (pct == null) return 'var(--text-primary)'
-  if (pct < 30) return '#16a34a'
-  if (pct > 70) return '#dc2626'
-  return 'var(--text-primary)'
-}
+// pctColor 已统一从 ../utils/percentile 导入（低蓝→高红，全局分位配色标准）
 
 const industryColumns: DataTableColumns<IndustryValuation> = [
   {
@@ -260,7 +242,7 @@ const industryColumns: DataTableColumns<IndustryValuation> = [
     align: 'center',
     render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
       h(PercentileIndicator, { value: row.pe_percentile, width: 60 }),
-      h(NTag, { type: percentileColor(row.pe_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pe_percentile)),
+      h(NTag, { color: pctColorStyle(row.pe_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pe_percentile)),
     ]),
   },
   {
@@ -270,7 +252,7 @@ const industryColumns: DataTableColumns<IndustryValuation> = [
     align: 'center',
     render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
       h(PercentileIndicator, { value: row.pb_percentile, width: 60 }),
-      h(NTag, { type: percentileColor(row.pb_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pb_percentile)),
+      h(NTag, { color: pctColorStyle(row.pb_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pb_percentile)),
     ]),
   },
   {
@@ -280,7 +262,7 @@ const industryColumns: DataTableColumns<IndustryValuation> = [
     align: 'center',
     render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
       h(PercentileIndicator, { value: row.crowding, width: 60 }),
-      h(NTag, { type: percentileColor(row.crowding), size: 'small', bordered: false }, () => row.crowding != null ? row.crowding.toFixed(0) + '%' : '—'),
+      h(NTag, { color: pctColorStyle(row.crowding), size: 'small', bordered: false }, () => row.crowding != null ? row.crowding.toFixed(0) + '%' : '—'),
     ]),
   },
 ]
@@ -668,7 +650,7 @@ const macroParams = computed(() => {
     <div v-if="overall" class="overall-card">
       <div class="overall-head">
         <span class="overall-title">全A整体估值分位</span>
-        <n-tag :type="percentileColor(overall.valuation_percentile)" size="small" :bordered="false">
+        <n-tag :color="pctColorStyle(overall.valuation_percentile)" size="small" :bordered="false">
           {{ percentileLabel(overall.valuation_percentile) }}
         </n-tag>
         <span class="overall-sub">基准 = {{ overall.name }}（万得全A代理）</span>
@@ -820,13 +802,13 @@ const macroParams = computed(() => {
           </div>
           <div class="stat-item">
             <span class="stat-label">估值分位</span>
-            <span class="stat-value" :style="{ color: (selectedItem.valuation_percentile ?? 50) < 30 ? '#16a34a' : (selectedItem.valuation_percentile ?? 50) > 70 ? '#dc2626' : 'var(--text-primary)' }">
+            <span class="stat-value" :style="{ color: pctColor(selectedItem.valuation_percentile) }">
               {{ selectedItem.valuation_percentile?.toFixed(1) ?? '—' }}%
             </span>
           </div>
           <div class="stat-item">
             <span class="stat-label">拥挤度</span>
-            <span class="stat-value" :style="{ color: (selectedItem.crowding ?? 50) < 30 ? '#16a34a' : (selectedItem.crowding ?? 50) > 70 ? '#dc2626' : 'var(--text-primary)' }">
+            <span class="stat-value" :style="{ color: pctColor(selectedItem.crowding) }">
               {{ selectedItem.crowding?.toFixed(1) ?? '—' }}%
             </span>
           </div>

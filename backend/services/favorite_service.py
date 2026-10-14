@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from database.connection import get_db
+from database.sqlite_connection import get_biz_db
 from core.config import USE_MOCK_DATA
 
 # In-memory storage for mock mode: list of favorite dicts.
@@ -18,7 +18,7 @@ def get_favorites(user_id: str) -> list[dict]:
     if USE_MOCK_DATA:
         return [f for f in _mock_favorites if f.get("user_id") == user_id]
 
-    db = get_db()
+    db = get_biz_db()
     rows = db.fetchall(
         "SELECT pk_favorites AS id, fk_user AS user_id, code, name, type, note, added_at "
         "FROM biz_favorites WHERE fk_user = ? ORDER BY added_at DESC",
@@ -60,7 +60,7 @@ def add_favorite(
         _mock_favorites.append(favorite)
         return favorite
 
-    db = get_db()
+    db = get_biz_db()
     db.execute(
         "INSERT INTO biz_favorites "
         "(pk_favorites, fk_user, code, name, type, note, added_at) "
@@ -87,7 +87,7 @@ def delete_favorite(user_id: str, favorite_id: str) -> bool:
                 return True
         return False
 
-    db = get_db()
+    db = get_biz_db()
     existing = db.fetchone(
         "SELECT pk_favorites FROM biz_favorites WHERE pk_favorites = ? AND fk_user = ?",
         [favorite_id, user_id],

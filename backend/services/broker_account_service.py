@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from database.connection import get_db
+from database.sqlite_connection import get_biz_db
 from core.config import USE_MOCK_DATA
 
 _TABLES_READY = False
@@ -27,7 +27,7 @@ def _ensure_tables() -> None:
     global _TABLES_READY
     if _TABLES_READY or USE_MOCK_DATA:
         return
-    db = get_db()
+    db = get_biz_db()
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS biz_broker_accounts (
@@ -55,7 +55,7 @@ def _load_accounts(user_id: str) -> list[dict]:
     if USE_MOCK_DATA:
         return _mock_accounts.setdefault(user_id, [])
     _ensure_tables()
-    db = get_db()
+    db = get_biz_db()
     rows = db.fetchall(
         "SELECT id, broker, account, created_at, updated_at "
         "FROM biz_broker_accounts WHERE fk_user = ? ORDER BY created_at",
@@ -77,7 +77,7 @@ def _save_account(user_id: str, item: dict) -> None:
         accounts.append(item)
         return
     _ensure_tables()
-    db = get_db()
+    db = get_biz_db()
     db.execute("DELETE FROM biz_broker_accounts WHERE id = ?", [item["id"]])
     db.execute(
         "INSERT INTO biz_broker_accounts (id, fk_user, broker, account, created_at, updated_at) "
@@ -128,7 +128,7 @@ def delete_broker_account(user_id: str, account_id: str) -> bool:
         accounts[:] = [a for a in accounts if a["id"] != account_id]
         return len(accounts) < before
     _ensure_tables()
-    db = get_db()
+    db = get_biz_db()
     row = db.fetchone(
         "SELECT count(*) FROM biz_broker_accounts WHERE id = ? AND fk_user = ?",
         [account_id, user_id],

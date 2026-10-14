@@ -545,9 +545,9 @@ const columns = [
       <div class="bottom-panel">
         <h4>折价收敛趋势</h4>
         <div class="sparkline-bars">
-          <div v-for="(bar, i) in convergenceSparkline" :key="i"
+          <div v-for="bar in [75, 60, 80, 55, 85, 95]" :key="bar"
             :style="{ height: bar + '%' }"
-            :class="['spark-bar', { active: bar === Math.max(...convergenceSparkline) }]" />
+            :class="['spark-bar', { active: bar === 95 }]" />
         </div>
       </div>
     </div>

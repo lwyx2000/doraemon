@@ -13,13 +13,17 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '大类资产配置看板', icon: 'dashboard' },
   },
   {
+    path: '/index-analysis',
+    name: 'IndexAnalysis',
+    component: () => import('../pages/IndexAnalysis.vue'),
+    meta: { title: '指数估值分析', icon: 'analytics' },
+  },
+  {
     path: '/index-valuation',
     name: 'IndexValuation',
     component: () => import('../pages/IndexValuation.vue'),
     meta: { title: '宽基估值分位', icon: 'trending_up' },
   },
-  // 原指数分析页已并入宽基估值分位页（2026-09-28 合并），旧地址重定向
-  { path: '/index-analysis', redirect: '/index-valuation' },
   {
     path: '/lof-funds',
     name: 'LofFunds',
@@ -61,6 +65,12 @@ const routes: RouteRecordRaw[] = [
     name: 'Reits',
     component: () => import('../pages/Reits.vue'),
     meta: { title: '公募REITs分析', icon: 'account_balance' },
+  },
+  {
+    path: '/dividend-funds',
+    name: 'DividendFundHub',
+    component: () => import('../pages/DividendFundHub.vue'),
+    meta: { title: '红利基金研究', icon: 'gift' },
   },
   {
     path: '/alert-center',
@@ -111,10 +121,10 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '市场复盘图表', icon: 'bar_chart' },
   },
   {
-    path: '/jobs-monitor',
-    name: 'JobsMonitor',
-    component: () => import('../pages/JobsMonitor.vue'),
-    meta: { title: '任务监控', icon: 'time' },
+    path: '/fear-greed',
+    name: 'FearGreed',
+    component: () => import('../pages/FearGreed.vue'),
+    meta: { title: '贪婪恐惧指数', icon: 'speed' },
   },
   {
     path: '/login',

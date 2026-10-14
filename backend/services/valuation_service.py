@@ -358,18 +358,21 @@ def _compute_spread_history(
         pass
 
     # 预计算每个时点的滚动 ROE 均值（近5年）
-    roe_values = [r["roe"] for r in roe_data if r.get("roe") is not None and r["roe"] > 0]
+    # ⚠️ 单索引空间：窗口寻址与输出行都在「ROE>0 已过滤」列表上进行。
+    #    旧写法用 roe_data（未过滤）的下标 i 寻址 roe_values（过滤后），
+    #    上游一旦混入 ROE 缺失/非正的月份即静默错位算错均值。
+    roe_recs = [r for r in roe_data if r.get("roe") is not None and r["roe"] > 0]
 
     result = []
-    for i, item in enumerate(roe_data):
+    for j, item in enumerate(roe_recs):
         d = item["date"]
         pb_val = item.get("pb")
         if not pb_val or pb_val <= 0:
             continue
 
         # 滚动 ROE 均值：取当前及之前 ROE_WINDOW_MONTHS 个值
-        window_start = max(0, i - ROE_WINDOW_MONTHS + 1)
-        window_roes = [roe_values[j] for j in range(window_start, min(i + 1, len(roe_values)))]
+        window_start = max(0, j - ROE_WINDOW_MONTHS + 1)
+        window_roes = [roe_recs[k]["roe"] for k in range(window_start, j + 1)]
         if not window_roes:
             continue
         roe_mean = sum(window_roes) / len(window_roes)

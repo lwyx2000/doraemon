@@ -5,13 +5,14 @@ import { useRouter } from 'vue-router'
 import {
   NButton, NIcon, NDataTable, NModal, NInput, NInputNumber, NSelect, NTag,
   NRadioGroup, NRadioButton, NPopover, NCheckbox, NSwitch, NTooltip,
+  NTabs, NTabPane,
   useMessage, useDialog,
 } from 'naive-ui'
 import type { PaginationProps } from 'naive-ui'
 import { CloudUploadOutline, RefreshOutline, CameraOutline, ClipboardOutline, SettingsOutline, FilterOutline } from '@vicons/ionicons5'
 import { useAsyncData } from '../composables/useApi'
 import { api } from '../utils/api'
-import type { Holding, HoldingsView, HoldingSnapshot, HoldingSummary, BrokerAccount, AccountName } from '../types'
+import type { Holding, HoldingsView, HoldingSnapshot, HoldingSummary, BrokerAccount, AccountName, HoldingHistory } from '../types'
 import PageHeader from '../components/PageHeader.vue'
 import StatCard from '../components/StatCard.vue'
 import DataPanel from '../components/DataPanel.vue'
@@ -47,6 +48,8 @@ function typeColor(type: string) {
 
 const { data: view, loading, error, refresh } = useAsyncData<HoldingsView>(() => api.getHoldings())
 const { data: snapshots, refresh: refreshSnapshots } = useAsyncData<HoldingSnapshot[]>(() => api.getHoldingSnapshots())
+const { data: history, loading: historyLoading, refresh: refreshHistory } = useAsyncData<HoldingHistory[]>(() => api.getHoldingHistory())
+const activeTab = ref<'current' | 'history'>('current')
 
 // 表格分页：每页默认 20 行，客户端分页
 const pagination = ref<PaginationProps>({
@@ -78,7 +81,7 @@ async function loadAccountNames() {
     accountNames.value = []
   }
 }
-onMounted(() => { refresh(); refreshSnapshots(); loadBrokerAccounts(); loadAccountNames() })
+onMounted(() => { refresh(); refreshSnapshots(); refreshHistory(); loadBrokerAccounts(); loadAccountNames() })
 
 // 编辑弹窗：券商下拉选项（来自 Profile 配置 + 持仓数据中已有的，去重）
 const editBrokerOptions = computed(() => {
@@ -391,7 +394,7 @@ const columnDefs: ColDef[] = [
     render: (row: Holding) => h('div', { class: 'row-actions' }, [
       h(NButton, { size: 'tiny', secondary: true, type: 'primary', onClick: () => openAdd(row) }, { default: () => '加仓' }),
       h(NButton, { size: 'tiny', secondary: true, type: 'default', onClick: () => openEdit(row) }, { default: () => '编辑' }),
-      h(NButton, { size: 'tiny', secondary: true, type: 'error', onClick: () => confirmDelete(row) }, { default: () => '删除' }),
+      h(NButton, { size: 'tiny', secondary: true, type: 'error', onClick: () => confirmDelete(row) }, { default: () => '平仓' }),
     ]),
   },
 ]
@@ -620,17 +623,18 @@ async function submitEdit() {
 
 function confirmDelete(row: Holding) {
   dialog.warning({
-    title: '删除持仓',
-    content: `确定删除 ${row.name}（${row.code}）吗？该操作不可恢复。`,
-    positiveText: '删除',
+    title: '平仓持仓',
+    content: `确定平仓 ${row.name}（${row.code}）吗？平仓后该标的会归档到「历史持仓」标签。`,
+    positiveText: '平仓',
     negativeText: '取消',
     onPositiveClick: async () => {
       try {
         await api.deleteHolding(row.id)
-        message.success('已删除')
+        message.success('已平仓，归档到历史持仓')
         refresh()
+        refreshHistory()
       } catch (e: any) {
-        message.error(e.message || '删除失败')
+        message.error(e.message || '平仓失败')
       }
     },
   })
@@ -824,6 +828,29 @@ const snapshotColumns = [
   { title: '当日盈亏', key: 'daily_pnl', align: 'right' as const, render: (row: HoldingSnapshot) => h('span', { style: { color: pnlColor(row.daily_pnl) } }, fmtMoney(row.daily_pnl)) },
   { title: '标的数', key: 'holding_count', align: 'center' as const, render: (row: HoldingSnapshot) => `${row.priced_count}/${row.holding_count}` },
 ]
+
+// 历史持仓（已平仓）列定义
+function typeLabel(t: string): string {
+  return TYPE_LABELS[t] ?? t
+}
+const historyColumns = [
+  { title: '代码', key: 'code', width: 100, render: (row: HoldingHistory) => h('span', { class: 'mono' }, row.code) },
+  { title: '名称', key: 'name', minWidth: 120 },
+  { title: '类型', key: 'type', width: 90, render: (row: HoldingHistory) => h('span', {}, typeLabel(row.type)) },
+  { title: '券商', key: 'broker', width: 120, render: (row: HoldingHistory) => row.broker || '—' },
+  { title: '账户', key: 'account', width: 100, render: (row: HoldingHistory) => row.account || '—' },
+  { title: '数量', key: 'quantity', align: 'right' as const, render: (row: HoldingHistory) => fmtNum(row.quantity) },
+  { title: '成本价', key: 'cost_price', align: 'right' as const, render: (row: HoldingHistory) => fmtMoney(row.cost_price) },
+  { title: '平仓价', key: 'close_price', align: 'right' as const, render: (row: HoldingHistory) => fmtMoney(row.close_price) },
+  { title: '已实现盈亏', key: 'realized_pnl', align: 'right' as const, render: (row: HoldingHistory) => h('span', { style: { color: pnlColor(row.realized_pnl) } }, fmtMoney(row.realized_pnl)) },
+  { title: '平仓时间', key: 'closed_at', width: 170, render: (row: HoldingHistory) => row.closed_at ? new Date(row.closed_at).toLocaleString('zh-CN') : '—' },
+]
+const historySummary = computed(() => {
+  const items = history.value ?? []
+  if (!items.length) return null
+  const totalRealized = items.reduce((s, i) => s + (i.realized_pnl ?? 0), 0)
+  return { count: items.length, totalRealized }
+})
 </script>
 
 <template>
@@ -856,6 +883,8 @@ const snapshotColumns = [
 
       <GlossaryPanel page-key="holdingsAnalysis" />
 
+      <n-tabs type="line" v-model:value="activeTab" class="holdings-tabs">
+        <n-tab-pane name="current" tab="当前持仓">
       <!-- 风险预警条 -->
       <div v-if="summary && summary.warnings.length" class="warnings-strip">
         <div v-for="(w, i) in summary.warnings" :key="i" :class="['warning-item', w.level]">
@@ -987,6 +1016,29 @@ const snapshotColumns = [
           max-height="260"
         />
       </DataPanel>
+        </n-tab-pane>
+
+        <n-tab-pane name="history" tab="历史持仓">
+          <div v-if="historySummary" class="history-summary">
+            历史持仓 <b>{{ historySummary.count }}</b> 笔 · 已实现盈亏合计
+            <b :style="{ color: pnlColor(historySummary.totalRealized) }">{{ fmtMoney(historySummary.totalRealized) }}</b>
+          </div>
+          <DataPanel title="历史持仓（已平仓）">
+            <n-data-table
+              :columns="historyColumns"
+              :data="history ?? []"
+              :row-key="(row: HoldingHistory) => row.id"
+              :bordered="false"
+              :single-line="false"
+              size="small"
+              max-height="520"
+            />
+            <div v-if="!historyLoading && (!history || !history.length)" class="history-empty">
+              暂无历史持仓。在「当前持仓」中平仓某标的即会归档到此。
+            </div>
+          </DataPanel>
+        </n-tab-pane>
+      </n-tabs>
 
     </div>
 
@@ -1318,6 +1370,12 @@ const snapshotColumns = [
 .ft-field { color: var(--color-primary); font-family: 'JetBrains Mono', monospace; font-weight: 600; }
 .ft-type { color: var(--text-muted); font-family: 'JetBrains Mono', monospace; font-size: 11px; white-space: nowrap; }
 .ft-desc { color: var(--text-secondary); line-height: 1.5; }
+
+/* 历史持仓 Tab */
+.holdings-tabs { margin-top: 4px; }
+.history-summary { font-size: 13px; color: var(--text-secondary); margin: 4px 0 10px; padding: 8px 12px; background: var(--bg-subtle); border: 1px solid var(--border-default); border-radius: 6px; }
+.history-summary b { color: var(--text-primary); font-family: 'JetBrains Mono', monospace; }
+.history-empty { padding: 24px; text-align: center; font-size: 12px; color: var(--text-muted); background: var(--bg-subtle); border-radius: 6px; }
 
 /* 价格闪烁（绿涨红跌） */
 .holdings-page .flash-up { animation: flashUp 0.9s ease-out; }

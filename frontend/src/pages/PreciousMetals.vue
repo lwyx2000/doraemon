@@ -16,6 +16,7 @@ import { api } from '../utils/api'
 import BaseChart from '../components/BaseChart.vue'
 import PageHeader from '../components/PageHeader.vue'
 import GlossaryPanel from '../components/GlossaryPanel.vue'
+import { pctColorStyle } from '../utils/percentile'
 import type { PreciousMetals as PreciousMetalsData } from '../types'
 
 const loading = ref(false)
@@ -221,7 +222,7 @@ function tagType(pct: number | null | undefined): 'error' | 'success' | 'default
                   <template #suffix>倍</template>
                 </n-statistic>
                 <n-space :size="8" style="margin-top: 8px">
-                  <n-tag size="small" :bordered="false" :type="ratioStats ? (ratioStats.currentPct != null && ratioStats.currentPct >= 80 ? 'error' : ratioStats.currentPct != null && ratioStats.currentPct <= 20 ? 'success' : 'default') : 'default'">
+                  <n-tag size="small" :bordered="false" :color="pctColorStyle(ratioStats?.currentPct)">
                     历史分位 {{ ratioStats?.currentPct ?? '—' }}%
                   </n-tag>
                   <n-text depth="3" style="font-size: 12px" v-if="ratioStats">
