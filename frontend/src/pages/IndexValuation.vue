@@ -68,7 +68,9 @@ function handleTabChange(tab: string) {
   }
 }
 
-onMounted(() => { loadData(); loadIndustry() })
+// industry 不 eager 加载：默认 tab 是 broad，行业数据由 handleTabChange 懒加载
+// （/valuation/industries 要算全行业 PE/PB 历史，属于重请求，不应为看不见的 tab 预付）
+onMounted(() => { loadData() })
 
 // 页面数据更新时间：宽基与行业两个接口取较新者（updateTime 为后端取数时刻）
 const pageUpdatedAt = computed(() => {

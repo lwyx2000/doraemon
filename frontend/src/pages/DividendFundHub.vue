@@ -434,10 +434,9 @@ async function fillIndexMap() {
 }
 
 onMounted(async () => {
-  await load()
-  // 现金流名录独立加载：冷启动首个请求要拉全市场 2.8 万条（约 9s），不阻塞红利区
-  await loadCashflow()
-  await loadMapProgress()
+  // 三个加载互相独立（各自内部已容错），并行发起：
+  // 冷启动 cashflow 要拉全市场约 9s，串行时会阻塞 map-progress 与轮询启动。
+  await Promise.allSettled([load(), loadCashflow(), loadMapProgress()])
   if (feeProgress.value?.running) startPoll()
   if (extraProgress.value?.running) startExtraPoll()
 })
