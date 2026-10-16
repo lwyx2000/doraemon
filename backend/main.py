@@ -104,6 +104,31 @@ async def lifespan(app: FastAPI):
 
         load_cache_config()
 
+        # 市场概况上游预热（2026-10-16）：网关对 index_valuation / market_stats 的
+        # 冷首算分别可到 ~120s / ~35s（12 指数估值遍历 + 新浪全A股 5500+ 只），
+        # 不预热则部署/重启后第一个打开首页的用户干等甚至拿到「网关无数据」。
+        # 后台线程启动即打，与 singleflight/TTL 缓存天然衔接（预热就是普通缓存填充），
+        # 失败仅打印不阻断启动。
+        import threading as _threading
+
+        def _warm_market_upstreams():
+            try:
+                from services.market_service import (
+                    _fetch_index_valuation_raw,
+                    get_market_stats_real,
+                )
+
+                print("[Startup] 预热市场概况上游(index_valuation / market_stats)...")
+                _fetch_index_valuation_raw(force=True)
+                get_market_stats_real()
+                print("[Startup] 市场概况上游预热完成")
+            except Exception as e:
+                print(f"[Startup] 市场概况上游预热失败(忽略, 不影响启动): {e!r}")
+
+        _threading.Thread(
+            target=_warm_market_upstreams, daemon=True, name="warm-market"
+        ).start()
+
     yield
 
     # Shutdown

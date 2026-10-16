@@ -211,4 +211,67 @@ check("无代码行置 unknown", nocode["category"] == "unknown" and nocode["win
 noval = next(i for i in out if i.get("hasValuation") is False)
 check("hasValuation=False 行不打快照且置 unknown", noval["category"] == "unknown")
 
+# ---------------------------------------------------------------
+# 5. get_market_overview_with_meta 并行化：两个上游同时刻在途（重叠），
+#    且各自结果正确合并；一方失败退化为「部分数据/网关无数据」不抛错
+# ---------------------------------------------------------------
+print("[5] overview 并行化")
+overlap = {"n": 0, "max": 0}
+ov_lock = threading.Lock()
+
+
+def _enter():
+    with ov_lock:
+        overlap["n"] += 1
+        overlap["max"] = max(overlap["max"], overlap["n"])
+
+
+def _leave():
+    with ov_lock:
+        overlap["n"] -= 1
+
+
+def slow_idx():
+    _enter()
+    try:
+        time.sleep(0.3)
+        return [{"name": "沪深300", "code": "000300"}], []
+    finally:
+        _leave()
+
+
+def slow_stats():
+    _enter()
+    try:
+        time.sleep(0.3)
+        return {"date": "2026-10-16", "totalTurnover": 15554.0,
+                "upCount": 3301, "downCount": 2127, "flatCount": 148}
+    finally:
+        _leave()
+
+
+ms._fetch_index_valuation_data = slow_idx
+ms.get_market_stats_real = slow_stats
+
+t0 = time.time()
+data, meta = ms.get_market_overview_with_meta()
+elapsed = time.time() - t0
+
+check("两上游真并行(峰值并发 2)", overlap["max"] == 2, f"峰值并发 {overlap['max']}")
+check("并行总耗时≈单个耗时", elapsed < 0.55, f"耗时 {elapsed:.2f}s（串行需 ≥0.6s）")
+check("指数与统计均合并", data["indices"][0]["code"] == "000300" and data["upCount"] == 3301)
+check("正常 meta", meta["isMock"] is False and meta.get("gatewayEmpty", False) is False)
+
+# 一方失败：indices 空 + stats 正常 → 部分数据分支，不抛错
+ms._fetch_index_valuation_data = lambda: ([], [])
+data2, meta2 = ms.get_market_overview_with_meta()
+check("指数缺失退化为部分数据", data2["indices"] == [] and data2["upCount"] == 3301
+      and meta2.get("gatewayEmpty", False) is False)
+
+# 双方失败：网关无数据分支
+ms.get_market_stats_real = lambda: None
+data3, meta3 = ms.get_market_overview_with_meta()
+check("双方失败走网关无数据", data3["status"] == "数据获取中"
+      and meta3["gatewayEmpty"] is True and meta3["dataSource"] == "网关无数据")
+
 print(f"\n全部通过（{len(PASS)} 项）")

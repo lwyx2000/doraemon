@@ -808,7 +808,12 @@ def get_market_stats_real() -> dict | None:
     返回：总成交额、涨跌家数、涨跌停数等
     """
     print("[Market Stats] 使用 processed_data/market_stats 获取市场统计...")
-    data = _processed_data_request("market_stats", {"subtype": "overview"}, retries=2, timeout=10)
+    # ⚠️ 超时 10s→35s（2026-10-16）：网关对 market_stats 的执行上限是 30s，
+    #   冷首调要抓新浪全A股(5500+只, 70+页) + 指数行情，常 >10s；
+    #   原先 10s 主动断开 → 与 index_valuation 一起失败时 overview 显示「网关无数据」。
+    #   retries=2 保留：第一次等满 35s 拿到网关 504 时，网关线程已把缓存写热，
+    #   第二次几乎秒回，冷启动总耗时 ~36s 而非永久失败。
+    data = _processed_data_request("market_stats", {"subtype": "overview"}, retries=2, timeout=35)
     
     if not data or not isinstance(data, dict):
         print("[Market Stats] 获取失败")
@@ -1167,8 +1172,13 @@ def _get_market_overview_uncached() -> tuple[dict, dict]:
     """market/overview 无缓存原始实现（缓存包装见 get_market_overview_with_meta）。"""
     if USE_MOCK_DATA:
         return mock_data.MOCK_MACRO_DATA["marketOverview"], _build_meta(True, "MOCK(模拟数据)")
-    realtime_indices, _ = _fetch_index_valuation_data()
-    market_stats = get_market_stats_real()
+    # 两个上游并行（2026-10-16）：网关冷算时 index_valuation 最坏 ~130s、
+    # market_stats 最坏 ~70s，串行最坏 200s 才返回；并行取 max ≈ 130s。
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fut_idx = pool.submit(_fetch_index_valuation_data)
+        fut_stats = pool.submit(get_market_stats_real)
+        realtime_indices, _ = fut_idx.result()
+        market_stats = fut_stats.result()
 
     if market_stats:
         # 成交额变化统一使用绝对值(亿元)：上游提供昨日成交额则直接相减；
@@ -2080,10 +2090,17 @@ def _market_by_code_or_name(item: dict) -> str:
 # - singleflight：未命中时只放一个请求在途，其余并发请求等它落地后读缓存，
 #   避免冷启动瞬间多线程同时打网关；
 # - 失败不写缓存（无负缓存），下次请求立即重试，故障恢复无延迟。
+#
+# ⚠️ 超时必须 > 网关侧上限（2026-10-16 修）：
+#   网关 processed_data 对 index_valuation 的线程池等待上限是 120s
+#   （冷首调要遍历 12 个指数的 baostock/中证/腾讯/新浪/国证源，实测可到 ~50-120s），
+#   doraemon 原先 timeout=15 会在网关即将成功前主动断开 → overview 长期显示
+#   「网关无数据」。调到 130s：网关 120s 内算完就能拿到数据；真 504 也只多等 10s。
 _INDEX_VAL_TTL = 30
 _INDEX_VAL_CACHE: dict[str, Any] = {"data": None, "ts": 0.0}
 _INDEX_VAL_LOCK = threading.Lock()
 _INDEX_VAL_INFLIGHT: threading.Event | None = None
+_INDEX_VAL_TIMEOUT = 130  # > 网关 120s 执行上限，慢而成功的调用不被误杀
 
 
 def _fetch_index_valuation_raw(force: bool = False) -> list | None:
@@ -2105,8 +2122,8 @@ def _fetch_index_valuation_raw(force: bool = False) -> list | None:
         else:
             leader = False
     if not leader:
-        # 在途请求最长约 timeout(15s)+retries，等 45s 足够；超时按未命中处理
-        ev.wait(timeout=45)
+        # 在途请求最长约 timeout(130s)+retries，等 145s 足够；超时按未命中处理
+        ev.wait(timeout=145)
         with _INDEX_VAL_LOCK:
             c = _INDEX_VAL_CACHE
             if c["data"] is not None:
@@ -2114,7 +2131,7 @@ def _fetch_index_valuation_raw(force: bool = False) -> list | None:
         return None
     try:
         data = _processed_data_request(
-            "index_valuation", {"subtype": "all", "period": 5}, retries=1, timeout=15
+            "index_valuation", {"subtype": "all", "period": 5}, retries=1, timeout=_INDEX_VAL_TIMEOUT
         )
         if data:
             with _INDEX_VAL_LOCK:
