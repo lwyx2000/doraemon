@@ -176,6 +176,7 @@ Authorization: Bearer <jwt_token>
 | `type` | string | `lof` / `qdii` / `all` |
 | `min_premium` | number | 最小溢价率筛选 |
 | `max_premium` | number | 最大溢价率筛选 |
+| `force` | bool | `true` 穿透 30s 列表缓存强制重扫上游（刷新按钮用；默认走缓存） |
 
 响应 data：`Array<FundItem>`
 
@@ -375,6 +376,14 @@ Authorization: Bearer <jwt_token>
 ### 7.1 GET `/api/v1/reits`
 
 获取 REITs 列表。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `asset_type` | string | 资产类型筛选 |
+| `min_dividend` | number | 最低分红率筛选 |
+| `nav_level` | string | 折价/平价/溢价 |
+| `sustainability` | string | 分红可持续性 |
+| `force` | bool | `true` 穿透 30s 列表缓存强制重扫上游（刷新按钮用；默认走缓存） |
 
 响应 data：`Array<ReitItem>`
 
