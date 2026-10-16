@@ -2,7 +2,7 @@
 defineOptions({ name: 'Dashboard' })
 import { ref, computed, h, onMounted } from 'vue'
 import { NDataTable, NButton, NIcon, useMessage, NTabs, NTabPane } from 'naive-ui'
-import { TrendingUp, WarningOutline, CheckmarkCircleOutline, ChevronDownOutline, ChevronUpOutline } from '@vicons/ionicons5'
+import { TrendingUp, WarningOutline, CheckmarkCircleOutline, ChevronDownOutline, ChevronUpOutline, SparklesOutline } from '@vicons/ionicons5'
 import { api } from '../utils/api'
 import { pctColor } from '../utils/percentile'
 import type {
@@ -32,6 +32,7 @@ import FundFlowPanel from '../components/FundFlowPanel.vue'
 import ZTStatsPanel from '../components/ZTStatsPanel.vue'
 import FundRankingPanel from '../components/FundRankingPanel.vue'
 import FearGreedPanel from '../components/FearGreedPanel.vue'
+import AiInterpretModal from '../components/AiInterpretModal.vue'
 import { useFieldHelp } from '../composables/useFieldHelp'
 
 const message = useMessage()
@@ -49,6 +50,9 @@ const fundRanking = ref<FundRankingItem[]>([])
 const swSectors = ref<SwSector[]>([])
 const fearGreedLatest = ref<FearGreedLatest | null>(null)
 const fearGreedHistory = ref<FearGreedPoint[]>([])
+
+// AI 解读弹窗（后端组装真实数据 + 知识库口径）
+const showAiInterpret = ref(false)
 
 // 各分区数据来源标记（真实/模拟）
 const sectionSources = ref<Record<string, SectionSourceMeta>>({})
@@ -222,6 +226,15 @@ const dataSourceText = computed(() => {
   return real?.dataSource ?? '实时行情'
 })
 
+// 全页数据更新时间：取各分区 updateTime 中最新的一个（后端 _build_meta 的取数时刻）
+const pageUpdatedAt = computed(() => {
+  const times = Object.values(sectionSources.value)
+    .map(s => s.updateTime)
+    .filter((t): t is string => !!t)
+    .sort()
+  return times.length ? times[times.length - 1] : null
+})
+
 // ERP 股债利差 3年分位：按全局"分位越高色温越高"标准机械映射（高分位=红）。
 // 注：ERP 分位越高=市场越便宜=越好，但视觉上仍显红，属一致性映射，不在此反转。
 const erpColor = computed(() => (indicators.value ? pctColor(indicators.value.erp_percentile_3y) : '#8b919e'))
@@ -279,6 +292,9 @@ const indicesUpdateMeta = computed(() => {
   if (parts.length > 0) return parts.join(' · ')
   return time ? `Last update: ${time}` : 'Last update: —'
 })
+
+// 申万热力图数据更新时间（后端 meta.updateTime = 取数时刻；网关侧有 10 分钟缓存）
+const swSectorsUpdatedAt = computed(() => sectionSources.value.swSectors?.updateTime ?? null)
 
 // 宏观指标区是否有有效数据：空对象/无关键利率数据时不渲染4个指标卡片
 const hasIndicatorsData = computed(() => {
@@ -420,12 +436,17 @@ function handleCheckedChange(keys: (string | number)[]) {
     <div v-else class="data-source-banner real">
       <n-icon :component="CheckmarkCircleOutline" />
       <span>数据来源: {{ dataSourceText }}</span>
+      <span v-if="pageUpdatedAt" class="banner-updated">数据更新于 {{ pageUpdatedAt }}（非实时，缓存约 10 分钟）</span>
     </div>
     </template>
 
     <!-- Page Header -->
-    <PageHeader title="A股大盘行情看板" subtitle="实时行情、板块涨幅、资金流向、龙虎榜" helpKey="dashboard">
+    <PageHeader title="A股大盘行情看板" subtitle="实时行情、板块涨幅、资金流向、龙虎榜" helpKey="dashboard" :updated-at="pageUpdatedAt">
       <template #actions>
+        <n-button size="small" @click="showAiInterpret = true">
+          <template #icon><n-icon :component="SparklesOutline" /></template>
+          AI 解读
+        </n-button>
         <n-button size="small" :loading="refreshing" @click="refresh">
           <template #icon><n-icon :component="TrendingUp" /></template>
           刷新
@@ -515,6 +536,7 @@ function handleCheckedChange(keys: (string | number)[]) {
         key="content"
         :sectors="swSectors"
         title="A股行业热力图（申万一级）"
+        :updated-at="swSectorsUpdatedAt"
       />
       <SectionFallback v-else key="fallback" :error="sectionError.swSectors ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.swSectors?.isMock && sectionSources.swSectors?.gatewayEmpty" :min-height="160" @retry="retrySection('swSectors')" />
     </Transition>
@@ -653,6 +675,9 @@ function handleCheckedChange(keys: (string | number)[]) {
         <span class="stat-label">系统延迟: {{ sysLatency ?? '—' }}ms</span>
       </div>
     </div>
+
+    <!-- AI 解读（真实数据 + 知识库口径 → LLM 流式） -->
+    <AiInterpretModal v-model:show="showAiInterpret" context-type="dashboard" title="AI 解读 · 宏观看板" />
   </div>
 </template>
 
@@ -756,6 +781,15 @@ function handleCheckedChange(keys: (string | number)[]) {
   background: var(--tag-green-bg, #f6ffed);
   color: var(--tag-green-text, #389e0d);
   border: 1px solid #b7eb8f;
+}
+
+.data-source-banner .banner-updated {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 400;
+  opacity: 0.85;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /* 新布局：市场数据网格 */

@@ -536,7 +536,7 @@ function exportBonds() {
     <SectionFallback v-if="gatewayEmpty" :gateway-empty="true" :min-height="480" @retry="refetch" />
     <div v-else-if="bonds" class="cb-page">
     <!-- Page Header -->
-    <PageHeader title="可转债扫描器" subtitle="可转债多因子扫描 - 实时监控强赎、双低、折价机会" helpKey="convertibleBonds" />
+    <PageHeader title="可转债扫描器" subtitle="可转债多因子扫描 - 实时监控强赎、双低、折价机会" helpKey="convertibleBonds" :updated-at="meta?.updateTime" />
     <GlossaryPanel page-key="convertibleBonds" />
 
     <!-- Filter Bar + Market Stats -->

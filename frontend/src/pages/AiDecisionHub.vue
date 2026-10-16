@@ -1,7 +1,7 @@
 <script setup lang="ts">
 defineOptions({ name: 'AiDecisionHub' })
-import { ref, h, computed, onMounted, onUnmounted } from 'vue'
-import { NButton, NSwitch, NInput, NInputNumber, NSelect, NDrawer, NDrawerContent, NDataTable, useMessage, NIcon } from 'naive-ui'
+import { ref, h, computed, watch, onMounted, onUnmounted } from 'vue'
+import { NButton, NSwitch, NInput, NInputNumber, NSelect, NDrawer, NDrawerContent, NDataTable, NModal, useMessage, NIcon, NTag } from 'naive-ui'
 import {
   BulbOutline,
   SettingsOutline,
@@ -15,7 +15,7 @@ import {
   DownloadOutline,
   ShareOutline,
 } from '@vicons/ionicons5'
-import type { AiReport, AiConfig } from '../types'
+import type { AiReport, AiConfig, AiChannel, AiChannelPreset, AiChannelsView } from '../types'
 import { api, ApiError } from '../utils/api'
 import PageHeader from '../components/PageHeader.vue'
 import TabBar from '../components/TabBar.vue'
@@ -207,27 +207,217 @@ async function saveConfig() {
   }
 }
 
-const testing = ref(false)
-async function testConnection() {
-  if (testing.value) return
-  testing.value = true
-  const providerLabel = providers.find(p => p.value === aiConfig.value.provider)?.label ?? aiConfig.value.provider
-  message.loading(`正在测试 ${providerLabel} (${aiConfig.value.endpoint || '默认端点'}) 连接...`, { duration: 1500 })
-  await new Promise(resolve => setTimeout(resolve, 1500))
-  testing.value = false
-  const ok = Boolean(aiConfig.value.apiKey)
-  if (ok) {
-    message.success(`连接成功：${providerLabel} 响应正常，模型 ${aiConfig.value.model || '默认'}`)
-  } else {
-    message.error('连接失败：请检查 API Key 是否正确配置')
-  }
-}
+// 旧版「测试连接」已删除（2026-10-14 审计）：原实现只 sleep 1.5s 后判断
+// apiKey 非空即报「连接成功」，从不发请求，属假实现。真实连通性测试请使用
+// 下方「LLM 渠道管理」表格中渠道行的「测试」按钮（走后端 /ai/channels/{id}/test，
+// 真实发起最小对话并返回延迟）。
 
 const providers = [
   { label: 'DeepSeek', value: 'deepseek' },
   { label: 'OpenAI', value: 'openai' },
   { label: 'Claude', value: 'claude' },
 ]
+
+// ============================================================
+// LLM 多渠道管理（OpenAI 兼容）：AI 解读 / AI 问答共用激活渠道
+// ============================================================
+const channelsView = ref<AiChannelsView>({ activeId: null, channels: [], presets: {} })
+const loadingChannels = ref(false)
+const channelModalShow = ref(false)
+const editingChannel = ref<AiChannel | null>(null)
+const savingChannel = ref(false)
+const testingChannelId = ref('')
+const channelForm = ref({
+  name: '',
+  provider: 'deepseek',
+  api_key: '',
+  endpoint: '',
+  model: '',
+  temperature: 0.3,
+  max_tokens: 2048,
+})
+
+const providerOptions = computed(() =>
+  Object.entries(channelsView.value.presets).map(([value, p]: [string, AiChannelPreset]) => ({
+    label: p.label,
+    value,
+  })),
+)
+
+const channelColumns = [
+  {
+    title: '渠道',
+    key: 'name',
+    render: (row: AiChannel) =>
+      h('div', { style: 'display:flex;align-items:center;gap:6px;' }, [
+        h('span', { style: 'font-weight:600;color:var(--text-primary);' }, row.name),
+        channelsView.value.activeId === row.id
+          ? h(NTag, { type: 'success', size: 'tiny', bordered: false }, { default: () => '激活' })
+          : null,
+      ]),
+  },
+  {
+    title: '提供商',
+    key: 'provider',
+    width: 110,
+    render: (row: AiChannel) => channelsView.value.presets[row.provider]?.label ?? row.provider,
+  },
+  { title: '模型', key: 'model', width: 160, render: (row: AiChannel) => row.model || '（默认）' },
+  {
+    title: '密钥',
+    key: 'hasKey',
+    width: 90,
+    render: (row: AiChannel) =>
+      row.hasKey
+        ? h('span', { style: 'color:var(--color-success);' }, '已配置')
+        : h('span', { style: 'color:var(--color-warning);' }, '未配置'),
+  },
+  {
+    title: '操作',
+    key: 'actions',
+    width: 260,
+    render: (row: AiChannel) =>
+      h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;' }, [
+        channelsView.value.activeId !== row.id
+          ? h(NButton, { size: 'tiny', quaternary: true, onClick: () => activateChannel(row) }, { default: () => '设为激活' })
+          : null,
+        h(
+          NButton,
+          { size: 'tiny', quaternary: true, loading: testingChannelId.value === row.id, onClick: () => testChannel(row) },
+          { default: () => '测试' },
+        ),
+        h(NButton, { size: 'tiny', quaternary: true, onClick: () => openEditChannel(row) }, { default: () => '编辑' }),
+        h(
+          NButton,
+          { size: 'tiny', quaternary: true, style: 'color:var(--color-danger);', onClick: () => removeChannel(row) },
+          { default: () => '删除' },
+        ),
+      ]),
+  },
+]
+
+async function loadChannels() {
+  loadingChannels.value = true
+  try {
+    channelsView.value = await api.getAiChannels()
+  } catch (e) {
+    message.error('渠道加载失败：' + (e instanceof ApiError ? e.message : String(e)))
+  } finally {
+    loadingChannels.value = false
+  }
+}
+
+function presetOf(provider: string) {
+  return channelsView.value.presets[provider] ?? { label: provider, endpoint: '', model: '' }
+}
+
+function openCreateChannel() {
+  editingChannel.value = null
+  const provider = 'deepseek'
+  channelForm.value = {
+    name: '',
+    provider,
+    api_key: '',
+    endpoint: presetOf(provider).endpoint,
+    model: presetOf(provider).model,
+    temperature: 0.3,
+    max_tokens: 2048,
+  }
+  channelModalShow.value = true
+}
+
+function openEditChannel(ch: AiChannel) {
+  editingChannel.value = ch
+  channelForm.value = {
+    name: ch.name,
+    provider: ch.provider,
+    api_key: '',
+    endpoint: ch.endpoint,
+    model: ch.model,
+    temperature: ch.temperature,
+    max_tokens: ch.maxTokens,
+  }
+  channelModalShow.value = true
+}
+
+function onChannelProviderChange(provider: string) {
+  // 跟随预设填充（用户已手填则不覆盖）
+  if (!channelForm.value.endpoint) channelForm.value.endpoint = presetOf(provider).endpoint
+  if (!channelForm.value.model) channelForm.value.model = presetOf(provider).model
+}
+
+async function saveChannel() {
+  if (!channelForm.value.name.trim()) {
+    message.warning('请填写渠道名称')
+    return
+  }
+  savingChannel.value = true
+  try {
+    if (editingChannel.value) {
+      const body: Record<string, unknown> = {
+        name: channelForm.value.name,
+        provider: channelForm.value.provider,
+        endpoint: channelForm.value.endpoint,
+        model: channelForm.value.model,
+        temperature: channelForm.value.temperature,
+        max_tokens: channelForm.value.max_tokens,
+      }
+      if (channelForm.value.api_key.trim()) body.api_key = channelForm.value.api_key.trim()
+      await api.updateAiChannel(editingChannel.value.id, body)
+      message.success('渠道已更新')
+    } else {
+      if (!channelForm.value.api_key.trim()) {
+        message.warning('请填写 API 密钥')
+        return
+      }
+      await api.createAiChannel({ ...channelForm.value })
+      message.success('渠道已创建')
+    }
+    channelModalShow.value = false
+    await loadChannels()
+  } catch (e) {
+    message.error('保存失败：' + (e instanceof ApiError ? e.message : String(e)))
+  } finally {
+    savingChannel.value = false
+  }
+}
+
+async function removeChannel(ch: AiChannel) {
+  try {
+    await api.deleteAiChannel(ch.id)
+    message.success(`已删除渠道 ${ch.name}`)
+    await loadChannels()
+  } catch (e) {
+    message.error('删除失败：' + (e instanceof ApiError ? e.message : String(e)))
+  }
+}
+
+async function activateChannel(ch: AiChannel) {
+  try {
+    await api.setActiveAiChannel(ch.id)
+    message.success(`已激活渠道 ${ch.name}`)
+    await loadChannels()
+  } catch (e) {
+    message.error('激活失败：' + (e instanceof ApiError ? e.message : String(e)))
+  }
+}
+
+async function testChannel(ch: AiChannel) {
+  testingChannelId.value = ch.id
+  try {
+    const r = await api.testAiChannel(ch.id)
+    message.success(`${ch.name} 连接成功（${r.latency_ms}ms，模型 ${r.model || '默认'}）`)
+  } catch (e) {
+    message.error(`${ch.name} 连接失败：` + (e instanceof ApiError ? e.message : String(e)))
+  } finally {
+    testingChannelId.value = ''
+  }
+}
+
+// 进入配置 tab 时加载渠道
+watch(activeTab, (tab) => {
+  if (tab === 'config' && channelsView.value.channels.length === 0) loadChannels()
+})
 </script>
 
 <template>
@@ -375,8 +565,36 @@ const providers = [
 
     <!-- Configuration View -->
     <div v-if="activeTab === 'config'" class="config-view">
+      <!-- LLM 渠道管理（AI 解读 / AI 问答共用） -->
       <div class="config-section">
-        <h3>AI 提供商设置</h3>
+        <h3>LLM 渠道管理</h3>
+        <p class="config-desc">
+          支持多家 OpenAI 兼容渠道（DeepSeek / OpenAI / 通义 / Moonshot / Kimi / 豆包 / 智谱 / 自定义）。
+          「AI 解读」弹窗与「AI 问答」页使用<strong>激活渠道</strong>；密钥仅保存在服务端，列表页脱敏展示。
+        </p>
+        <div class="config-actions" style="margin-bottom: 12px;">
+          <n-button size="small" :loading="loadingChannels" @click="loadChannels">刷新</n-button>
+          <n-button size="small" type="primary" @click="openCreateChannel">
+            <template #icon><n-icon :component="SettingsOutline" /></template>
+            新建渠道
+          </n-button>
+        </div>
+        <n-data-table
+          :columns="channelColumns"
+          :data="channelsView.channels"
+          :loading="loadingChannels"
+          :bordered="false"
+          size="small"
+          :row-key="(row: AiChannel) => row.id"
+        />
+        <div v-if="!loadingChannels && channelsView.channels.length === 0" class="empty-hint">
+          尚未配置渠道。点击「新建渠道」添加第一个渠道（创建后自动激活），即可使用 AI 解读与 AI 问答。
+        </div>
+      </div>
+
+      <!-- AI 报告调度设置（旧版模板报告，保留兼容） -->
+      <div class="config-section">
+        <h3>AI 报告调度设置（旧版模板报告）</h3>
         <div class="config-grid">
           <div class="config-field">
             <label>提供商</label>
@@ -401,11 +619,62 @@ const providers = [
           </div>
         </div>
         <div class="config-actions">
-          <n-button size="small" :loading="testing" @click="testConnection">测试连接</n-button>
+          <span class="config-hint">测试连接请使用上方「LLM 渠道管理」中渠道行的「测试」按钮（真实发起请求）。</span>
           <n-button size="small" type="primary" @click="saveConfig">保存配置</n-button>
         </div>
       </div>
     </div>
+
+    <!-- 渠道编辑弹窗 -->
+    <n-modal
+      v-model:show="channelModalShow"
+      preset="card"
+      :title="editingChannel ? `编辑渠道：${editingChannel.name}` : '新建 LLM 渠道'"
+      style="max-width: 520px; width: 92vw"
+      :bordered="false"
+    >
+      <div class="config-grid">
+        <div class="config-field">
+          <label>渠道名称</label>
+          <n-input v-model:value="channelForm.name" placeholder="例如：DeepSeek 官方" size="small" />
+        </div>
+        <div class="config-field">
+          <label>提供商</label>
+          <n-select
+            v-model:value="channelForm.provider"
+            :options="providerOptions"
+            size="small"
+            @update:value="onChannelProviderChange"
+          />
+        </div>
+        <div class="config-field span-2">
+          <label>API 密钥{{ editingChannel ? '（留空则不修改）' : '' }}</label>
+          <n-input v-model:value="channelForm.api_key" type="password" placeholder="sk-..." size="small" />
+        </div>
+        <div class="config-field">
+          <label>接口地址</label>
+          <n-input v-model:value="channelForm.endpoint" placeholder="https://api.deepseek.com/v1" size="small" />
+        </div>
+        <div class="config-field">
+          <label>模型</label>
+          <n-input v-model:value="channelForm.model" placeholder="deepseek-chat" size="small" />
+        </div>
+        <div class="config-field">
+          <label>温度参数</label>
+          <n-input-number v-model:value="channelForm.temperature" :step="0.1" :min="0" :max="2" size="small" style="width: 100%;" />
+        </div>
+        <div class="config-field">
+          <label>最大 Tokens</label>
+          <n-input-number v-model:value="channelForm.max_tokens" :step="256" :min="256" :max="32768" size="small" style="width: 100%;" />
+        </div>
+      </div>
+      <template #footer>
+        <div style="display:flex;justify-content:flex-end;gap:8px;">
+          <n-button size="small" @click="channelModalShow = false">取消</n-button>
+          <n-button size="small" type="primary" :loading="savingChannel" @click="saveChannel">保存</n-button>
+        </div>
+      </template>
+    </n-modal>
 
     <!-- History View -->
     <div v-if="activeTab === 'history'" class="history-view">

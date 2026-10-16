@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import math
+import random
 import threading
 import time
 from datetime import datetime, timedelta
@@ -115,8 +116,8 @@ CODES = {
     "zz_hongli": "000922",     # 中证红利（价格）
     "hs300_value": "000919",   # 沪深300价值
     "hs300_growth": "000918",  # 沪深300成长
-    "gz_value100": "980082",   # 国证价值100
-    "gz_growth100": "980083",  # 国证成长100
+    "gz_value100": "000804",   # 中证800价值（2026-10-16 替换：原国证价值100 980082 于2024-12才发布、无5年历史）
+    "gz_growth100": "000805",  # 中证800成长（同上替换原国证成长100 980083）
 }
 # 一级债基代理：易方达增强回报A（110017，长历史主动债基，近似一级债基上限）
 FUND_TIER1_BOND = "110017"
@@ -155,7 +156,7 @@ _CLOSE_KEYS = ("收盘", "close", "指数", "收盘点位", "point", "price", "�
 _NAV_KEYS = ("单位净值", "nav", "net_value", "累计净值", "累计单位净值")
 _PE_KEYS = ("滚动市盈率", "pe_ttm", "pe", "市盈率", "市盈率ttm")
 _YIELD_KEYS = ("10年", "10y", "10年国债", "收益率")  # bond_china_yield 的 10Y 列
-_US10Y_KEYS = ("10年", "10y", "10年国债", "us10y", "美国10年")
+_US10Y_KEYS = ("美国国债收益率10年", "10年", "10y", "10年国债", "us10y", "美国10年")  # bond_zh_us_rate 的列名为「美国国债收益率10年」（2026-10-16 补精确列名）
 
 
 def _normalize(rows, value_keys, date_keys=_DATE_KEYS) -> list[tuple[str, float]]:
@@ -174,18 +175,26 @@ def _normalize(rows, value_keys, date_keys=_DATE_KEYS) -> list[tuple[str, float]
 # ===========================================================================
 # 取数封装（全部经网关）
 # ===========================================================================
+def _today() -> str:
+    return datetime.now().strftime("%Y%m%d")
+
+
 def _index_csindex(symbol: str, start: str, end: str | None = None, timeout: int = 30):
-    p = {"symbol": symbol, "start_date": start}
-    if end:
-        p["end_date"] = end
+    # ⚠️ end_date 必须显式传今天（2026-10-16 修复）：akshare 新版
+    #   stock_zh_index_hist_csindex 默认 end_date='20240604'，不传则所有
+    #   csindex 图的数据都停在 2024-06-04（图能显示但是陈旧数据）。
+    p = {"symbol": symbol, "start_date": start, "end_date": end or _today()}
     return _gw("stock_zh_index_hist_csindex", p, retries=2, timeout=timeout)
 
 
 def _index_zh_a(symbol: str, start: str, end: str | None = None, timeout: int = 30):
-    p = {"symbol": symbol, "period": "daily", "start_date": start}
-    if end:
-        p["end_date"] = end
-    return _gw("index_zh_a_hist", p, retries=2, timeout=timeout)
+    # ⚠️ 2026-10-16 由 index_zh_a_hist 切换为 stock_zh_index_hist_csindex：
+    #   1) 网关 worker 会把 start_date 数字串转 int，akshare 1.19 新版
+    #      index_zh_a_hist 内部按 DatetimeIndex 切片，int 直接 TypeError 500；
+    #   2) 000985/000922 等中证指数在 csindex 官网有且数据更新及时。
+    #   仅用于中证指数代码（000985 等），东财独有代码不可用此路径。
+    p = {"symbol": symbol, "start_date": start, "end_date": end or _today()}
+    return _gw("stock_zh_index_hist_csindex", p, retries=2, timeout=timeout)
 
 
 def _index_cni(symbol: str, start: str, end: str | None = None, timeout: int = 30):
@@ -196,17 +205,22 @@ def _index_cni(symbol: str, start: str, end: str | None = None, timeout: int = 3
 
 
 def _fund_nav(symbol: str, start: str, end: str | None = None, timeout: int = 30):
-    p = {"symbol": symbol, "start_date": start}
-    if end:
-        p["end_date"] = end
-    return _gw("fund_open_fund_daily_em", p, retries=2, timeout=timeout)
+    # ⚠️ 2026-10-16 由 fund_open_fund_daily_em 切换为 fund_open_fund_info_em：
+    #   akshare 1.19 起 fund_open_fund_daily_em 无参数且只返回当日全市场快照，
+    #   无法取历史；fund_open_fund_info_em(symbol, indicator='单位净值走势')
+    #   返回成立以来完整净值序列（列：净值日期/单位净值/日增长率）。
+    #   start/end 参数保留签名兼容，实际由调用方对返回序列截取。
+    p = {"symbol": symbol, "indicator": "单位净值走势"}
+    return _gw("fund_open_fund_info_em", p, retries=2, timeout=timeout)
 
 
 def _hk_index(symbol: str, start: str, end: str | None = None, timeout: int = 30):
-    p = {"symbol": symbol, "start_date": start}
-    if end:
-        p["end_date"] = end
-    return _gw("stock_hk_index_daily_em", p, retries=2, timeout=timeout)
+    # ⚠️ 2026-10-16 由 stock_hk_index_daily_em 切换为 csindex：
+    #   新版 stock_hk_index_daily_em 仅支持东财港股指数代码表内的 symbol
+    #   （930914 中证港股通高股息不在表内 → KeyError 500）；
+    #   930914 本身是中证指数，csindex 官网数据可用且到 T-1。
+    p = {"symbol": symbol, "start_date": start, "end_date": end or _today()}
+    return _gw("stock_zh_index_hist_csindex", p, retries=2, timeout=timeout)
 
 
 def _index_pe(symbol: str, timeout: int = 35) -> list[tuple[str, float]]:
@@ -223,8 +237,10 @@ def _index_dividend(symbol: str, timeout: int = 35) -> list[tuple[str, float]]:
     if not raw:
         return []
     # 情况1：list[dict] 时间序列，含 股息率 / dividend_yield 列
+    #   ⚠️ 2026-10-16：akshare 1.19 实际列名为「股息率1/股息率2」（静态/滚动两种口径），
+    #   旧 keys 只写「股息率」永远匹配不上 → 该图永久空。补上带序号列名。
     if isinstance(raw, list):
-        out = _normalize(raw, ("股息率", "dividend_yield", "股息率率"))
+        out = _normalize(raw, ("股息率1", "股息率2", "股息率", "dividend_yield", "股息率率"))
         if out:
             return out
     # 情况2：dict 当前值
@@ -270,6 +286,11 @@ def _china_10y_history() -> dict[str, float]:
                         v = _safe_float(_pick(row, *("10年", "10y", "收益率")))
                         if d and v is not None:
                             result[d] = v
+                    # 每段完成即增量发布（2026-10-16）：避免 10 段全部拉完前
+                    # 其他调用一直拿到空 dict，导致股债性价比图首算记「一端缺失」
+                    # 并以失败态缓存 6 小时。
+                    with _CHINA10Y["lock"]:
+                        _CHINA10Y["data"] = dict(result)
                 cur = nxt
             if result:
                 with _CHINA10Y["lock"]:
@@ -284,6 +305,29 @@ def _china_10y_history() -> dict[str, float]:
 
     threading.Thread(target=_bg, daemon=True).start()
     return _CHINA10Y["data"] or {}
+
+
+def _china_10y_history_wait(max_wait: int = 30) -> dict[str, float]:
+    """取中债 10Y 历史，首次为空时等待后台分段刷新完成（2026-10-16）。
+
+    分段拉取约需 10-20s；股债性价比图首算时若直接拿空会记「一端缺失」
+    并失败态缓存 6 小时，故这里阻塞等待（该图自身 6 小时缓存，只等一次）。
+    优先等后台全部段完成（loading=False），超时则返回已拉到的部分段。
+    """
+    data = _china_10y_history()
+    if data:
+        with _CHINA10Y["lock"]:
+            if not _CHINA10Y["loading"]:
+                return data
+    deadline = time.time() + max_wait
+    while time.time() < deadline:
+        time.sleep(1.5)
+        with _CHINA10Y["lock"]:
+            data = _CHINA10Y["data"] or {}
+            loading = _CHINA10Y["loading"]
+        if not loading:
+            break  # 后台已结束（成功或失败）
+    return data
 
 
 def _us_10y_history() -> dict[str, float]:
@@ -463,7 +507,7 @@ def _b_equity_bond_gap() -> dict:
     pe = _index_pe("沪深300")
     if not pe:
         return _empty(title, "沪深300 PE 取数失败")
-    china = _china_10y_history()
+    china = _china_10y_history_wait()
     us = _us_10y_history()
     pe_map = {d: v for d, v in pe}
     dates = sorted(pe_map)
@@ -632,7 +676,7 @@ def _b_dividend_yield() -> dict:
     title = "中证红利股息率追踪"
     desc = "中证红利历史股息率走势，叠加股息率与 10Y 中债的差值(股票风险溢价)。股息率数据取决于上游覆盖，缺失时该曲线为空。"
     dy = _index_dividend(CODES["zz_hongli"])
-    china = _china_10y_history()
+    china = _china_10y_history_wait()
     if not dy:
         return _empty(title, "上游未提供中证红利历史股息率（接口未覆盖）")
     dates = [d for d, _ in dy]
@@ -800,8 +844,8 @@ CHARTS: list[dict] = [
         "规模风格轮动三棱镜", "沪深300价值 vs 沪深300成长"),
      "title": "规模风格轮动三棱镜", "desc": "300价值 vs 300成长"},
     {"id": "growth_value100", "builder": lambda: _b_rotation_prism(CODES["gz_value100"], CODES["gz_growth100"],
-        "成长100/价值100轮动三棱镜", "国证价值100 vs 国证成长100"),
-     "title": "成长100/价值100三棱镜", "desc": "国证价值100 vs 国证成长100"},
+        "成长/价值风格轮动三棱镜", "中证800价值 vs 中证800成长"),
+     "title": "成长/价值风格三棱镜", "desc": "800价值 vs 800成长"},
     {"id": "dividend_yield", "builder": _b_dividend_yield, "title": "中证红利股息率",
      "desc": "股息率 + (股息率−10Y中债)"},
     {"id": "dividend_40d_diff", "builder": _b_dividend_40d_diff, "title": "中证红利40日收益差",
@@ -869,21 +913,36 @@ def get_chart(chart_id: str, force: bool = False) -> dict | None:
 
     def _bg():
         try:
+            # 错峰（2026-10-16）：11 个图同时刷新会打爆单线程网关 worker，
+            # 随机 0-8s 抖动降低并发峰值。
+            time.sleep(random.uniform(0, 8))
             with _REFRESH_SEM:
                 data = _compute(chart)
             with _CACHE_LOCK:
                 ok = bool((data.get("meta") or {}).get("updateTime"))
-                _CACHE[chart_id] = {
-                    "data": data,
-                    "ts": time.time(),
-                    "loading": False,
-                    "last_ok_ts": time.time() if ok else (entry.get("last_ok_ts") if entry else None),
-                }
+                if ok:
+                    _CACHE[chart_id] = {
+                        "data": data,
+                        "ts": time.time(),
+                        "loading": False,
+                        "last_ok_ts": time.time(),
+                    }
+                else:
+                    # 失败态只短缓存 90s（2026-10-16）：一次网关抖动/并发超时
+                    # 不应把图锁死 6 小时；90s 后自动重试。
+                    _CACHE[chart_id] = {
+                        "data": data,
+                        "ts": time.time() - _CACHE_TTL + 90,
+                        "loading": False,
+                        "last_ok_ts": (entry.get("last_ok_ts") if entry else None),
+                    }
         except Exception as e:  # noqa: BLE001
             print(f"[MarketCharts] {chart_id} 后台刷新异常: {e}")
             with _CACHE_LOCK:
                 if chart_id in _CACHE:
                     _CACHE[chart_id]["loading"] = False
+                    # 异常同样短缓存，避免 6 小时锁死
+                    _CACHE[chart_id]["ts"] = min(_CACHE[chart_id]["ts"], time.time() - _CACHE_TTL + 90)
 
     threading.Thread(target=_bg, daemon=True).start()
     with _CACHE_LOCK:

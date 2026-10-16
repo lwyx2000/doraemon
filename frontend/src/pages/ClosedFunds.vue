@@ -439,7 +439,7 @@ const columns = [
   >
     <SectionFallback v-if="gatewayEmpty" :gateway-empty="true" :min-height="520" @retry="refetch" />
     <div v-else-if="funds" class="closed-page">
-    <PageHeader title="封闭基金分析" subtitle="封闭基金折价率监控与到期套利分析" helpKey="closedFunds">
+    <PageHeader title="封闭基金分析" subtitle="封闭基金折价率监控与到期套利分析" helpKey="closedFunds" :updated-at="meta?.updateTime">
       <template #actions>
         <n-button size="small" @click="openAddModal">添加</n-button>
         <n-button size="small" type="primary" @click="exportFunds">导出</n-button>

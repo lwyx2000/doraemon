@@ -126,12 +126,6 @@ export const glossaryByPage: Record<string, GlossaryItem[]> = {
     { abbr: 'HKD', full: 'Hong Kong Dollar', cn: '港币，港股市值按港币计，不做汇率换算' },
     { abbr: 'NAV', full: 'Net Asset Value', cn: '基金净值，场外基金现价的来源' },
   ],
-  dataSources: [
-    { abbr: 'API', full: 'Application Programming Interface', cn: '应用程序接口，用于自动获取数据' },
-    { abbr: 'IOPV', full: 'Indicative Optimized Portfolio Value', cn: '基金参考净值' },
-    { abbr: 'NAV', full: 'Net Asset Value', cn: '基金净值' },
-    { abbr: 'K线', full: 'Candlestick Chart', cn: '日K线，含开高低收的日行情数据' },
-  ],
   preciousMetals: [
     { abbr: 'SGE', full: 'Shanghai Gold Exchange', cn: '上海黄金交易所，国内贵金属现货交易场所' },
     { abbr: 'Au99.99', full: '99.99% Purity Gold Spot', cn: '上海黄金交易所纯度99.99%黄金现货合约，报价单位元/克' },

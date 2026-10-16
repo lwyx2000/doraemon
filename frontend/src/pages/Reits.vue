@@ -266,7 +266,7 @@ const columns = [
   >
     <SectionFallback v-if="gatewayEmpty" :gateway-empty="true" :min-height="480" @retry="refetch" />
     <div v-else-if="reits" class="reits-page">
-    <PageHeader title="公募REITs中心" subtitle="公募REITs 深度价值分析 - 底层资产评估与分红率跟踪" helpKey="reits">
+    <PageHeader title="公募REITs中心" subtitle="公募REITs 深度价值分析 - 底层资产评估与分红率跟踪" helpKey="reits" :updated-at="meta?.updateTime">
       <template #actions>
         <n-button size="small" :loading="refreshing" @click="refresh">刷新</n-button>
         <n-button size="small" type="primary" @click="exportReits">导出</n-button>

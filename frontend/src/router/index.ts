@@ -97,12 +97,6 @@ const routes: RouteRecordRaw[] = [
     meta: { title: 'AI决策中心', icon: 'psychology' },
   },
   {
-    path: '/data-sources',
-    name: 'DataSources',
-    component: () => import('../pages/DataSources.vue'),
-    meta: { title: '数据来源', icon: 'server' },
-  },
-  {
     path: '/precious-metals',
     name: 'PreciousMetals',
     component: () => import('../pages/PreciousMetals.vue'),
@@ -125,6 +119,24 @@ const routes: RouteRecordRaw[] = [
     name: 'FearGreed',
     component: () => import('../pages/FearGreed.vue'),
     meta: { title: '贪婪恐惧指数', icon: 'speed' },
+  },
+  {
+    path: '/longterm',
+    name: 'LongTerm',
+    component: () => import('../pages/LongTerm.vue'),
+    meta: { title: '长期视角', icon: 'time' },
+  },
+  {
+    path: '/knowledge',
+    name: 'Knowledge',
+    component: () => import('../pages/Knowledge.vue'),
+    meta: { title: '知识库', icon: 'library' },
+  },
+  {
+    path: '/ai-chat',
+    name: 'AiChat',
+    component: () => import('../pages/AiChat.vue'),
+    meta: { title: 'AI问答', icon: 'chat' },
   },
   {
     path: '/login',

@@ -16,7 +16,6 @@ WalletOutline,
   BulbOutline,
   Wallet,
   CloseOutline,
-  ServerOutline,
   BriefcaseOutline,
   SettingsOutline,
   DiamondOutline,
@@ -24,6 +23,9 @@ WalletOutline,
   GiftOutline,
   PeopleOutline,
   BarChartOutline,
+  LibraryOutline,
+  ChatbubblesOutline,
+  TimeOutline,
 } from '@vicons/ionicons5'
 import { useSidebar } from '../composables/useSidebar'
 import { useTabs } from '../composables/useTabs'
@@ -95,10 +97,12 @@ const navItems: NavItem[] = [
   { name: 'StrategyCenter', path: '/strategy-center', icon: OptionsOutline, label: '策略中心' },
   { name: 'SignalLab', path: '/signal-lab', icon: FlashOutline, label: '信号实验室' },
   { name: 'AiDecisionHub', path: '/ai-decision', icon: BulbOutline, label: 'AI决策' },
+  { name: 'AiChat', path: '/ai-chat', icon: ChatbubblesOutline, label: 'AI问答' },
+  { name: 'Knowledge', path: '/knowledge', icon: LibraryOutline, label: '知识库' },
   { name: 'AlertCenter', path: '/alert-center', icon: Notifications, label: '预警中心' },
-  { name: 'DataSources', path: '/data-sources', icon: ServerOutline, label: '数据来源' },
   { name: 'PreciousMetals', path: '/precious-metals', icon: DiamondOutline, label: '贵金属' },
   { name: 'MarketCharts', path: '/market-charts', icon: BarChartOutline, label: '市场复盘' },
+  { name: 'LongTerm', path: '/longterm', icon: TimeOutline, label: '长期视角' },
   { name: 'SystemSettings', path: '/system-settings', icon: SettingsOutline, label: '系统设置' },
 ]
 

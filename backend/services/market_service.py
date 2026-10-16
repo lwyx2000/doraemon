@@ -15,6 +15,7 @@ import requests
 import time
 
 from core.config import AKSHARE_API_BASE, USE_MOCK_DATA
+from database.bulk import bulk_insert
 from services.meta_utils import gateway_no_data_meta
 import mock_data
 
@@ -1202,11 +1203,16 @@ def get_sw_sectors(force: bool = False) -> tuple[list[dict], dict]:
                     return _SW_SECTORS_CACHE["data"]
 
     # 1) 实时一级行业（最新价 / 昨收盘）
-    # ⚠️ 超时从 20s 降到 8s（2026-10-08）：实测 akshare-webapi 侧对
-    #   `index_realtime_sw` 硬编码 30s 超时且重试 2 次（源站慢/挂），
-    #   doraemon 这边 timeout=20 等满 → 首页 Dashboard 每次干等 20s+。
-    #   行业日内变化有限，取不到就退化为「只有估值、没有涨跌幅」，可接受。
-    rt = _akshare_request("index_realtime_sw", {"symbol": "一级行业"}, timeout=8)
+    # ⚠️ 超时 8s → 30s（2026-10-16 修复热力图空数据）→ 45s（当日二次上调）：
+    #   10-08 曾把超时压到 8s 防首页干等，但实测网关 `index_realtime_sw`
+    #   稳定返回需 ~18s（源站申万接口慢），8s 永远超时 → 本函数永久走降级
+    #   分支（code="" + change_pct=None）→ 前端热力图 31 格全部空 key 撞车、
+    #   涨跌幅全空、全灰；同时 15:30 快照 job 自 10-13 起全部失败。
+    #   10-16 下午复测网关耗时在 13.2s ~ 42.8s 之间大幅波动，30s 仍会
+    #   间歇性超时 → 热力图间歇性退回 PE 降级态；上调到 45s 覆盖波动上限。
+    #   现有 10 分钟进程内缓存（成功态）/ 30s 失败态兜底重复打开开销，
+    #   不再需要为防干等而砍超时——取不到比等不到更糟。
+    rt = _akshare_request("index_realtime_sw", {"symbol": "一级行业"}, timeout=45)
 
     # 2) 一级行业估值（PE / PB / 股息率 / 成份数）
     #⚠️ 放在 rt 判断**之前**（2026-10-08）：`index_realtime_sw` 挂掉时，
@@ -1362,6 +1368,11 @@ def _save_sw_sector_snapshot(sectors: list[dict], trade_date: str | None = None)
             ]
             for s in sectors
         ]
+        # ⚠️ 2026-10-15 历史记录：本处曾因 base_sw_sector_daily 表存储损坏导致
+        # duckdb native 段错误（backend 崩溃循环、看板 502），当时误以为是写入形态
+        # 问题而改成 executemany。后经生产库副本隔离实验确诊为**表损坏**，已用
+        # database.init_db.repair_sw_sector_table（REPAIR_SW_SECTOR_TABLE=1）重建。
+        # 31 行/10 分钟的量级，executemany ~0.5s 代价可忽略，保持现状无需改回。
         db.executemany(_SW_SECTOR_UPSERT_SQL, rows)
         print(f"[SW Snapshot] 写入 {len(rows)} 个行业快照 (trade_date={day})")
         return len(rows)
@@ -1488,7 +1499,9 @@ def backfill_sw_sector_history(days: int = 250) -> dict:
             continue
 
         try:
-            db.executemany(_SW_SECTOR_UPSERT_SQL, rows)
+            # 字面量多行 VALUES（ON CONFLICT 后缀原样拼回）；原 executemany 参数化
+            # ~16ms/行（7750 行 ≈ 2 分钟，P2，见 docs/性能病理排查报告-2026-10-14.md）
+            bulk_insert(db, _SW_SECTOR_UPSERT_SQL, rows)
             total_rows += len(rows)
             done_sectors += 1
         except Exception as e:

@@ -249,7 +249,7 @@ const convergenceChartOption = computed(() => ({
     <SectionFallback v-if="gatewayEmpty" :gateway-empty="true" :min-height="520" @retry="refetch" />
     <div v-else-if="funds" class="watchlist-page">
     <!-- Header -->
-    <PageHeader title="投资组合看板" :subtitle="`监控 ${funds?.length ?? 0} 个高置信度资产，覆盖4个资产类别 · 盯住折溢价机会，跟踪组合盈亏、折价收敛趋势与相关性风险，支持添加标的与导出 CSV`" help-key="portfolioWatchlist">
+    <PageHeader title="投资组合看板" :subtitle="`监控 ${funds?.length ?? 0} 个高置信度资产，覆盖4个资产类别 · 盯住折溢价机会，跟踪组合盈亏、折价收敛趋势与相关性风险，支持添加标的与导出 CSV`" help-key="portfolioWatchlist" :updated-at="meta?.updateTime">
       <template #actions>
         <n-button size="small" @click="openAddModal">
           <template #icon><n-icon :component="Add" /></template>

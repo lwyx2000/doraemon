@@ -535,6 +535,67 @@ export interface AiConfig {
   model?: string
 }
 
+/** LLM 渠道（OpenAI 兼容多渠道，api_key 读出脱敏） */
+export interface AiChannel {
+  id: string
+  name: string
+  provider: string
+  apiKey: string
+  endpoint: string
+  model: string
+  temperature: number
+  maxTokens: number
+  hasKey: boolean
+  createdAt?: string
+  updatedAt?: string
+}
+
+export interface AiChannelPreset {
+  label: string
+  endpoint: string
+  model: string
+}
+
+export interface AiChannelsView {
+  activeId: string | null
+  channels: AiChannel[]
+  presets: Record<string, AiChannelPreset>
+}
+
+/** 知识库 */
+export interface KnowledgeDocMeta {
+  id: string
+  category: string
+  title: string
+  file: string
+  tags: string[]
+}
+
+export interface KnowledgeDoc extends KnowledgeDocMeta {
+  content: string
+}
+
+export interface KnowledgeIndex {
+  version: number
+  updated: string
+  categories: Array<{ id: string; name: string; icon: string }>
+  docs: KnowledgeDocMeta[]
+}
+
+/** AI 流式（SSE）事件 */
+export interface AiStreamMeta {
+  type: 'meta'
+  context_type?: string
+  context?: Record<string, unknown> | null
+  docs?: Array<{ id?: string; title?: string; snippet?: string }>
+}
+
+export interface AiStreamError {
+  type: 'error'
+  code: string
+  message: string
+}
+
 export interface AiReport {
   date: string
   macroAssessment: string
@@ -1434,4 +1495,119 @@ export interface JobInfo {
   run_count: number
   fail_count: number
   recent_runs: JobRun[]
+}
+
+// ============================================================
+// 长期视角（老钱日日谈 A股看板数据源，爬取落库）
+// 数据来源：https://ashare.laoqianriritan.com（页面须注明来源与抓取时间）
+// ============================================================
+
+/** 单源抓取状态（后端 base_lqr_source_meta，查询响应统一附带） */
+export interface LqrSourceMeta {
+  fetchedAt: string | null // 我方抓取时间（CST）
+  upstreamUpdated: string | null // 上游数据生成/更新时间
+  rows: number
+  ok: boolean
+  error?: string | null
+}
+
+/** 行业 CAGR 指标 */
+export interface LqrIndustryMetrics {
+  cagrFull: number | null // 全区间年化（2005 起）
+  cagr7y: number | null
+  cagr5y: number | null
+  cagr3y: number | null
+}
+
+/** 申万行业年度涨跌幅（热力图） */
+export interface LqrSwIndustry {
+  name: string
+  code: string
+  rets: (number | null)[] // 与 years 平行的年度涨跌幅（%）
+  ytd: number | null // 年内至今涨跌幅（%）
+  ytdYear: number | null
+  metrics: LqrIndustryMetrics | null
+}
+
+export interface LqrSwReturns extends LqrSourceMeta {
+  years: number[]
+  industries: LqrSwIndustry[]
+}
+
+/** 指数收益三因子拆解项 */
+export interface LqrReturnDecompItem {
+  code: string
+  name: string
+  start: string
+  end: string
+  totalReturnPct: number | null // 全收益区间涨幅（%）
+  dividendPct: number | null // 股息贡献（%）
+  earningsPct: number | null // 盈利贡献（%）
+  valuationPct: number | null // 估值贡献（%）
+  peStart: number | null
+  peEnd: number | null
+}
+
+export interface LqrReturnDecomp extends LqrSourceMeta {
+  indexes: LqrReturnDecompItem[]
+}
+
+/** 趋势温度：个股 MA250 上方占比（日频） */
+export interface LqrStockMaPoint {
+  date: string
+  total: number | null
+  aboveMa250: number | null
+  pctAbove: number | null
+}
+
+/** 趋势温度：行业 MACD>0 占比（月频） */
+export interface LqrIndustryMacdPoint {
+  date: string // YYYY-MM
+  total: number | null
+  positiveCount: number | null
+  pctPositive: number | null
+}
+
+export interface LqrTrendTemperature extends LqrSourceMeta {
+  stockMa250: LqrStockMaPoint[]
+  industryMacd: LqrIndustryMacdPoint[]
+}
+
+/** 宽基指数全收益净值序列 */
+export interface LqrWideBaseSeries {
+  name: string
+  note: string
+  dates: string[]
+  values: (number | null)[]
+}
+
+export interface LqrWideBase extends LqrSourceMeta {
+  series: Record<string, LqrWideBaseSeries>
+}
+
+/** 华证六因子净值序列 */
+export interface LqrHuazhengSeries {
+  name: string
+  dates: string[]
+  values: (number | null)[]
+}
+
+export interface LqrHuazheng extends LqrSourceMeta {
+  factors: Record<string, LqrHuazhengSeries>
+}
+
+/** 长期视角数据状态（/longterm/status） */
+export interface LqrStatus {
+  swReturns: number
+  swMetrics: number
+  returnDecomp: number
+  trendTemp: number
+  wideBase: number
+  huazheng: number
+  sources: Record<string, LqrSourceMeta>
+  scheduler?: {
+    running: boolean
+    collectTime: string
+    manualCollect: { running: boolean }
+  }
 }

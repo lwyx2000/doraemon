@@ -479,7 +479,7 @@ function toggleFullscreen() {
   >
     <div v-if="selectedIndex" class="analysis-page">
     <!-- Page Header -->
-    <PageHeader title="指数估值分析" subtitle="基于股债利差的估值分位与拥挤度分析" helpKey="indexAnalysis">
+    <PageHeader title="指数估值分析" subtitle="基于股债利差的估值分位与拥挤度分析" helpKey="indexAnalysis" :updated-at="meta?.updateTime">
       <template #actions>
         <n-button size="tiny" @click="exportCSV">导出CSV</n-button>
       </template>

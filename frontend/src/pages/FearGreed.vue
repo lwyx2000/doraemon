@@ -27,8 +27,9 @@ import { api } from '../utils/api'
 import BaseChart from '../components/BaseChart.vue'
 import PageHeader from '../components/PageHeader.vue'
 import GlossaryPanel from '../components/GlossaryPanel.vue'
+import AiInterpretModal from '../components/AiInterpretModal.vue'
 import { useDarkMode } from '../composables/useDarkMode'
-import type { FearGreedLatest, FearGreedPoint, FearGreedStatus } from '../types'
+import type { FearGreedLatest, FearGreedPoint, FearGreedStatus, SectionSourceMeta } from '../types'
 import { buildFearGreedMetrics, labelType, scoreColor } from '../utils/fearGreedDisplay'
 
 const message = useMessage()
@@ -40,6 +41,10 @@ const history = ref<FearGreedPoint[]>([])
 const status = ref<FearGreedStatus | null>(null)
 const collecting = ref(false)
 const backfilling = ref(false)
+const meta = ref<SectionSourceMeta | null>(null)
+
+// AI 解读弹窗（后端组装恐贪真实数据 + 口径知识库）
+const showAiInterpret = ref(false)
 
 async function loadAll() {
   loading.value = true
@@ -52,6 +57,7 @@ async function loadAll() {
     latest.value = latestRes.data
     history.value = historyRes.data || []
     status.value = statusRes.data
+    meta.value = latestRes.meta ?? null
   } catch (e: any) {
     message.error(e?.message || '加载失败')
   } finally {
@@ -308,9 +314,11 @@ const historyOption = computed(() => {
       title="贪婪恐惧指数"
       subtitle="6 指标加权情绪温度计 · 0 恐慌 ↔ 100 贪婪"
       helpKey="fearGreed"
+      :updated-at="meta?.updateTime"
     >
       <template #actions>
         <NButton size="small" quaternary :loading="loading" @click="loadAll">刷新</NButton>
+        <NButton size="small" @click="showAiInterpret = true">AI 解读</NButton>
         <NButton size="small" :loading="collecting" @click="onCollect">采集当日</NButton>
         <NButton size="small" type="primary" :loading="backfilling" @click="onBackfill">
           回填历史
@@ -444,6 +452,9 @@ const historyOption = computed(() => {
         </template>
       </n-spin>
     </n-space>
+
+    <!-- AI 解读（真实恐贪数据 + 口径知识库 → LLM 流式） -->
+    <AiInterpretModal v-model:show="showAiInterpret" context-type="fear_greed" title="AI 解读 · 贪婪恐惧指数" />
   </div>
 </template>
 

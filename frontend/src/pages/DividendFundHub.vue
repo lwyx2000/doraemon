@@ -35,6 +35,7 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const refreshing = ref(false)
 const overview = ref<DividendOverview | null>(null)
+const overviewMeta = ref<{ updateTime?: string | null } | null>(null)
 
 async function load() {
   loading.value = true
@@ -42,6 +43,7 @@ async function load() {
   try {
     const res = await api.getDividendOverview()
     overview.value = (res.data as DividendOverview) ?? null
+    overviewMeta.value = res.meta ?? null
   } catch (e: any) {
     error.value = e?.message || '加载失败'
   } finally {
@@ -1084,7 +1086,7 @@ onUnmounted(() => {
 
 <template>
   <div class="page">
-    <PageHeader title="红利基金" :subtitle="subtitle" />
+    <PageHeader title="红利基金" :subtitle="subtitle" :updated-at="overviewMeta?.updateTime" />
 
     <n-space vertical size="large">
       <!-- 口径与规则说明 -->

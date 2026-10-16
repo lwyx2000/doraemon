@@ -185,6 +185,38 @@ export const api = {
       { method: 'POST' }
     ),
 
+  // 长期视角（老钱日日谈 A股看板）：申万行业年度涨跌幅热力图
+  getLongtermSwReturns: () =>
+    requestWithMeta<LqrSwReturns>('/api/v1/longterm/sw-returns'),
+
+  // 长期视角：指数收益三因子拆解（股息/盈利/估值）
+  getLongtermReturnDecomp: () =>
+    requestWithMeta<LqrReturnDecomp>('/api/v1/longterm/return-decomp'),
+
+  // 长期视角：市场趋势温度（个股 MA250 上方占比 + 行业 MACD>0 占比）
+  getLongtermTrendTemperature: () =>
+    requestWithMeta<LqrTrendTemperature>('/api/v1/longterm/trend-temperature'),
+
+  // 长期视角：宽基指数全收益净值（days=0 全量，否则每指数截取最近 N 个点）
+  getLongtermWideBase: (days = 0) =>
+    requestWithMeta<LqrWideBase>('/api/v1/longterm/wide-base', { days }),
+
+  // 长期视角：华证六因子净值（days=0 全量，否则每因子截取最近 N 个点）
+  getLongtermHuazheng: (days = 0) =>
+    requestWithMeta<LqrHuazheng>('/api/v1/longterm/huazheng', { days }),
+
+  // 长期视角：各源抓取状态 + 定时任务状态
+  getLongtermStatus: () =>
+    requestWithMeta<LqrStatus>('/api/v1/longterm/status'),
+
+  // 长期视角：手动触发一次采集（首次部署后调用一次即全量落库）
+  collectLongterm: (asyncMode = true) =>
+    requestWithMeta<{ started: boolean; mode: string; message?: string }>(
+      `/api/v1/longterm/collect?async_mode=${asyncMode}`,
+      undefined,
+      { method: 'POST' }
+    ),
+
   // 红利策略研究：红利指数估值 + 全市场红利基金名录
   getDividendOverview: () =>
     requestWithMeta<DividendOverview>('/api/v1/dividend/overview'),
@@ -488,6 +520,75 @@ export const api = {
   },
 
   // ============================================================
+  // LLM 多渠道管理（OpenAI 兼容）
+  // ============================================================
+  getAiChannels: async () => {
+    const raw = await request<any>('/api/v1/ai/channels')
+    return {
+      activeId: raw.active_id ?? null,
+      channels: (raw.channels ?? []).map(adaptAiChannel) as AiChannel[],
+      presets: (raw.presets ?? {}) as Record<string, AiChannelPreset>,
+    } as AiChannelsView
+  },
+
+  createAiChannel: async (body: {
+    name: string
+    provider: string
+    api_key: string
+    endpoint?: string
+    model?: string
+    temperature?: number
+    max_tokens?: number
+  }) => adaptAiChannel(await request<any>('/api/v1/ai/channels', undefined, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })),
+
+  updateAiChannel: async (id: string, body: Record<string, unknown>) =>
+    adaptAiChannel(await request<any>(`/api/v1/ai/channels/${id}`, undefined, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    })),
+
+  deleteAiChannel: (id: string) =>
+    request<{ deleted: boolean }>(`/api/v1/ai/channels/${id}`, undefined, { method: 'DELETE' }),
+
+  testAiChannel: (id: string) =>
+    request<{ ok: boolean; latency_ms: number; reply: string; model: string }>(
+      `/api/v1/ai/channels/${id}/test`,
+      undefined,
+      { method: 'POST' },
+    ),
+
+  setActiveAiChannel: (id: string) =>
+    request<{ active_id: string }>('/api/v1/ai/channels/active', undefined, {
+      method: 'POST',
+      body: JSON.stringify({ id }),
+    }),
+
+  // ============================================================
+  // 知识库（backend/knowledge/ 单一真源）
+  // ============================================================
+  getKnowledge: () => request<KnowledgeIndex>('/api/v1/ai/knowledge'),
+
+  getKnowledgeDoc: (id: string) => request<KnowledgeDoc>(`/api/v1/ai/knowledge/${id}`),
+
+  // ============================================================
+  // AI 解读 / 问答（SSE 流式）
+  // ============================================================
+  interpretAi: (contextType: 'dashboard' | 'fear_greed', handlers: AiStreamHandlers, signal?: AbortSignal) =>
+    streamAi('/api/v1/ai/interpret', { context_type: contextType }, handlers, signal),
+
+  chatAi: (
+    message: string,
+    contextType: 'dashboard' | 'fear_greed' | null,
+    history: Array<{ role: string; content: string }>,
+    handlers: AiStreamHandlers,
+    signal?: AbortSignal,
+  ) =>
+    streamAi('/api/v1/ai/chat', { message, context_type: contextType, history }, handlers, signal),
+
+  // ============================================================
   // 券商账号（个人中心维护，持仓页筛选/导入选用）
   // ============================================================
   getBrokerAccounts: () =>
@@ -625,6 +726,85 @@ function adaptAiConfig(raw: any): AiConfig {
   }
 }
 
+function adaptAiChannel(raw: any): AiChannel {
+  return {
+    id: raw.id,
+    name: raw.name ?? '',
+    provider: raw.provider ?? 'custom',
+    apiKey: raw.api_key ?? '',
+    endpoint: raw.endpoint ?? '',
+    model: raw.model ?? '',
+    temperature: raw.temperature ?? 0.3,
+    maxTokens: raw.max_tokens ?? 2048,
+    hasKey: raw.has_key ?? false,
+    createdAt: raw.created_at,
+    updatedAt: raw.updated_at,
+  }
+}
+
+// ============================================================
+// AI 流式（SSE）：fetch + ReadableStream 解析 data: 帧。
+// 事件序列：meta → delta* → done；异常为 error 帧（not_configured 等）。
+// ============================================================
+export interface AiStreamHandlers {
+  onMeta?: (meta: AiStreamMeta) => void
+  onDelta?: (text: string) => void
+  onError?: (err: AiStreamError) => void
+  onDone?: () => void
+}
+
+export async function streamAi(
+  path: string,
+  body: Record<string, unknown>,
+  handlers: AiStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const token = localStorage.getItem('qt_token')
+  const res = await fetch(new URL(path, API_BASE).toString(), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+    signal,
+  })
+  if (!res.ok || !res.body) {
+    let message = `HTTP ${res.status}`
+    try {
+      const j = await res.json()
+      message = j.message || message
+    } catch {
+      /* 非 JSON 响应用状态码 */
+    }
+    if (res.status === 401) handleSessionExpired(path)
+    throw new ApiError(res.status, message)
+  }
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const frames = buffer.split('\n\n')
+    buffer = frames.pop() || ''
+    for (const frame of frames) {
+      const line = frame.trim()
+      if (!line.startsWith('data:')) continue
+      try {
+        const obj = JSON.parse(line.slice(5).trim())
+        if (obj.type === 'meta') handlers.onMeta?.(obj)
+        else if (obj.type === 'delta') handlers.onDelta?.(obj.text || '')
+        else if (obj.type === 'error') handlers.onError?.(obj)
+        else if (obj.type === 'done') handlers.onDone?.()
+      } catch {
+        /* 单帧解析失败跳过，不中断流 */
+      }
+    }
+  }
+}
+
 // ---- 信号实验室（SignalLab）----
 export const signalApi = {
   getStrategies: () =>
@@ -750,6 +930,13 @@ import type {
   AssetMeta,
   AiConfig,
   AiReport,
+  AiChannel,
+  AiChannelPreset,
+  AiChannelsView,
+  KnowledgeIndex,
+  KnowledgeDoc,
+  AiStreamMeta,
+  AiStreamError,
   Holding,
   HoldingsView,
   HoldingImportResult,
@@ -791,4 +978,10 @@ import type {
   DividendIndexFunds,
   DividendIndexMapProgress,
   DividendFundHoldings,
+  LqrSwReturns,
+  LqrReturnDecomp,
+  LqrTrendTemperature,
+  LqrWideBase,
+  LqrHuazheng,
+  LqrStatus,
 } from '../types'

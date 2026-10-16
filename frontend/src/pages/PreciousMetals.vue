@@ -17,11 +17,12 @@ import BaseChart from '../components/BaseChart.vue'
 import PageHeader from '../components/PageHeader.vue'
 import GlossaryPanel from '../components/GlossaryPanel.vue'
 import { pctColorStyle } from '../utils/percentile'
-import type { PreciousMetals as PreciousMetalsData } from '../types'
+import type { PreciousMetals as PreciousMetalsData, SectionSourceMeta } from '../types'
 
 const loading = ref(false)
 const error = ref<string | null>(null)
 const data = ref<PreciousMetalsData | null>(null)
+const meta = ref<SectionSourceMeta | null>(null)
 
 async function load() {
   loading.value = true
@@ -29,6 +30,7 @@ async function load() {
   try {
     const res = await api.getPreciousMetals()
     data.value = res.data as PreciousMetalsData
+    meta.value = res.meta ?? null
     if (!data.value || !data.value.available) {
       error.value = '暂无贵金属数据（取数失败）'
     }
@@ -166,7 +168,7 @@ function tagType(pct: number | null | undefined): 'error' | 'success' | 'default
 
 <template>
   <div class="precious-page">
-    <PageHeader title="贵金属 · 黄金 / 白银 / 金银比" subtitle="SGE 现货 Au99.99 / Ag99.99" helpKey="preciousMetals" />
+    <PageHeader title="贵金属 · 黄金 / 白银 / 金银比" subtitle="SGE 现货 Au99.99 / Ag99.99" helpKey="preciousMetals" :updated-at="meta?.updateTime" />
 
     <GlossaryPanel page-key="preciousMetals" />
 

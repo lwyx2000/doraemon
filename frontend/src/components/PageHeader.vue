@@ -14,6 +14,10 @@ const props = defineProps<{
   subtitle?: string
   /** 页面说明 key，对应 pageHelpContent 字典 */
   helpKey?: string
+  /** 数据更新时间（ISO 字符串，后端 meta.updateTime = 取数时刻） */
+  updatedAt?: string | null
+  /** 数据日期（如行情快照日期），优先于 updatedAt 展示 */
+  dataDate?: string | null
 }>()
 
 const showModal = ref(false)
@@ -22,6 +26,23 @@ const helpData = computed(() => {
   if (!props.helpKey) return null
   return pageHelpContent[props.helpKey] ?? null
 })
+
+// 时间 chip 文案：有数据日期时以数据日期为主，附取数时间
+function fmtTime(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+const timeChipText = computed(() => {
+  const updated = props.updatedAt ? fmtTime(props.updatedAt) : ''
+  const dataDate = props.dataDate?.trim() || ''
+  if (dataDate && updated) return `数据日期 ${dataDate} · 更新于 ${updated}`
+  if (dataDate) return `数据日期 ${dataDate}`
+  if (updated) return `数据更新于 ${updated}`
+  return ''
+})
 </script>
 
 <template>
@@ -29,6 +50,10 @@ const helpData = computed(() => {
     <div class="header-left">
       <h1 class="page-title">{{ title }}</h1>
       <p v-if="subtitle" class="page-subtitle">{{ subtitle }}</p>
+      <p v-if="timeChipText" class="page-updated">
+        <NIcon :component="TimeOutline" size="13" />
+        <span>{{ timeChipText }}</span>
+      </p>
     </div>
     <div class="header-actions">
       <slot name="actions" />
@@ -90,6 +115,11 @@ const helpData = computed(() => {
 .header-left { min-width: 0; }
 .page-title { font-family: 'Work Sans', sans-serif; font-size: 26px; font-weight: 600; letter-spacing: -0.02em; color: var(--text-primary); margin: 0; }
 .page-subtitle { font-size: 13px; color: var(--text-muted); margin: 4px 0 0; }
+.page-updated {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; color: var(--text-muted); margin: 6px 0 0;
+  font-variant-numeric: tabular-nums;
+}
 .header-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
 
 .help-modal-body { display: flex; flex-direction: column; gap: 20px; padding: 4px 0; }

@@ -70,6 +70,14 @@ function handleTabChange(tab: string) {
 
 onMounted(() => { loadData(); loadIndustry() })
 
+// 页面数据更新时间：宽基与行业两个接口取较新者（updateTime 为后端取数时刻）
+const pageUpdatedAt = computed(() => {
+  const a = meta.value?.updateTime
+  const b = industryMeta.value?.updateTime
+  if (a && b) return new Date(a) >= new Date(b) ? a : b
+  return a ?? b ?? null
+})
+
 // ==================== 估值分位颜色 ====================
 function percentileLabel(pct: number | null): string {
   if (pct == null) return '—'
@@ -634,7 +642,7 @@ const macroParams = computed(() => {
 
 <template>
   <div class="index-valuation-page">
-    <PageHeader title="宽基指数估值分析" subtitle="股债利差估值分位 + 拥挤度" helpKey="indexValuation">
+    <PageHeader title="宽基指数估值分析" subtitle="股债利差估值分位 + 拥挤度" helpKey="indexValuation" :updated-at="pageUpdatedAt">
       <template #actions>
         <n-button size="tiny" @click="exportCSV">导出CSV</n-button>
       </template>

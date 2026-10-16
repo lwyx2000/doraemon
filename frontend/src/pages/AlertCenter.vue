@@ -48,6 +48,15 @@ onMounted(() => {
   loadAlertEvents()
 })
 
+// 页面数据更新时间：可转债/基金/REITs 三个行情接口取较新者
+const pageUpdatedAt = computed(() => {
+  const times = [bondsMeta.value, fundsMeta.value, reitsMeta.value]
+    .map(m => m?.updateTime)
+    .filter((t): t is string => !!t)
+    .sort()
+  return times.length ? times[times.length - 1] : null
+})
+
 // ---- 预警历史（从后端 /alerts/events 加载，不再写死）----
 const alertEvents = ref<AlertEvent[]>([])
 const eventsLoading = ref(false)
@@ -508,7 +517,7 @@ const filteredHistory = computed(() => {
   >
     <div v-if="alertRules" class="alert-page">
     <!-- Page Header -->
-    <PageHeader title="预警与信号中心" subtitle="实时预警监控与规则管理 — 跟踪折溢价异动、强赎风险和套利机会" helpKey="alertCenter">
+    <PageHeader title="预警与信号中心" subtitle="实时预警监控与规则管理 — 跟踪折溢价异动、强赎风险和套利机会" helpKey="alertCenter" :updated-at="pageUpdatedAt">
       <template #actions>
         <n-button size="small" :loading="scanning" @click="runScan">
           <template #icon><n-icon :component="RefreshOutline" /></template>

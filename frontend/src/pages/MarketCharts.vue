@@ -172,7 +172,7 @@ function staleType(m: ChartSourceMeta | undefined): 'success' | 'warning' | 'err
 
 <template>
   <div class="charts-page">
-    <PageHeader title="市场复盘图表" subtitle="公众号「每周市场复盘」11 图 · 数据全部经 AkShare 网关" helpKey="marketCharts">
+    <PageHeader title="市场复盘图表" subtitle="公众号「每周市场复盘」11 图 · 数据全部经 AkShare 网关" helpKey="marketCharts" :updated-at="meta?.updateTime">
       <template #actions>
         <n-button size="tiny" :loading="loading" @click="refresh">
           <template #icon><n-icon :component="RefreshOutline" /></template>

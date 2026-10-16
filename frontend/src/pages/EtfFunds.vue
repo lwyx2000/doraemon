@@ -618,7 +618,7 @@ function exportEtf() {
   >
     <SectionFallback v-if="gatewayEmpty" :gateway-empty="true" :min-height="520" @retry="refetch" />
     <div v-else-if="etfs" class="etf-page">
-      <PageHeader title="ETF 基金策略" subtitle="集思录 ETF 策略汇总：折溢价套利 / 网格交易 / 行业轮动 / 估值定投" helpKey="etfFunds">
+      <PageHeader title="ETF 基金策略" subtitle="集思录 ETF 策略汇总：折溢价套利 / 网格交易 / 行业轮动 / 估值定投" helpKey="etfFunds" :updated-at="meta?.updateTime">
         <template #actions>
           <n-button size="small" :loading="scanning" @click="scan">
             <template #icon><n-icon :component="RefreshOutline" /></template>

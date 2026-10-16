@@ -444,7 +444,7 @@ const columns = computed(() => {
   >
     <SectionFallback v-if="gatewayEmpty" :gateway-empty="true" :min-height="520" @retry="refetch" />
     <div v-else-if="funds" class="lof-page">
-    <PageHeader title="基金套利扫描" subtitle="场内基金估值与套利扫描 - 实时监控折溢价机会" helpKey="lofFunds">
+    <PageHeader title="基金套利扫描" subtitle="场内基金估值与套利扫描 - 实时监控折溢价机会" helpKey="lofFunds" :updated-at="meta?.updateTime">
       <template #actions>
         <n-button size="small" @click="exportFunds">导出</n-button>
         <n-button size="small" type="primary" :loading="scanning" @click="scan">

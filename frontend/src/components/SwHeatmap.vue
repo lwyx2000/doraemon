@@ -8,9 +8,19 @@ import BaseChart from './BaseChart.vue'
 const props = withDefaults(defineProps<{
   sectors: SwSector[]
   title?: string
-}>(), { title: 'A股行业热力图（申万一级）' })
+  updatedAt?: string | null
+}>(), { title: 'A股行业热力图（申万一级）', updatedAt: null })
 
-// 按涨跌幅降序：领涨行业排在最前
+// 数据更新时间（仅到分钟，秒级无意义；网关取数本身有 10 分钟缓存）
+function fmtUpdatedAt(): string {
+  if (!props.updatedAt) return ''
+  const d = new Date(props.updatedAt)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+// 按涨跌幅降序：领涨行业排在最前（无涨跌幅的排最后）
 const sorted = computed(() =>
   [...props.sectors].sort((a, b) => (b.change_pct ?? -99) - (a.change_pct ?? -99))
 )
@@ -32,6 +42,15 @@ function textColor(chg: number | null): string {
 function fmt(n: number | null, d = 2): string {
   if (n == null) return '--'
   return n.toFixed(d)
+}
+
+// 涨跌幅缺失时的副标题：展示 PE 估值兜底信息（网关实时接口降级时至少可读）
+function subText(s: SwSector): string {
+  if (s.change_pct != null) {
+    return (s.change_pct >= 0 ? '+' : '') + fmt(s.change_pct) + '%'
+  }
+  if (s.pe != null) return `PE ${fmt(s.pe)}`
+  return '--'
 }
 
 // ==================== 行业详情弹窗 ====================
@@ -218,6 +237,7 @@ const strengthChartOption = computed(() => {
     <div class="hm-header">
       <h3 class="hm-title">{{ title }}</h3>
       <div class="hm-legend">
+        <span v-if="fmtUpdatedAt()" class="hm-updated">数据更新于 {{ fmtUpdatedAt() }}</span>
         <span class="lg lg-down">-3%</span>
         <span class="lg-bar"></span>
         <span class="lg lg-up">+3%</span>
@@ -230,7 +250,7 @@ const strengthChartOption = computed(() => {
     <div class="hm-grid">
       <div
         v-for="s in sorted"
-        :key="s.code"
+        :key="s.code || s.name"
         class="hm-cell"
         :style="{ background: bg(s.change_pct), color: textColor(s.change_pct) }"
         :title="`${s.name}\n涨跌幅: ${fmt(s.change_pct)}%\nPE(静态): ${fmt(s.pe)}\nPB: ${fmt(s.pb)}\n股息率: ${fmt(s.dividend_yield)}%\n成份数: ${s.count ?? '--'}`"
@@ -238,7 +258,7 @@ const strengthChartOption = computed(() => {
       >
         <div class="hm-name">{{ s.name }}</div>
         <div class="hm-chg">
-          {{ s.change_pct == null ? '--' : (s.change_pct >= 0 ? '+' : '') + fmt(s.change_pct) + '%' }}
+          {{ subText(s) }}
         </div>
       </div>
     </div>
@@ -359,6 +379,13 @@ const strengthChartOption = computed(() => {
   font-size: 11px;
   color: var(--text-muted);
   font-family: 'JetBrains Mono', monospace;
+}
+
+.hm-updated {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-right: 4px;
+  white-space: nowrap;
 }
 
 .lg-bar {
