@@ -13,11 +13,16 @@ Usage:
 - 线程级「只读连接」：每个工作线程首次读时懒创建一个 read_only 连接并绑定到该线程。
   DuckDB 支持「多连接并发读 + 单写」，线程级隔离确保同一只读连接不被多线程并发使用，
   因此读路径既不需要 RLock，也不会 reintroduce GIL 死锁，且读吞吐不再被写锁串行压成单线程。
-- 读连接创建失败（如文件尚未就绪）→ 自动退回写连接（仍在 RLock 保护下），保证不崩。
+- 读连接创建失败（如写事务进行中文件锁冲突）→ 自动退回写连接（调用方持写锁使用，
+  见 _read_locked；2026-10-15 起 docstring 与实际行为一致）。
+- 显式事务（2026-10-15 新增）：``with db.transaction():`` 持写锁跨 BEGIN...COMMIT，
+  供「DELETE + 批量 INSERT」类精确替换写保证原子性（autocommit 下批量中途失败
+  会旧删新半毁）。⚠️ 事务块内禁止 read-back（读连接 MVCC 读不到未提交数据）。
 """
 
 import duckdb
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
@@ -45,6 +50,8 @@ class Database:
         self._read_registry_lock = threading.Lock()
         self._read_conns: list[duckdb.DuckDBPyConnection] = []
         self._read_pool_size = max(1, read_pool_size)
+        # 显式事务嵌套深度（0=不在事务中；>0=最外层统一提交，见 transaction()）
+        self._tx_depth = 0
         self._connect_write()
 
     def _connect_write(self) -> None:
@@ -65,13 +72,28 @@ class Database:
         if conn is None:
             try:
                 conn = duckdb.connect(str(self.db_path))
-            except Exception:
-                # 读连接创建失败（文件未就绪等）→ 退回写连接（仍在写锁保护下）
+            except Exception as e:
+                # 读连接创建失败（如写事务进行中文件锁冲突）→ 退回写连接。
+                # ⚠️ 调用方（fetch*）必须识别此连接并持写锁使用——同一连接被多线程
+                # 并发 execute 会触发 duckdb native 段错误（2026-10-15 线上事故：
+                # sw-sectors 大写入期间其他端点读回退到写连接，无锁并发 → segfault）。
+                print(
+                    f"[DB] 读连接创建失败，退回写连接（调用方需持写锁）: "
+                    f"{type(e).__name__}: {e}"
+                )
                 return self._write_conn  # type: ignore
             with self._read_registry_lock:
                 self._read_conns.append(conn)
             _thread_local.read_conn = conn
         return conn
+
+    def _read_locked(self, fn):
+        """执行读操作；若当前线程无独立读连接（回退到写连接），必须持写锁防并发段错误。"""
+        conn = self._get_read_conn()
+        if conn is self._write_conn:
+            with self._write_lock:
+                return fn(conn)
+        return fn(conn)
 
     @property
     def conn(self) -> duckdb.DuckDBPyConnection:
@@ -79,6 +101,42 @@ class Database:
         if self._write_conn is None:
             self._connect_write()
         return self._write_conn  # type: ignore
+
+    @contextmanager
+    def transaction(self):
+        """显式事务：持写锁跨 BEGIN...COMMIT，保证块内多语句写入原子生效。
+
+        背景（2026-10-15，见 docs/事务方案提案-2026-10-15.md POC 六项验证）：
+        Database 是单写连接 + RLock 串行化模型，autocommit 下每条语句独立提交——
+        「DELETE + 批量 INSERT」若批量中途失败会旧删新半毁。事务必须**持锁跨**
+        BEGIN/COMMIT（共享连接，不持锁会被他线程的写入穿插/吞进本事务）。
+
+        ⚠️ 事务块内禁止 fetch*（read-back）：线程读连接 MVCC 读不到未提交数据，
+        会读到陈旧快照导致静默错判。确有需要先在块内算好、块外读。
+        支持嵌套（深度计数放行，最外层统一提交/回滚）。
+        """
+        if getattr(self, "_tx_depth", 0) > 0:
+            self._tx_depth += 1
+            try:
+                yield
+            finally:
+                self._tx_depth -= 1
+            return
+        with self._write_lock:
+            self._tx_depth = 1
+            self._write_conn.execute("BEGIN")
+            try:
+                yield
+            except Exception:
+                try:
+                    self._write_conn.execute("ROLLBACK")
+                except Exception:  # noqa: BLE001
+                    pass
+                raise
+            else:
+                self._write_conn.execute("COMMIT")
+            finally:
+                self._tx_depth = 0
 
     def execute(self, sql: str, params: Optional[list | dict] = None) -> duckdb.DuckDBPyConnection:
         """Execute a SQL statement (写入 / DDL)。走写连接，串行化避免 GIL 死锁。"""
@@ -94,24 +152,21 @@ class Database:
 
     def fetchall(self, sql: str, params: Optional[list | dict] = None) -> list[tuple]:
         """Execute query and return all rows. 走当前线程只读连接（无锁，并发读）。"""
-        conn = self._get_read_conn()
         if params:
-            return conn.execute(sql, params).fetchall()
-        return conn.execute(sql).fetchall()
+            return self._read_locked(lambda c: c.execute(sql, params).fetchall())
+        return self._read_locked(lambda c: c.execute(sql).fetchall())
 
     def fetchone(self, sql: str, params: Optional[list | dict] = None) -> Optional[tuple]:
         """Execute query and return a single row. 走当前线程只读连接（无锁，并发读）。"""
-        conn = self._get_read_conn()
         if params:
-            return conn.execute(sql, params).fetchone()
-        return conn.execute(sql).fetchone()
+            return self._read_locked(lambda c: c.execute(sql, params).fetchone())
+        return self._read_locked(lambda c: c.execute(sql).fetchone())
 
     def fetch_df(self, sql: str, params: Optional[list | dict] = None):
         """Execute query and return results as a pandas DataFrame. 走当前线程只读连接。"""
-        conn = self._get_read_conn()
         if params:
-            return conn.execute(sql, params).df()
-        return conn.execute(sql).df()
+            return self._read_locked(lambda c: c.execute(sql, params).df())
+        return self._read_locked(lambda c: c.execute(sql).df())
 
     def close(self) -> None:
         """Close the write connection and all read connections."""

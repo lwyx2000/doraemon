@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 from database.connection import get_db
+from database.bulk import bulk_insert
 from services import fund_fee_service, index_compilation_service
 from services.akshare_client import akshare_request
 
@@ -183,10 +184,14 @@ def _save(code: str, idx_code: str, idx_name: str | None, source: str) -> None:
         _ensure_table()
         db = get_db()
         db.execute("DELETE FROM base_fund_index_map WHERE fund_code = ?", [code])
-        db.execute(
+        # 字面量单行 VALUES：参数化 execute ~13.5ms/次（~50ms/基金，P2，
+        # 见 docs/性能病理排查报告-2026-10-14.md）；TIMESTAMP 列传 naive CST
+        # （墙上时间），与原参数化 aware 路径落库值一致（2026-10-14 实测）。
+        bulk_insert(
+            db,
             "INSERT INTO base_fund_index_map (fund_code, index_code, index_name, source, matched_at) "
             "VALUES (?, ?, ?, ?, ?)",
-            [code, idx_code, idx_name, source, _now_cst()],
+            [[code, idx_code, idx_name, source, _now_cst().replace(tzinfo=None)]],
         )
     except Exception as e:  # noqa: BLE001
         print(f"[FundIdxMap] {code} 映射落库失败（忽略）: {e}")

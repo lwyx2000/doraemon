@@ -20,6 +20,8 @@ from typing import Any
 
 from services.fund_service import _processed_data_request, _pick, _safe_float
 
+from database.bulk import bulk_insert
+
 CST = timezone(timedelta(hours=8))
 
 DDL = """
@@ -55,19 +57,33 @@ def _ensure_table(db) -> None:
 
 
 def _norm_date(s) -> str | None:
-    """'2026年06月30日' / '2026-06-30' / '2026/06/30' / '2026.06.30' / '截止至：2026-06-30' → '2026-06-30'。"""
+    """'2026年06月30日' / '2026-06-30' / '2026/06/30' / '2026.06.30' / '截止至：2026-06-30' → '2026-06-30'。
+
+    带合法性下限校验（2026-10-15 修复，问题3）：上游个别基金（如 028242）返回
+    占位符 '0000-00-00' / '1970-01-01' 会穿过正则，落库成脏行。故 year>=2000、
+    month 1-12、day 1-31 之外的视为无效（None）。
+    """
     if not s:
         return None
     m = re.search(r"(\d{4})[年\-/.](\d{1,2})[月\-/.](\d{1,2})", str(s))
     if not m:
         return None
-    return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if y < 2000 or not (1 <= mo <= 12) or not (1 <= d <= 31):
+        return None
+    return f"{y:04d}-{mo:02d}-{d:02d}"
 
 
 def _snapshot_daily() -> dict:
     """全量 upsert 当日 (code, 净值日期, 份额, 规模, 净值)。份额/规模原值入库。
 
     返回 {snapshotted, ok}。网络异常时安全返回（绝不抛出，避免拖死调用方）。
+
+    写路径（2026-10-14 修复 P0-1，见 docs/性能病理排查报告-2026-10-14.md）：
+    原逐只 DELETE + 参数化 INSERT 实测 492s/天（3677 只 × ~130ms）。
+    现收集 rows 后单次批量字面量 VALUES + ON CONFLICT DO UPDATE
+    （PK (code, trade_date) 即冲突目标，语义等同原 DELETE+INSERT），
+    批量失败时退回逐只参数化写，保证不丢当天快照。
     """
     try:
         raw = _processed_data_request("fund_rank", {"subtype": "etf"}, retries=2)
@@ -84,7 +100,16 @@ def _snapshot_daily() -> dict:
         print(f"[ETFSub] DB 不可用: {e}")
         return {"snapshotted": 0, "ok": False}
 
-    n = 0
+    # 数据卫生（2026-10-15，问题3 收尾）：清掉历史上游占位符日期（如 028242 的
+    # 0000-00-00）穿过旧版 _norm_date 落库的脏行。合法 ETF 净值日期不可能早于
+    # 2000 年；幂等，失败不影响当天快照主流程。
+    try:
+        db.execute("DELETE FROM base_etf_subscription_daily WHERE trade_date < '2000-01-01'")
+    except Exception as e:  # pragma: no cover
+        print(f"[ETFSub] 脏行清理失败（忽略）: {e}")
+
+    rows: list[list] = []
+    dedup: dict[tuple[str, str], list] = {}
     for item in raw:
         code = str(_pick(item, "代码", "基金代码", default=""))
         if not code:
@@ -97,19 +122,42 @@ def _snapshot_daily() -> dict:
         nav = _safe_float(_pick(item, "净值"))
         if share is None and scale is None and nav is None:
             continue
+        # dict 去重（last wins，2026-10-15 修复，问题2）：DuckDB 同语句重复键
+        # ON CONFLICT DO UPDATE 保留首个，而原逐只 DELETE+INSERT 是后写覆盖；
+        # 若上游返回重复 (code, trade_date)，两者语义不一致。dict 赋值天然 last wins。
+        dedup[(code, nav_date)] = [code, nav_date, share, scale, nav]
+    rows = list(dedup.values())
+
+    n = 0
+    if rows:
         try:
-            db.execute(
-                "DELETE FROM base_etf_subscription_daily WHERE code = ? AND trade_date = ?",
-                [code, nav_date],
-            )
-            db.execute(
+            bulk_insert(
+                db,
                 "INSERT INTO base_etf_subscription_daily (code, trade_date, share, scale, nav) "
-                "VALUES (?, ?, ?, ?, ?)",
-                [code, nav_date, share, scale, nav],
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT (code, trade_date) DO UPDATE SET "
+                "share = excluded.share, scale = excluded.scale, nav = excluded.nav",
+                rows,
             )
-            n += 1
+            n = len(rows)
         except Exception as e:
-            print(f"[ETFSub] {code} 写入失败: {e}")
+            # 批量失败（异常数据/锁冲突等）：退回逐只 DELETE+参数化 INSERT，
+            # 保证当天快照不丢；此为异常路径，量小可接受
+            print(f"[ETFSub] 批量写入失败，退回逐只写入: {e}")
+            for r in rows:
+                try:
+                    db.execute(
+                        "DELETE FROM base_etf_subscription_daily WHERE code = ? AND trade_date = ?",
+                        [r[0], r[1]],
+                    )
+                    db.execute(
+                        "INSERT INTO base_etf_subscription_daily (code, trade_date, share, scale, nav) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        r,
+                    )
+                    n += 1
+                except Exception as e2:
+                    print(f"[ETFSub] {r[0]} 写入失败: {e2}")
     print(f"[ETFSub] 当日快照完成：{n} 只（trade_date=净值日期）")
     return {"snapshotted": n, "ok": True}
 

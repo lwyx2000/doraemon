@@ -36,6 +36,12 @@ async def lifespan(app: FastAPI):
         from database.init_db import ensure_schema
 
         ensure_schema(db)
+        # 一次性修复：base_sw_sector_daily 表存储损坏（2026-10-15 事故，见
+        # database.init_db.repair_sw_sector_docstring）。修复成功后移除该 env。
+        if os.getenv("REPAIR_SW_SECTOR_TABLE") == "1":
+            from database.init_db import repair_sw_sector_table
+
+            repair_sw_sector_table(db)
         # 用户绑定迁移：pk_users(UUID) -> pk_user(BIGINT 自增)；fk_users(UUID) -> fk_user(BIGINT)，幂等
         from database.init_db import migrate_pk_user_schema
         migrate_pk_user_schema(db)
@@ -61,6 +67,10 @@ async def lifespan(app: FastAPI):
         from jobs.fear_greed_job import start_fear_greed_scheduler
 
         start_fear_greed_scheduler()
+        # 长期视角数据（老钱日日谈 A股看板）：每周六采集 5 源（首次部署后需手动 POST /longterm/collect 全量落库）
+        from jobs.longterm_job import start_longterm_scheduler
+
+        start_longterm_scheduler()
         # 红利基金规模/费率：每日凌晨后台渐进补全（同花顺只能逐只查询）
         from jobs.dividend_fee_job import start_dividend_fee_scheduler
 
@@ -107,6 +117,9 @@ async def lifespan(app: FastAPI):
         from jobs.fear_greed_job import stop_fear_greed_scheduler
 
         stop_fear_greed_scheduler()
+        from jobs.longterm_job import stop_longterm_scheduler
+
+        stop_longterm_scheduler()
         from jobs.dividend_fee_job import stop_dividend_fee_scheduler
 
         stop_dividend_fee_scheduler()
@@ -196,6 +209,7 @@ from routers.charts_router import router as charts_router
 from routers.datasource_router import router as datasource_router
 from routers.jobs_router import router as jobs_router
 from routers.dividend_router import router as dividend_router
+from routers.longterm_router import router as longterm_router
 
 app.include_router(auth_router, prefix=f"{API_PREFIX}/auth")
 app.include_router(broker_account_router, prefix=API_PREFIX)
@@ -220,6 +234,7 @@ app.include_router(charts_router, prefix=f"{API_PREFIX}/charts")
 app.include_router(datasource_router, prefix=f"{API_PREFIX}/datasources")
 app.include_router(jobs_router, prefix=f"{API_PREFIX}/jobs")
 app.include_router(dividend_router, prefix=f"{API_PREFIX}/dividend")
+app.include_router(longterm_router, prefix=f"{API_PREFIX}/longterm")
 
 
 # ============================================================

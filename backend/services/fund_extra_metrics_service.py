@@ -43,6 +43,8 @@ import requests
 
 from services.akshare_client import akshare_request
 
+from database.bulk import bulk_insert
+
 CST = timezone(timedelta(hours=8))
 
 #: 指标缓存有效期（天）：超过则重新计算
@@ -278,9 +280,24 @@ def ensure_fund_nav(code: str, db) -> bool:
         return False
     _NAV_CONSEC_EMPTY = 0
     try:
-        db.execute("DELETE FROM base_fund_nav WHERE fund_code = ?", [code])
-        db.executemany(
-            "INSERT INTO base_fund_nav (fund_code, trade_date, nav, daily_growth) VALUES (?, ?, ?, ?)",
+        # 2026-10-15 事务批 1（docs/事务方案提案-2026-10-15.md）：原「DELETE 全基金
+        # + INSERT」改为「只删窗口外陈旧行 + ON CONFLICT 合并」。结构性根除半毁
+        # 窗口（非破坏性写，批量中途失败最多丢本次增量，重跑即补）；并修复一个
+        # 隐藏问题——上游某次返回行数变少时原实现会静默丢失历史净值，ON CONFLICT
+        # 后只增不删。跟踪误差只用近 NAV_WINDOW_DAYS 天，窗口外陈旧行删除无害。
+        cutoff = (today - timedelta(days=NAV_WINDOW_DAYS)).strftime("%Y-%m-%d")
+        db.execute(
+            "DELETE FROM base_fund_nav WHERE fund_code = ? AND trade_date < ?",
+            [code, cutoff],
+        )
+        # 字面量多行 VALUES；原 executemany 参数化 ~16ms/行（单基金全历史净值
+        # 可达数百行，19 万行 ≈ 51 分钟，P2，见 docs/性能病理排查报告-2026-10-14.md）
+        bulk_insert(
+            db,
+            "INSERT INTO base_fund_nav (fund_code, trade_date, nav, daily_growth) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT (fund_code, trade_date) DO UPDATE SET "
+            "nav = excluded.nav, daily_growth = excluded.daily_growth",
             collected,
         )
     except Exception as e:  # noqa: BLE001
@@ -448,14 +465,24 @@ def _build_sw_industry_map(db) -> None:
     if not pairs:
         return
     try:
+        # dict 去重（last wins，等同原逐只 DELETE+INSERT 循环的覆盖顺序）；
+        # DuckDB 同语句重复键不报错但保留首个，显式去重保证确定性
+        pairs_map: dict[str, str] = {}
         for sc, nm in pairs:
-            db.execute("DELETE FROM base_stock_sw_industry WHERE stock_code = ?", [sc])
-            db.execute(
-                "INSERT INTO base_stock_sw_industry (stock_code, industry, fetched_at) VALUES (?, ?, ?)",
-                [sc, nm, now],
-            )
+            pairs_map[sc] = nm
+        # ON CONFLICT DO UPDATE：PK stock_code 即冲突目标，语义等同原 DELETE+INSERT。
+        # 原逐行参数化写实测 ~25ms/行（~5400 行 ≈ 3.7-4.5 分钟/次，P0-2，
+        # 见 docs/性能病理排查报告-2026-10-14.md），现单次批量字面量 VALUES。
+        bulk_insert(
+            db,
+            "INSERT INTO base_stock_sw_industry (stock_code, industry, fetched_at) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT (stock_code) DO UPDATE SET "
+            "industry = excluded.industry, fetched_at = excluded.fetched_at",
+            [[sc, nm, now] for sc, nm in pairs_map.items()],
+        )
         _SW_MAP.clear()
-        for sc, nm in pairs:
+        for sc, nm in pairs_map.items():
             _SW_MAP[sc] = nm
         global _SW_MAP_AT
         _SW_MAP_AT = now
@@ -553,9 +580,15 @@ def compute_one(db, code: str, index_code: str | None) -> dict:
 def _upsert(db, rec: dict) -> None:
     # 仅当净值缓存可用（tracking_error_fetched=True）才写 tracking_error_at；
     # 被限流/无缓存时留 NULL，让 missing_codes 继续把它当缺口、下轮重试。
-    te_at = _now_cst() if rec.get("tracking_error_fetched") else None
+    # TIMESTAMP 列字面量路径：传 naive CST（墙上时间），与原参数化 aware 路径
+    # 落库值一致（duckdb 对 aware datetime / 带偏移串均保留墙上时间，2026-10-14 实测）。
+    te_at = _now_cst().replace(tzinfo=None) if rec.get("tracking_error_fetched") else None
+    now_lit = _now_cst().replace(tzinfo=None)
     db.execute("DELETE FROM fund_extra_metrics WHERE code = ?", [rec["code"]])
-    db.execute(
+    # 字面量单行 VALUES：参数化 execute ~13.5ms/次（~50ms/基金，P2，
+    # 见 docs/性能病理排查报告-2026-10-14.md）
+    bulk_insert(
+        db,
         """
         INSERT INTO fund_extra_metrics
             (code, tracking_error, tracking_error_n, tracking_error_at,
@@ -563,16 +596,18 @@ def _upsert(db, rec: dict) -> None:
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
-            rec["code"],
-            rec.get("tracking_error"),
-            rec.get("tracking_error_n"),
-            te_at,
-            rec.get("payout_freq"),
-            _now_cst(),
-            rec.get("sector_top3"),
-            rec.get("sector_count"),
-            _now_cst(),
-            _now_cst(),
+            [
+                rec["code"],
+                rec.get("tracking_error"),
+                rec.get("tracking_error_n"),
+                te_at,
+                rec.get("payout_freq"),
+                now_lit,
+                rec.get("sector_top3"),
+                rec.get("sector_count"),
+                now_lit,
+                now_lit,
+            ]
         ],
     )
 

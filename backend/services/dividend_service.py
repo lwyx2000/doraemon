@@ -26,6 +26,8 @@ from services.akshare_client import akshare_request
 from services import fund_fee_service, fund_index_map_service, index_compilation_service
 from services import fund_extra_metrics_service
 
+from database.bulk import bulk_insert
+
 #: 展示统一用北京时间（容器时区为 UTC）
 CST = timezone(timedelta(hours=8))
 
@@ -566,17 +568,38 @@ def _dy_save_to_db(indices: list[dict]) -> None:
     except Exception as e:  # pragma: no cover
         print(f"[Dividend] 股息率落库失败（忽略）: {e}")
         return
+    # TIMESTAMP 列字面量路径：传 naive CST（墙上时间），与原参数化 aware 路径
+    # 落库值一致（duckdb 对 aware datetime / 带偏移串均保留墙上时间，2026-10-14 实测）
+    now_lit = datetime.now(CST).replace(tzinfo=None)
+    rows: list[list] = []
     for i in indices or []:
         if i.get("dividend_yield") is None or i.get("dy_stale"):
             continue
-        try:
-            db.execute("DELETE FROM base_dividend_index_dy WHERE code = ?", [i["code"]])
-            db.execute(
-                "INSERT INTO base_dividend_index_dy (code, name, dy, dy_date, updated_at) VALUES (?,?,?,?,?)",
-                [i["code"], i["name"], i["dividend_yield"], i.get("dy_date"), datetime.now(CST)],
-            )
-        except Exception as e:
-            print(f"[Dividend] {i.get('code')} 股息率落库失败: {e}")
+        rows.append([i["code"], i["name"], i["dividend_yield"], i.get("dy_date"), now_lit])
+    if not rows:
+        return
+    # 字面量多行 VALUES：原逐指数 DELETE+参数化 INSERT ~13.5ms/行（P2，
+    # 见 docs/性能病理排查报告-2026-10-14.md）
+    try:
+        for r in rows:
+            db.execute("DELETE FROM base_dividend_index_dy WHERE code = ?", [r[0]])
+        bulk_insert(
+            db,
+            "INSERT INTO base_dividend_index_dy (code, name, dy, dy_date, updated_at) VALUES (?,?,?,?,?)",
+            rows,
+        )
+    except Exception as e:
+        # 批量失败退回逐条（异常路径，量小可接受）
+        print(f"[Dividend] 股息率批量落库失败，退回逐条: {e}")
+        for r in rows:
+            try:
+                db.execute("DELETE FROM base_dividend_index_dy WHERE code = ?", [r[0]])
+                db.execute(
+                    "INSERT INTO base_dividend_index_dy (code, name, dy, dy_date, updated_at) VALUES (?,?,?,?,?)",
+                    [r[0], r[1], r[2], r[3], datetime.now(CST)],
+                )
+            except Exception as e2:
+                print(f"[Dividend] {r[0]} 股息率落库失败: {e2}")
 
 
 # ============================================================
@@ -647,24 +670,41 @@ def _pe_save_rows(code: str, rows: list[dict]) -> int:
 
     existing = {d for d, _ in _pe_get_series(code)}
     now = datetime.now(CST)
-    added = 0
+    # TIMESTAMP 列字面量路径：传 naive CST（墙上时间），与原参数化 aware 路径
+    # 落库值一致（duckdb 对 aware datetime / 带偏移串均保留墙上时间，2026-10-14 实测）
+    now_lit = now.replace(tzinfo=None)
+    to_write: list[tuple[str, float]] = []
     for r in rows:
         d = str(r.get("日期", ""))[:10]
         v = _num(r.get("滚动市盈率"))
         if len(d) < 10 or v is None or d in existing:
             continue
-        try:
-            db.execute(
-                "INSERT INTO base_dividend_index_pe (code, trade_date, pe, updated_at) "
-                "VALUES (?,?,?,?) ON CONFLICT (code, trade_date) DO UPDATE SET pe=excluded.pe",
-                [code, d, v, now],
-            )
-        except Exception as e:
-            print(f"[Dividend] {code} {d} PE 落库失败: {e}")
-            continue
+        to_write.append((d, v))
         existing.add(d)
-        _PE_CACHE.setdefault(code, []).append((d, v))
-        added += 1
+
+    added = 0
+    if to_write:
+        # ON CONFLICT 后缀由 bulk_insert 原样拼回；原逐行参数化 ~13.5ms/行
+        # （44 指数 × ~2613 天 ≈ 11.5 万行 ≈ 26 分钟，P1-1，见性能病理排查报告）
+        sql_pe = (
+            "INSERT INTO base_dividend_index_pe (code, trade_date, pe, updated_at) "
+            "VALUES (?,?,?,?) ON CONFLICT (code, trade_date) DO UPDATE SET pe=excluded.pe"
+        )
+        try:
+            bulk_insert(db, sql_pe, [[code, d, v, now_lit] for d, v in to_write])
+            for d, v in to_write:
+                _PE_CACHE.setdefault(code, []).append((d, v))
+            added = len(to_write)
+        except Exception as e:
+            # 批量失败退回逐行参数化（异常路径，量小可接受；与原语义一致：失败行不进缓存）
+            print(f"[Dividend] {code} PE 批量落库失败，退回逐行: {e}")
+            for d, v in to_write:
+                try:
+                    db.execute(sql_pe, [code, d, v, now])
+                    _PE_CACHE.setdefault(code, []).append((d, v))
+                    added += 1
+                except Exception as e2:
+                    print(f"[Dividend] {code} {d} PE 落库失败: {e2}")
 
     if added:
         # 新增日期一定在末尾（上游按日期升序返回），故append 后排序即可
@@ -1064,10 +1104,13 @@ def _dy_save_one(code: str, dy: float, dy_date: str, name: str = "") -> None:
         db = get_db()
         db.execute(DY_DDL)
         db.execute("DELETE FROM base_dividend_index_dy WHERE code = ?", [code])
-        db.execute(
+        # 字面量单行 VALUES：参数化 execute ~13.5ms/次（P2，见性能病理排查报告）；
+        # TIMESTAMP 列传 naive CST（墙上时间），与原参数化 aware 路径落库值一致（实测）
+        bulk_insert(
+            db,
             "INSERT INTO base_dividend_index_dy (code, name, dy, dy_date, updated_at) "
             "VALUES (?,?,?,?,?)",
-            [code, name or code, dy, dy_date, datetime.now(CST)],
+            [[code, name or code, dy, dy_date, datetime.now(CST).replace(tzinfo=None)]],
         )
     except Exception as e:  # pragma: no cover
         print(f"[Dividend] {code} 股息率落库失败（忽略）: {e}")

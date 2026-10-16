@@ -296,6 +296,55 @@ def migrate_user_security_columns(db: Database) -> None:
         print("[Migration] biz_users 安全列已就绪")
 
 
+def repair_sw_sector_table(db: Database) -> dict:
+    """修复 base_sw_sector_daily 表存储损坏（2026-10-15 线上事故）。
+
+    事故形态：该表磁盘块损坏，任何写入（INSERT / UPSERT / FORCE CHECKPOINT）
+    都触发 duckdb native 段错误 → backend 每 1-2 分钟崩溃重启 →
+    宏观看板整页 502。经**生产库副本隔离实验**确诊：同库其他表写入与
+    checkpoint 均正常，仅此表崩溃；DROP 该表后 checkpoint 恢复。
+
+    触发方式：env ``REPAIR_SW_SECTOR_TABLE=1``（一次性，修复后应移除）。
+    方案（数据无损）：CTAS 备份 → DROP → 按 schema.py 原 DDL 重建 → 灌回 → 删备份。
+    读路径全程无害（已实证）；备份/灌回写入走新块，安全。
+    """
+    bak = "base_sw_sector_daily_repair_bak"
+    try:
+        db.execute(f"DROP TABLE IF EXISTS {bak}")
+        db.execute(f"CREATE TABLE {bak} AS SELECT * FROM base_sw_sector_daily")
+        n_bak = db.fetchone(f"SELECT count(*) FROM {bak}")[0]
+
+        db.execute("DROP TABLE base_sw_sector_daily")
+
+        # 按 schema.py 原样重建（表 DDL + 关联索引），避免与 schema 漂移
+        ddl = next(t for t in TABLES if "base_sw_sector_daily" in t)
+        db.execute(ddl)
+        for idx in INDEXES:
+            if "base_sw_sector_daily" in idx:
+                db.execute(idx)
+
+        # 灌回（PK 列走 DEFAULT nextval，不显式插入）
+        db.execute(
+            "INSERT INTO base_sw_sector_daily "
+            "(sector_code, sector_name, trade_date, price, prev_close, change_pct, "
+            " pe, ttm_pe, pb, dividend_yield, count) "
+            f"SELECT sector_code, sector_name, trade_date, price, prev_close, change_pct, "
+            f" pe, ttm_pe, pb, dividend_yield, count FROM {bak}"
+        )
+        n_new = db.fetchone("SELECT count(*) FROM base_sw_sector_daily")[0]
+        db.execute(f"DROP TABLE {bak}")
+
+        # ⚠️ 不要在此处 FORCE CHECKPOINT（2026-10-15 实测）：生产库 WAL 含崩溃循环
+        # 期间写入的残留条目，checkpoint 合并时 duckdb native 空转（99% CPU 无进展，
+        # 非报错而是纯 hang，try/except 抓不到）。DROP/INSERT 均为 autocommit 已落 WAL，
+        # 数据安全性不依赖 checkpoint；WAL  consolidation 由 duckdb 自动 checkpoint 负责。
+        print(f"[RepairSW] base_sw_sector_daily 已重建：备份 {n_bak} 行 → 恢复 {n_new} 行")
+        return {"ok": n_new == n_bak, "backup_rows": n_bak, "restored_rows": n_new}
+    except Exception as e:  # noqa: BLE001
+        print(f"[RepairSW] 修复失败: {type(e).__name__}: {e}")
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
 def main():
     parser = argparse.ArgumentParser(description="Initialize QuantTerminal Pro DuckDB database")
     parser.add_argument(

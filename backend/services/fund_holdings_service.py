@@ -19,6 +19,8 @@ from typing import Any
 
 from services.akshare_client import akshare_request
 
+from database.bulk import bulk_insert
+
 CST = timezone(timedelta(hours=8))
 
 #: 持仓缓存有效期（天）。
@@ -219,24 +221,32 @@ def _persist(db, fund_code: str, rows: list[dict]) -> int:
         return 0
     rows = _dedupe(rows)
     quarters = {r.get("季度") for r in rows}
-    now = _now_cst()
-    payload = []
-    for q in quarters:
-        db.execute(
-            "DELETE FROM base_fund_stock_holdings WHERE fund_code = ? AND quarter = ?",
-            [fund_code, q],
+    # TIMESTAMP 列字面量路径：传 naive CST（墙上时间），与原参数化 aware 路径
+    # 落库值一致（duckdb 对 aware datetime / 带偏移串均保留墙上时间，2026-10-14 实测）
+    now = _now_cst().replace(tzinfo=None)
+    payload = [_row_to_record(fund_code, r) + (now,) for r in rows]
+    # 2026-10-15 事务批 2（docs/事务方案提案-2026-10-15.md）：DELETE + bulk_insert
+    # 上显式事务。原 autocommit 下批量中途失败会「旧删新半毁」（该基金部分季度持仓
+    # 丢失，需重跑才自愈）。持仓需精确替换语义（个股退出季报必须消失），不能用
+    # ON CONFLICT 合并，故用事务保原子。持锁 ~2s/只（591 只 × 40-115 行量级，实测）。
+    # ⚠️ 事务块内禁止 read-back（读连接 MVCC 读不到未提交数据）。
+    with db.transaction():
+        for q in quarters:
+            db.execute(
+                "DELETE FROM base_fund_stock_holdings WHERE fund_code = ? AND quarter = ?",
+                [fund_code, q],
+            )
+        # 原 executemany 参数化 ~16ms/行（591 基金 × 40-115 行 ≈ 9000 行/天 ≈ 2.4 分钟，
+        # P1-2，见 docs/性能病理排查报告-2026-10-14.md）；改字面量多行 VALUES 后 ~2s。
+        # payload 已按 (股票代码, 季度) 去重（见 _dedupe），无同语句重复键问题。
+        bulk_insert(
+            db,
+            "INSERT INTO base_fund_stock_holdings "
+            "(fund_code, stock_code, stock_name, pct, shares, mv, quarter, "
+            " seq, source, fetched_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            payload,
         )
-        for r in rows:
-            if r.get("季度") != q:
-                continue
-            payload.append(_row_to_record(fund_code, r) + (now,))
-    db.executemany(
-        "INSERT INTO base_fund_stock_holdings "
-        "(fund_code, stock_code, stock_name, pct, shares, mv, quarter, "
-        " seq, source, fetched_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        payload,
-    )
     return len(payload)
 
 

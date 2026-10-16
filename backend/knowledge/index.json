@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "updated": "2026-10-14",
+  "categories": [
+    { "id": "methodology", "name": "方法论与口径", "icon": "compass" },
+    { "id": "datasources", "name": "数据源地图", "icon": "server" },
+    { "id": "strategy", "name": "策略体系", "icon": "flag" },
+    { "id": "engineering", "name": "工程踩坑", "icon": "construct" },
+    { "id": "reports", "name": "排查报告档案", "icon": "document" }
+  ],
+  "docs": [
+    { "id": "erp-pe-pb", "category": "methodology", "title": "ERP 与指数 PE/PB 分位口径", "file": "erp-pe-pb.md", "tags": ["ERP", "PE", "PB", "分位", "估值", "胜率"] },
+    { "id": "fear-greed", "category": "methodology", "title": "贪婪恐惧指数算法口径", "file": "fear-greed.md", "tags": ["贪婪恐惧", "情绪", "min-max", "加权", "近似日"] },
+    { "id": "tracking-error", "category": "methodology", "title": "跟踪误差计算口径", "file": "tracking-error.md", "tags": ["跟踪误差", "指数", "基金净值", "东财", "新浪"] },
+    { "id": "percentile-color", "category": "methodology", "title": "分位色阶单一真源", "file": "percentile-color.md", "tags": ["分位", "配色", "percentile.ts", "涨跌色"] },
+    { "id": "datasource-map", "category": "datasources", "title": "数据源地图总览", "file": "datasource-map.md", "tags": ["aksharewebapi", "上游", "三态", "新鲜度"] },
+    { "id": "upstream-pitfalls", "category": "datasources", "title": "上游接口坑位速查", "file": "upstream-pitfalls.md", "tags": ["csindex", "margin_sse", "东财CDN", "新浪", "szse"] },
+    { "id": "momentum-funds", "category": "strategy", "title": "动量策略与 A 股基金版适配", "file": "momentum-funds.md", "tags": ["Qullamaggie", "动量", "ETF", "门限", "EP"] },
+    { "id": "rotation-bias", "category": "strategy", "title": "动量轮动与 BIAS 减仓", "file": "rotation-bias.md", "tags": ["轮动", "BIAS", "乖离", "减仓", "周度波段"] },
+    { "id": "duckdb-lock", "category": "engineering", "title": "DuckDB 单写锁与任务触发铁律", "file": "duckdb-lock.md", "tags": ["DuckDB", "单写锁", "docker exec", "ALTER TABLE", "SQLite"] },
+    { "id": "deploy-build", "category": "engineering", "title": "部署与构建坑位", "file": "deploy-build.md", "tags": ["部署", "docker compose", "build", "nvm", "md5", "502"] },
+    { "id": "git-sync", "category": "engineering", "title": "Git 分叉与 GitHub 中继推送", "file": "git-sync.md", "tags": ["git", "bundle", "ssh.github.com", "中继", "分叉"] },
+    { "id": "reports-index", "category": "reports", "title": "排查报告与设计文档索引", "file": "reports-index.md", "tags": ["文档", "排查报告", "提案", "docs"] }
+  ]
+}

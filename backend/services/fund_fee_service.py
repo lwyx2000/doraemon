@@ -26,6 +26,8 @@ from pathlib import Path
 import requests
 from services.akshare_client import akshare_request
 
+from database.bulk import bulk_insert
+
 CST = timezone(timedelta(hours=8))
 
 #: 费率信息缓存有效期（天）：超过则重新拉取
@@ -491,7 +493,11 @@ def fetch_one(code: str) -> dict | None:
 
 def _upsert(db, rec: dict) -> None:
     db.execute("DELETE FROM base_fund_fee_info WHERE code = ?", [rec["code"]])
-    db.execute(
+    # 字面量单行 VALUES：参数化 execute ~13.5ms/次（~50ms/基金，P2，
+    # 见 docs/性能病理排查报告-2026-10-14.md）；TIMESTAMP 列传 naive CST
+    # （墙上时间），与原参数化 aware 路径落库值一致（2026-10-14 实测）。
+    bulk_insert(
+        db,
         """
         INSERT INTO base_fund_fee_info
             (code, name, scale, scale_date, mgmt_fee, custody_fee, subscribe_fee,
@@ -499,18 +505,20 @@ def _upsert(db, rec: dict) -> None:
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
-            rec["code"],
-            rec.get("name"),
-            rec.get("scale"),
-            rec.get("scale_date"),
-            rec.get("mgmt_fee"),
-            rec.get("custody_fee"),
-            rec.get("subscribe_fee"),
-            rec.get("redemption_fee"),
-            rec.get("manager"),
-            rec.get("invest_type"),
-            rec.get("benchmark"),
-            _now_cst(),
+            [
+                rec["code"],
+                rec.get("name"),
+                rec.get("scale"),
+                rec.get("scale_date"),
+                rec.get("mgmt_fee"),
+                rec.get("custody_fee"),
+                rec.get("subscribe_fee"),
+                rec.get("redemption_fee"),
+                rec.get("manager"),
+                rec.get("invest_type"),
+                rec.get("benchmark"),
+                _now_cst().replace(tzinfo=None),
+            ]
         ],
     )
 

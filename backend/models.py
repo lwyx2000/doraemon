@@ -620,6 +620,27 @@ class AiConfig(BaseModel):
     enabled: bool = False
 
 
+class AiChannel(BaseModel):
+    """LLM 渠道（OpenAI 兼容）。api_key 读出时脱敏，写入空表示不修改。"""
+    id: str
+    name: str
+    provider: str
+    api_key: Optional[str] = None
+    endpoint: Optional[str] = None
+    model: Optional[str] = None
+    temperature: float = 0.3
+    max_tokens: int = 2048
+    has_key: bool = False
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class AiChannelsView(BaseModel):
+    active_id: Optional[str] = None
+    channels: list[AiChannel] = []
+    presets: dict[str, dict[str, str]] = {}
+
+
 # ============================================================
 # Monitor
 # ============================================================
