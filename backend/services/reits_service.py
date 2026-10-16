@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import re
+import threading
 import time
 from typing import Any
 
@@ -154,15 +155,26 @@ _EASTMONEY_REITS_DEAD_UNTIL = 0.0
 _EASTMONEY_REITS_COOLDOWN = 300  # 秒
 
 
+# 列表级 TTL 缓存（2026-10-16）：REITs 全市场扫描（东财主源 + 腾讯降级）
+# 较重，AlertCenter 与 Reits 页每次冷加载都重扫。30s TTL + force 穿透；
+# 双源均无数据（gatewayEmpty）不写缓存，故障恢复无延迟。
+_REITS_LIST_TTL = 30
+_REITS_LIST_MAX_KEYS = 64
+_REITS_LIST_CACHE: dict[tuple, tuple[float, tuple[list[dict], dict]]] = {}
+_REITS_LIST_LOCK = threading.Lock()
+
+
 def get_reits(
     asset_type: str | None = None,
     min_dividend: float | None = None,
     nav_level: str | None = None,
     sustainability: str | None = None,
+    force: bool = False,
 ) -> tuple[list[dict], dict]:
     """Return (real REITs, meta) (实时行情) filtered by the given criteria.
 
     每个 REIT 经 analyze_reits 深度分析后合并分析结果再过滤。取数失败返回空列表。
+    force=True 穿透 30s 列表缓存，强制重扫上游（前端刷新用）。
 
     数据源策略：优先 53 东财 reits_realtime_em；失败（53→东财连接被掐）后降级到
     腾讯 qt.gtimg.cn 实时行情，并进入冷却期直连腾讯以避开每次 15s 超时。
@@ -177,6 +189,13 @@ def get_reits(
             item.update(analysis)
             results.append(item)
         return results, mock_meta()
+
+    cache_key = (asset_type, min_dividend, nav_level, sustainability)
+    if not force:
+        with _REITS_LIST_LOCK:
+            hit = _REITS_LIST_CACHE.get(cache_key)
+            if hit and (time.time() - hit[0]) < _REITS_LIST_TTL:
+                return hit[1]
 
     now = time.time()
     if now > _EASTMONEY_REITS_DEAD_UNTIL:
@@ -214,4 +233,11 @@ def get_reits(
             continue
         filtered.append(item)
 
-    return filtered, real_meta_base(AKSHARE_API_BASE)
+    out = (filtered, real_meta_base(AKSHARE_API_BASE))
+    with _REITS_LIST_LOCK:
+        _REITS_LIST_CACHE[cache_key] = (time.time(), out)
+        if len(_REITS_LIST_CACHE) > _REITS_LIST_MAX_KEYS:
+            oldest = sorted(_REITS_LIST_CACHE, key=lambda k: _REITS_LIST_CACHE[k][0])
+            for k in oldest[: len(_REITS_LIST_CACHE) - _REITS_LIST_MAX_KEYS]:
+                _REITS_LIST_CACHE.pop(k, None)
+    return out

@@ -293,19 +293,20 @@ export const api = {
   // ============================================================
   // 基金数据（LOF / ETF / 封基）
   // ============================================================
-  getFunds: (type?: string, min_premium?: number, feasibility?: string) =>
-    requestWithMeta<FundItem[]>('/api/v1/funds', { type, min_premium, feasibility }),
+  // force=true 穿透后端 30s 列表缓存（刷新按钮用），否则同参数 30s 内命中缓存
+  getFunds: (type?: string, min_premium?: number, feasibility?: string, force?: boolean) =>
+    requestWithMeta<FundItem[]>('/api/v1/funds', { type, min_premium, feasibility, force: force ? '1' : undefined }),
 
   getClosedFundAnalysis: () =>
     requestWithMeta<FundItem[]>('/api/v1/funds/closed/analysis'),
 
   // ---- Convertible Bonds ----
-  getConvertibleBonds: () =>
-    requestWithMeta<ConvertibleBond[]>('/api/v1/cb/convertible-bonds'),
+  getConvertibleBonds: (force?: boolean) =>
+    requestWithMeta<ConvertibleBond[]>('/api/v1/cb/convertible-bonds', force ? { force: '1' } : undefined),
 
   // ---- REITs ----
-  getReits: () =>
-    requestWithMeta<ReitItem[]>('/api/v1/reits/reits'),
+  getReits: (force?: boolean) =>
+    requestWithMeta<ReitItem[]>('/api/v1/reits/reits', force ? { force: '1' } : undefined),
 
   // ============================================================
   // 预警中心（AlertCenter）

@@ -14,6 +14,7 @@ def funds(
     min_premium: float | None = Query(default=None),
     feasibility: str | None = Query(default=None),
     date: str | None = Query(default=None),
+    force: bool = Query(default=False, description="True 穿透 30s 列表缓存，强制重扫上游"),
 ) -> ApiResponse[list[FundItem]]:
     """Return funds with arbitrage analysis."""
     data, meta = get_funds(
@@ -21,6 +22,7 @@ def funds(
         min_premium=min_premium,
         feasibility=feasibility,
         date=date,
+        force=force,
     )
     return ApiResponse(data=data, meta=meta)
 

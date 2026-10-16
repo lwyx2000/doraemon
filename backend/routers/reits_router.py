@@ -20,11 +20,13 @@ def list_reits(
     sustainability: str | None = Query(
         None, description="Dividend sustainability: sustainable, watch, at_risk"
     ),
+    force: bool = Query(default=False, description="True 穿透 30s 列表缓存，强制重扫上游"),
 ):
     data, meta = get_reits(
         asset_type=asset_type,
         min_dividend=min_dividend,
         nav_level=nav_level,
         sustainability=sustainability,
+        force=force,
     )
     return ApiResponse(data=data, meta=meta)

@@ -27,6 +27,7 @@ def list_convertible_bonds(
         None,
         description="Volatility signal: undervalued, overvalued, fair, n/a",
     ),
+    force: bool = Query(default=False, description="True 穿透 30s 列表缓存，强制重扫上游"),
 ):
     data, meta = get_convertible_bonds(
         price_min=price_min,
@@ -37,6 +38,7 @@ def list_convertible_bonds(
         double_low_max=double_low_max,
         feasibility=feasibility,
         vol_signal=vol_signal,
+        force=force,
     )
     return ApiResponse(data=data, meta=meta)
 

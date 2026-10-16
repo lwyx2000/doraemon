@@ -19,6 +19,8 @@
 from __future__ import annotations
 
 import datetime
+import threading
+import time
 from typing import Any
 
 from services.akshare_client import akshare_request
@@ -240,6 +242,15 @@ def _fetch_raw() -> list[dict] | None:
     return None
 
 
+# 列表级 TTL 缓存（2026-10-16）：可转债全市场扫描（东财/集思录双源 +
+# 赎回价/近似 YTM 补全）较重，AlertCenter 与 ConvertibleBonds 页每次冷加载
+# 都重扫。30s TTL + force 穿透；网关无数据不写缓存，故障恢复无延迟。
+_CB_LIST_TTL = 30
+_CB_LIST_MAX_KEYS = 64
+_CB_LIST_CACHE: dict[tuple, tuple[float, tuple[list[dict], dict]]] = {}
+_CB_LIST_LOCK = threading.Lock()
+
+
 def get_convertible_bonds(
     price_min: float | None = None,
     price_max: float | None = None,
@@ -249,10 +260,22 @@ def get_convertible_bonds(
     double_low_max: float | None = None,
     feasibility: str | None = None,
     vol_signal: str | None = None,
+    force: bool = False,
 ) -> tuple[list[dict], dict]:
-    """Return (real convertible bonds, meta) filtered by the given criteria."""
+    """Return (real convertible bonds, meta) filtered by the given criteria.
+
+    force=True 穿透 30s 列表缓存，强制重扫上游（前端刷新用）。
+    """
     if USE_MOCK_DATA:
         return [_attach_analyses(dict(b)) for b in mock_data.MOCK_CONVERTIBLE_BONDS], mock_meta()
+
+    cache_key = (price_min, price_max, premium_max, rating, ytm_min, double_low_max, feasibility, vol_signal)
+    if not force:
+        with _CB_LIST_LOCK:
+            hit = _CB_LIST_CACHE.get(cache_key)
+            if hit and (time.time() - hit[0]) < _CB_LIST_TTL:
+                return hit[1]
+
     raw = _fetch_raw()
     if not raw:
         print("[CB Service] 取数失败，返回空列表")
@@ -289,7 +312,14 @@ def get_convertible_bonds(
                 continue
         filtered.append(item)
 
-    return filtered, real_meta_base(AKSHARE_API_BASE)
+    out = (filtered, real_meta_base(AKSHARE_API_BASE))
+    with _CB_LIST_LOCK:
+        _CB_LIST_CACHE[cache_key] = (time.time(), out)
+        if len(_CB_LIST_CACHE) > _CB_LIST_MAX_KEYS:
+            oldest = sorted(_CB_LIST_CACHE, key=lambda k: _CB_LIST_CACHE[k][0])
+            for k in oldest[: len(_CB_LIST_CACHE) - _CB_LIST_MAX_KEYS]:
+                _CB_LIST_CACHE.pop(k, None)
+    return out
 
 
 def get_convertible_bond_detail(code: str) -> dict | None:

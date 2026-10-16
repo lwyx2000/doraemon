@@ -20,7 +20,9 @@ import { useFieldHelp } from '../composables/useFieldHelp'
 
 const message = useMessage()
 const { titleWithHelp } = useFieldHelp()
-const { data: reits, loading, error, meta, refresh: refetch } = useAsyncData<ReitItem[]>(() => api.getReits())
+// 手动「刷新」时置 true 穿透后端 30s 列表缓存；普通加载/重试走缓存
+const forceRefresh = ref(false)
+const { data: reits, loading, error, meta, refresh: refetch } = useAsyncData<ReitItem[]>(() => api.getReits(forceRefresh.value))
 const gatewayEmpty = computed(() => isGatewayNoData(meta.value))
 onMounted(refetch)
 const refreshing = ref(false)
@@ -136,9 +138,11 @@ function scoreColor(score: number): string {
 }
 
 function refresh() {
+  forceRefresh.value = true
   refreshing.value = true
   message.loading('正在刷新 REITs 数据...', { duration: 1200 })
   refetch().finally(() => {
+    forceRefresh.value = false
     refreshing.value = false
     if (reits.value) {
       message.success(`已刷新 ${reits.value.length} 条 REITs 数据`)

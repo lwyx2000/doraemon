@@ -404,12 +404,23 @@ def get_funds_from_api(fund_subtype: str = "etf") -> list[dict]:
     return funds
 
 
+# 列表级 TTL 缓存（2026-10-16）：/funds 是全市场扫描型接口（LOF/ETF/封基
+# 逐个上游取数再算套利），AlertCenter 一页加载就会打它。30s TTL +
+# force 穿透（前端「刷新」显式传 force=1）。仅成功结果入缓存；
+# 网关无数据（gatewayEmpty）不写，故障恢复无延迟。
+_FUNDS_LIST_TTL = 30
+_FUNDS_LIST_MAX_KEYS = 64
+_FUNDS_LIST_CACHE: dict[tuple, tuple[float, tuple[list[dict], dict]]] = {}
+_FUNDS_LIST_LOCK = threading.Lock()
+
+
 def get_funds(
     fund_type: str | None = None,
     min_premium: float | None = None,
     feasibility: str | None = None,
     date: str | None = None,
     use_api: bool = True,
+    force: bool = False,
 ) -> tuple[list[dict], dict]:
     """Return (funds, meta) with attached arbitrage analysis (真实数据优先).
 
@@ -419,6 +430,7 @@ def get_funds(
         feasibility: match ``arbitrage_analysis["feasibility"]``.
         date:        accepted for API compatibility (no-op).
         use_api:     保留参数以兼容旧调用；始终尝试真实取数。
+        force:       True 穿透 30s 列表缓存，强制重扫上游（前端刷新用）。
 
     meta.gatewayEmpty=True 当且仅当上游数据源本身未返回任何数据（区别于过滤后为空）。
     """
@@ -435,6 +447,13 @@ def get_funds(
                 continue
             result.append({**fund, "arbitrage_analysis": analysis})
         return result, mock_meta()
+
+    cache_key = (fund_type, min_premium, feasibility)
+    if not force:
+        with _FUNDS_LIST_LOCK:
+            hit = _FUNDS_LIST_CACHE.get(cache_key)
+            if hit and (time.time() - hit[0]) < _FUNDS_LIST_TTL:
+                return hit[1]
 
     subtype_map = {
         "etf": "etf",
@@ -468,7 +487,14 @@ def get_funds(
 
     if gateway_empty:
         return result, gateway_no_data_meta()
-    return result, real_meta_base(AKSHARE_API_BASE)
+    out = (result, real_meta_base(AKSHARE_API_BASE))
+    with _FUNDS_LIST_LOCK:
+        _FUNDS_LIST_CACHE[cache_key] = (time.time(), out)
+        if len(_FUNDS_LIST_CACHE) > _FUNDS_LIST_MAX_KEYS:
+            oldest = sorted(_FUNDS_LIST_CACHE, key=lambda k: _FUNDS_LIST_CACHE[k][0])
+            for k in oldest[: len(_FUNDS_LIST_CACHE) - _FUNDS_LIST_MAX_KEYS]:
+                _FUNDS_LIST_CACHE.pop(k, None)
+    return out
 
 
 def _get_closed_quotes_tencent(codes: list[str]) -> dict[str, dict]:
