@@ -16,6 +16,7 @@ import time
 
 from core.config import AKSHARE_API_BASE, USE_MOCK_DATA
 from database.bulk import bulk_insert
+from services.akshare_client import get_session
 from services.meta_utils import gateway_no_data_meta
 import mock_data
 
@@ -45,7 +46,7 @@ def _akshare_request(method: str, params: dict | None = None, retries: int = 1, 
     for attempt in range(retries):
         try:
             print(f"[AkShare API] 调用 {method} (尝试 {attempt + 1}/{retries}, 超时{timeout}s)...")
-            response = requests.get(url, params=request_params, timeout=timeout)
+            response = get_session().get(url, params=request_params, timeout=timeout)
             response.raise_for_status()
             result = response.json()
             
@@ -77,7 +78,7 @@ _STATUS_CHECK_TIMEOUT = 5
 def _check_akshare_reachable(timeout: int = _STATUS_CHECK_TIMEOUT) -> bool:
     """AkShare WebAPI 可达性探测。"""
     try:
-        r = requests.get(
+        r = get_session().get(
             f"{AKSHARE_API_BASE}/api/processed_data",
             params={"category": "market_stats"},
             timeout=timeout,
@@ -100,7 +101,7 @@ def _fetch_jisilu_auth_detail(timeout: int = _STATUS_CHECK_TIMEOUT) -> dict | No
     返回 None 表示该接口不可用（调用方回退到旧的推断方式）。
     """
     try:
-        r = requests.get(
+        r = get_session().get(
             f"{AKSHARE_API_BASE}/api/jisilu/auth-status",
             timeout=timeout,
         )
@@ -152,7 +153,7 @@ def get_data_source_status() -> dict:
     if jisilu_logged_in is None:
         # 兜底：旧推断（能否取到 jisilu 数据）
         try:
-            r = requests.get(
+            r = get_session().get(
                 f"{AKSHARE_API_BASE}/api/processed_data",
                 params={"category": "jisilu", "subtype": "closed_fund"},
                 timeout=_STATUS_CHECK_TIMEOUT,
@@ -195,7 +196,7 @@ def _processed_data_request(category: str, params: dict | None = None, retries: 
     for attempt in range(retries):
         try:
             print(f"[Processed API] 调用 {category} (尝试 {attempt + 1}/{retries}, 超时{timeout}s)...")
-            response = requests.get(url, params=request_params, timeout=timeout)
+            response = get_session().get(url, params=request_params, timeout=timeout)
             response.raise_for_status()
             result = response.json()
             
@@ -243,7 +244,7 @@ def _quote_request(endpoint: str, params: dict | None = None, retries: int = 3) 
     for attempt in range(retries):
         try:
             print(f"[Quote API] 调用 {endpoint} (尝试 {attempt + 1}/{retries})...")
-            response = requests.get(url, params=request_params, timeout=30)
+            response = get_session().get(url, params=request_params, timeout=30)
             response.raise_for_status()
             result = response.json()
             
@@ -2067,13 +2068,72 @@ def _market_by_code_or_name(item: dict) -> str:
     return "a_share"
 
 
+# ============================================================
+# index_valuation 上游调用：TTL 缓存 + singleflight（2026-10-16）
+# ============================================================
+# 背景：/market/indices 与 /market/overview 都打同一上游
+# processed_data(index_valuation)，原先无缓存无去重 → 一次 Dashboard 加载
+# 双打，且用户点「刷新」立即重打全套上游。此处在 _processed_data_request
+# 之上包一层：
+# - TTL 30s：日内行情 30s 新鲜度足够（sw-sectors 已 10min、macro 1h），
+#   同页双打与 30s 内的重复刷新全部命中缓存；
+# - singleflight：未命中时只放一个请求在途，其余并发请求等它落地后读缓存，
+#   避免冷启动瞬间多线程同时打网关；
+# - 失败不写缓存（无负缓存），下次请求立即重试，故障恢复无延迟。
+_INDEX_VAL_TTL = 30
+_INDEX_VAL_CACHE: dict[str, Any] = {"data": None, "ts": 0.0}
+_INDEX_VAL_LOCK = threading.Lock()
+_INDEX_VAL_INFLIGHT: threading.Event | None = None
+
+
+def _fetch_index_valuation_raw(force: bool = False) -> list | None:
+    """index_valuation 原始上游数据（30s TTL + singleflight）。
+
+    force=True 穿透缓存与在途等待，直接打上游（预留手动刷新用）。
+    """
+    global _INDEX_VAL_INFLIGHT
+    now = time.time()
+    with _INDEX_VAL_LOCK:
+        c = _INDEX_VAL_CACHE
+        if not force and c["data"] is not None and (now - c["ts"]) < _INDEX_VAL_TTL:
+            return c["data"]
+        ev = _INDEX_VAL_INFLIGHT
+        if ev is None:
+            ev = threading.Event()
+            _INDEX_VAL_INFLIGHT = ev
+            leader = True
+        else:
+            leader = False
+    if not leader:
+        # 在途请求最长约 timeout(15s)+retries，等 45s 足够；超时按未命中处理
+        ev.wait(timeout=45)
+        with _INDEX_VAL_LOCK:
+            c = _INDEX_VAL_CACHE
+            if c["data"] is not None:
+                return c["data"]
+        return None
+    try:
+        data = _processed_data_request(
+            "index_valuation", {"subtype": "all", "period": 5}, retries=1, timeout=15
+        )
+        if data:
+            with _INDEX_VAL_LOCK:
+                _INDEX_VAL_CACHE["data"] = data
+                _INDEX_VAL_CACHE["ts"] = time.time()
+        return data
+    finally:
+        with _INDEX_VAL_LOCK:
+            _INDEX_VAL_INFLIGHT = None
+        ev.set()
+
+
 def _fetch_index_valuation_data() -> tuple[list[dict], list[dict]]:
     """一次性获取指数估值数据，返回 (realtime_indices, indices_valuation) 两种格式
 
     realtime_indices: 用于 marketOverview.indices (MarketIndex 格式，仅 A 股核心指数)
     indices_valuation: 用于跨市场指数估值表 (IndexValuation 格式)
     """
-    data = _processed_data_request("index_valuation", {"subtype": "all", "period": 5}, retries=1, timeout=15)
+    data = _fetch_index_valuation_raw()
 
     if not data or not isinstance(data, list):
         return [], []
@@ -2311,32 +2371,54 @@ def _enrich_valuation_with_history(indices: list[dict]) -> list[dict]:
 
     - 有历史序列：pe/pb 取序列末值，分位=末值全史升序百分位（≥24 个月守卫）
     - 无历史序列（如科创综指）：分位置空、category=unknown，不采用上游混合口径值
+
+    2026-10-16：串行改并行。原实现按顺序对每个指数打网关
+    index-valuation/{code}/history，~25 个指数冷缓存时单接口要 10-30s；
+    改 8 路并发后约 2-5s。_index_pb_pe_snapshot 自带每码 30min 缓存，
+    并发打不同 code 互不竞争；requests Session 连接池上限 32，远高于 8。
     """
+    # 无历史序列 / 无代码的行：直接置 unknown，不必打网关
+    pending: list[dict] = []
     for idx in indices:
-        if idx.get("hasValuation") is False:
-            continue
-        code = idx.get("code") or ""
-        snap = _index_pb_pe_snapshot(code) if code else None
-        if not snap:
+        if idx.get("hasValuation") is False or not idx.get("code"):
             idx["pe_percentile"] = None
             idx["pb_percentile"] = None
             idx["category"] = "unknown"
             # 无历史序列不保留上游 win_rate（250 日上涨日占比恒≈50%，零信息）
             idx["win_rate"] = None
-            continue
-        if snap["pe"] is not None:
-            idx["pe"] = snap["pe"]
-        if snap["pb"] is not None:
-            idx["pb"] = snap["pb"]
-        idx["pe_percentile"] = snap["pe_percentile"]
-        idx["pb_percentile"] = snap["pb_percentile"]
-        idx["category"] = _valuation_category(snap["pe_percentile"], snap["pe"])
-        if snap.get("as_of"):
-            idx["pe_as_of"] = snap["as_of"]
-        if snap.get("chg_1y_pct") is not None:
-            idx["change_1y_pct"] = snap["chg_1y_pct"]
-        # 条件胜率覆盖上游 win_rate（可比样本<10 个月时为 None，前端显示"—"）
-        idx["win_rate"] = snap.get("win_rate")
+        else:
+            pending.append(idx)
+
+    if not pending:
+        return indices
+
+    def _work(idx: dict) -> tuple[dict, dict | None]:
+        try:
+            return idx, _index_pb_pe_snapshot(idx["code"])
+        except Exception:
+            return idx, None
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for idx, snap in pool.map(_work, pending):
+            if not snap:
+                idx["pe_percentile"] = None
+                idx["pb_percentile"] = None
+                idx["category"] = "unknown"
+                idx["win_rate"] = None
+                continue
+            if snap["pe"] is not None:
+                idx["pe"] = snap["pe"]
+            if snap["pb"] is not None:
+                idx["pb"] = snap["pb"]
+            idx["pe_percentile"] = snap["pe_percentile"]
+            idx["pb_percentile"] = snap["pb_percentile"]
+            idx["category"] = _valuation_category(snap["pe_percentile"], snap["pe"])
+            if snap.get("as_of"):
+                idx["pe_as_of"] = snap["as_of"]
+            if snap.get("chg_1y_pct") is not None:
+                idx["change_1y_pct"] = snap["chg_1y_pct"]
+            # 条件胜率覆盖上游 win_rate（可比样本<10 个月时为 None，前端显示"—"）
+            idx["win_rate"] = snap.get("win_rate")
     return indices
 
 
@@ -2431,7 +2513,7 @@ def get_indices_with_meta(category: str | None = None, date: str | None = None) 
             indices = [idx for idx in indices if idx.get("category") == category]
         return indices, _build_meta(True, "MOCK(模拟数据)")
 
-    data = _processed_data_request("index_valuation", {"subtype": "all", "period": 5}, retries=1, timeout=15)
+    data = _fetch_index_valuation_raw()
 
     if data and isinstance(data, list):
         # 顺序很重要：先映射(不过滤) → 补录科创综指 → 同口径重算 pe/pb/分位/类别，

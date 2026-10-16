@@ -20,6 +20,7 @@ from services.akshare_client import akshare_request
 from utils.reits import analyze_reits
 from core.config import USE_MOCK_DATA, AKSHARE_API_BASE
 from services.meta_utils import gateway_no_data_meta, real_meta_base, mock_meta
+from services.akshare_client import get_session
 import mock_data
 
 # 腾讯财经行情源(qt.gtimg.cn)兜底清单：53 上的东财源 reits_realtime_em 被掐，
@@ -115,7 +116,7 @@ def get_reits_from_tencent() -> list[dict]:
     for i in range(0, len(REITS_TENCENT_CODES), 8):
         batch = REITS_TENCENT_CODES[i : i + 8]
         try:
-            resp = requests.get("https://qt.gtimg.cn/q=" + ",".join(batch), timeout=10)
+            resp = get_session().get("https://qt.gtimg.cn/q=" + ",".join(batch), timeout=10)
             text = resp.content.decode("gbk", "ignore")
         except Exception as e:
             print(f"[REITs Tencent] 批次请求失败: {e}")

@@ -19,6 +19,8 @@ from typing import Any
 
 import requests
 
+from services.akshare_client import get_session
+
 from core.config import WECOM_WEBHOOK_URL, DINGTALK_WEBHOOK_URL
 
 
@@ -131,7 +133,7 @@ def send_wecom_message(webhook_url: str, title: str, content: str) -> bool:
     }
 
     try:
-        resp = requests.post(webhook_url, json=payload, timeout=10)
+        resp = get_session().post(webhook_url, json=payload, timeout=10)
         resp.raise_for_status()
         result = resp.json()
         if result.get("errcode") == 0:
@@ -177,7 +179,7 @@ def send_dingtalk_message(webhook_url: str, title: str, content: str) -> bool:
     }
 
     try:
-        resp = requests.post(webhook_url, json=payload, timeout=10)
+        resp = get_session().post(webhook_url, json=payload, timeout=10)
         resp.raise_for_status()
         result = resp.json()
         if result.get("errcode") == 0:

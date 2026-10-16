@@ -28,6 +28,7 @@ import requests
 
 from core.config import AKSHARE_API_BASE, USE_MOCK_DATA
 from services.meta_utils import gateway_no_data_meta, real_meta_base, mock_meta
+from services.akshare_client import get_session
 from utils.arbitrage import analyze_arbitrage
 from utils.closed_fund import analyze_closed_fund
 import mock_data
@@ -43,7 +44,7 @@ def _processed_data_request(category: str, params: dict | None = None, retries: 
     for attempt in range(retries):
         try:
             print(f"[Fund Service] 调用 {category} (尝试 {attempt + 1}/{retries})...")
-            response = requests.get(url, params=request_params, timeout=30)
+            response = get_session().get(url, params=request_params, timeout=30)
             response.raise_for_status()
             result = response.json()
 
@@ -149,7 +150,7 @@ def _kline_request_quiet(code: str) -> list | None:
     end = date.today().isoformat()
     start = (date.today() - timedelta(days=_ETF_KLINE_LOOKBACK_DAYS)).isoformat()
     try:
-        resp = requests.get(
+        resp = get_session().get(
             f"{AKSHARE_API_BASE}/api/quote/kline",
             params={"code": code, "type": "ETF", "start_date": start, "end_date": end},
             timeout=12,
@@ -487,7 +488,7 @@ def _get_closed_quotes_tencent(codes: list[str]) -> dict[str, dict]:
     for i in range(0, len(tencent_codes), 8):
         batch = tencent_codes[i:i + 8]
         try:
-            resp = requests.get(
+            resp = get_session().get(
                 "https://qt.gtimg.cn/q=" + ",".join(batch),
                 timeout=10,
             )
@@ -536,7 +537,7 @@ def get_fund_nav_eastmoney(code: str) -> dict | None:
     if cached and cached[2] > now:
         return {"nav": cached[0], "nav_date": cached[1]}
     try:
-        resp = requests.get(
+        resp = get_session().get(
             f"https://fund.eastmoney.com/pingzhongdata/{code}.js",
             headers={
                 "User-Agent": "Mozilla/5.0",

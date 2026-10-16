@@ -29,6 +29,7 @@ from database.connection import get_db
 from database.bulk import bulk_insert
 from services import fund_fee_service, index_compilation_service
 from services.akshare_client import akshare_request
+from services.akshare_client import get_session
 
 CST = timezone(timedelta(hours=8))
 
@@ -335,7 +336,7 @@ def _em_text(code: str, label: str) -> str | None:
     和 ``业绩比较基准``（指数名 + 收益率），且限流比同花顺宽松，优先用。
     """
     try:
-        r = requests.get(
+        r = get_session().get(
             f"https://fundf10.eastmoney.com/jbgk_{code}.html",
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124"},
             timeout=15,

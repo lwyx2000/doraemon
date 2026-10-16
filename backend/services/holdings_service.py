@@ -21,6 +21,7 @@ import requests
 from database.sqlite_connection import get_biz_db
 from core.config import USE_MOCK_DATA
 from services.akshare_client import akshare_request
+from services.akshare_client import get_session
 
 # ============================================================
 # 常量
@@ -409,7 +410,7 @@ def _fetch_tencent_quotes(holdings: list[dict]) -> dict[str, dict]:
         return {}
     out: dict[str, dict] = {}
     try:
-        resp = requests.get(
+        resp = get_session().get(
             f"http://qt.gtimg.cn/q={','.join(syms)}", timeout=8,
             headers={"User-Agent": "Mozilla/5.0"},
         )
@@ -478,7 +479,7 @@ def _fetch_future_quote(code: str) -> dict:
 def _fetch_otc_fund_quote(code: str) -> dict:
     """场外基金：天天基金最新净值作现价；无昨收（当日盈亏不计入）。"""
     try:
-        resp = requests.get(
+        resp = get_session().get(
             f"https://fund.eastmoney.com/pingzhongdata/{_digits(code)}.js",
             headers={"User-Agent": "Mozilla/5.0", "Referer": "https://fundf10.eastmoney.com/"},
             timeout=12,

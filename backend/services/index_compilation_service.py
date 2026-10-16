@@ -29,6 +29,8 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
+from services.akshare_client import get_session
+
 CST = timezone(timedelta(hours=8))
 
 #: 中证接口基址（与官网前端同源）
@@ -81,7 +83,7 @@ def _fetch(code: str, retries: int = 2) -> dict | None:
     last: str | None = None
     for attempt in range(retries):
         try:
-            r = requests.get(url, headers=_HEADERS, timeout=12)
+            r = get_session().get(url, headers=_HEADERS, timeout=12)
             if r.status_code == 200 and r.text.strip().startswith("{"):
                 data = r.json().get("data")
                 if isinstance(data, dict) and data.get("indexCode"):

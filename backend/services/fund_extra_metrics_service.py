@@ -42,6 +42,7 @@ import json
 import requests
 
 from services.akshare_client import akshare_request
+from services.akshare_client import get_session
 
 from database.bulk import bulk_insert
 
@@ -197,7 +198,7 @@ def _fetch_pingzhongdata(code: str):
         ),
         "Referer": f"https://fundf10.eastmoney.com/F10/jjjz_{code}.html",
     }
-    return requests.get(url, headers=headers, timeout=20)
+    return get_session().get(url, headers=headers, timeout=20)
 
 
 def ensure_fund_nav(code: str, db) -> bool:
@@ -371,7 +372,7 @@ def _compute_tracking_error(code: str, index_code: str | None, db) -> tuple[floa
 def _compute_payout_freq(code: str) -> int:
     """分红频率枚举：0 不定期/无、1 年度、2 半年、4 季度、12 月度。解析失败返 0。"""
     try:
-        r = requests.get(
+        r = get_session().get(
             f"https://fundf10.eastmoney.com/fhsp_{code}.html",
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124"},
             timeout=15,

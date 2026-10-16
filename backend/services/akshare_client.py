@@ -11,11 +11,42 @@
 
 from __future__ import annotations
 
+import threading
 import time
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from core.config import AKSHARE_API_BASE
+
+
+# ============================================================
+# 共享 HTTP Session（连接池 + keep-alive）
+# ============================================================
+# 背景：原先各处裸 `requests.get()`，每次上游调用都新建 TCP 连接
+# （三次握手 + 网关侧 accept），一页 10+ 接口 × 每接口多次上游调用时，
+# 短连接开销与 TIME_WAIT 积压明显。改为模块级共享 Session 后：
+# - 同一 host 的连接自动复用（keep-alive），省握手；
+# - HTTPAdapter 连接池上限 32，覆盖并发扇出（估值补全并行化后峰值更高）。
+# requests.Session 的 get/post 在官方文档约定下线程安全（连接池内部加锁），
+# 本项目端点均为 sync def（跑在 anyio 线程池），可安全共享。
+_session: requests.Session | None = None
+_session_lock = threading.Lock()
+
+
+def get_session() -> requests.Session:
+    """返回模块级共享 Session（懒初始化，双检锁）。"""
+    global _session
+    if _session is not None:
+        return _session
+    with _session_lock:
+        if _session is None:
+            s = requests.Session()
+            adapter = HTTPAdapter(pool_connections=16, pool_maxsize=32)
+            s.mount("http://", adapter)
+            s.mount("https://", adapter)
+            _session = s
+    return _session
 
 
 def akshare_request(
@@ -45,7 +76,7 @@ def akshare_request(
     for attempt in range(retries):
         try:
             print(f"[AkShare Client] 调用 {method} (尝试 {attempt + 1}/{retries}, 超时{timeout}s)...")
-            response = requests.get(url, params=request_params, timeout=timeout)
+            response = get_session().get(url, params=request_params, timeout=timeout)
             response.raise_for_status()
             result = response.json()
 
@@ -98,7 +129,7 @@ def akshare_api_get(
 
     for attempt in range(retries):
         try:
-            response = requests.get(url, params=params, timeout=timeout)
+            response = get_session().get(url, params=params, timeout=timeout)
             response.raise_for_status()
             result = response.json()
 

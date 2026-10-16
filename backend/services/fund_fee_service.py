@@ -25,6 +25,7 @@ from pathlib import Path
 
 import requests
 from services.akshare_client import akshare_request
+from services.akshare_client import get_session
 
 from database.bulk import bulk_insert
 
@@ -355,7 +356,7 @@ def _extract_eastmoney(code: str) -> dict | None:
         ),
         "Referer": f"https://fundf10.eastmoney.com/jbgk_{code}.html",
     }
-    r = requests.get(url, headers=headers, timeout=15)
+    r = get_session().get(url, headers=headers, timeout=15)
     if r.status_code != 200:
         raise RuntimeError(f"eastmoney HTTP {r.status_code}")
     text = re.sub(r"<[^>]+>", " ", r.text)
