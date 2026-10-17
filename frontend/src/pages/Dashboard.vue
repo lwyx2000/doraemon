@@ -162,7 +162,7 @@ function reg(
   return run()
 }
 
-async function fetchMacroData() {
+async function fetchMacroData(force = false) {
   failedCount = 0
   settledCount = 0
   error.value = null
@@ -170,7 +170,8 @@ async function fetchMacroData() {
   await Promise.all([
     reg('indicators', () => api.getMacroIndicators(), (d) => { indicators.value = d }),
     reg('indices', () => api.getIndices(), (d) => { indices.value = d }),
-    reg('overview', () => api.getMarketOverview(), (d) => { marketOverview.value = d }),
+    // overview 带 10 分钟缓存（2026-10-17 P2-3）：仅刷新按钮 force 穿透
+    reg('overview', () => api.getMarketOverview(force), (d) => { marketOverview.value = d }),
     reg('boardSectors', () => api.getMarketBoardSectors(), (d) => { boardSectors.value = d }),
     reg('fundFlows', () => api.getMarketFundFlows(), (d) => { fundFlows.value = d }),
     reg('ztStats', () => api.getMarketZTStats(), (d) => { ztStats.value = d }),
@@ -201,7 +202,8 @@ async function refresh() {
   refreshing.value = true
   message.loading('正在刷新宏观数据...', { duration: 1200 })
   try {
-    await fetchMacroData()
+    // force=true：overview 穿透 10 分钟缓存（其余区无缓存，语义不变）
+    await fetchMacroData(true)
     if (hasData.value) {
       message.success(`已刷新 ${indices.value.length} 个指数数据`)
     }

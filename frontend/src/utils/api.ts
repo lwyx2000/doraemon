@@ -116,8 +116,9 @@ export const api = {
     requestWithMeta<MacroIndicators>('/api/v1/market/macro/indicators'),
 
   // 市场概况（指数行情、涨跌家数、成交额）
-  getMarketOverview: () =>
-    requestWithMeta<MarketOverview>('/api/v1/market/overview'),
+  // force=true 穿透 10 分钟进程内缓存（2026-10-17 P2-3，Dashboard 刷新按钮用）
+  getMarketOverview: (force?: boolean) =>
+    requestWithMeta<MarketOverview>('/api/v1/market/overview', force ? { force: '1' } : undefined),
 
   // 板块涨幅排行
   getMarketBoardSectors: () =>

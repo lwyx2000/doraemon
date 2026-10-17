@@ -28,6 +28,7 @@ import PageHeader from '../components/PageHeader.vue'
 import StatCard from '../components/StatCard.vue'
 import TabBar from '../components/TabBar.vue'
 import LoadingState from '../components/LoadingState.vue'
+import SectionSkeleton from '../components/SectionSkeleton.vue'
 import SectionFallback from '../components/SectionFallback.vue'
 import BaseChart from '../components/BaseChart.vue'
 
@@ -1132,7 +1133,10 @@ onUnmounted(() => {
       </n-card>
 
       <!-- 概览：研究页 4 张 + 数据页 5 张（ETF/被动/主动/映射率）合并为 8 张 -->
-      <n-grid cols="2 s:2 m:4" :x-gap="12" :y-gap="12" responsive="screen">
+      <!-- 冷启动时 overview 要串行打多路网关（实测 14s）：统计卡先出骨架占位，
+           避免渲染 0 / — 的误导值（2026-10-17 P2-1） -->
+      <SectionSkeleton v-if="loading" variant="overview" />
+      <n-grid v-else cols="2 s:2 m:4" :x-gap="12" :y-gap="12" responsive="screen">
         <n-gi><StatCard label="红利指数" :value="counts.index" :sub="`分歧 ${conflictCount} 个`" /></n-gi>
         <n-gi>
           <StatCard
@@ -1199,6 +1203,8 @@ onUnmounted(() => {
           <BaseChart :option="peChartOption" :height="260" />
         </n-card>
       </template>
+      <!-- 指数表区 loading 骨架（2026-10-17 P2-1）：冷启动 14s 期间占位，避免布局跳动 -->
+      <SectionSkeleton v-else-if="loading" variant="table" :rows="6" />
 
       <SectionFallback
         v-if="!loading && !error && !indices.length"

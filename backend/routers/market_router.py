@@ -47,9 +47,9 @@ def macro_indicators() -> ApiResponse[MacroIndicators]:
 
 
 @router.get("/overview", response_model=ApiResponse[MarketOverview])
-def overview() -> ApiResponse[MarketOverview]:
-    """市场概况：指数行情、涨跌家数、成交额"""
-    data, meta = get_market_overview_with_meta()
+def overview(force: bool = Query(False, description="是否穿透缓存强制刷新（刷新按钮用）")) -> ApiResponse[MarketOverview]:
+    """市场概况：指数行情、涨跌家数、成交额（带 10 分钟缓存，force=1 穿透）"""
+    data, meta = get_market_overview_with_meta(force=force)
     return ApiResponse(data=data, meta=meta)
 
 

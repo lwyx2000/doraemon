@@ -893,6 +893,22 @@ _SW_SECTORS_TTL = 600
 _SW_SECTORS_TTL_FAIL = 30
 
 
+# ---------------------------------------------------------------------------
+# market/overview 进程内缓存（2026-10-17 P2-3，与 sw-sectors 同款模式）
+# ---------------------------------------------------------------------------
+# ⚠️ 为什么加：`get_market_overview_with_meta` 每次串行打 2 个**无缓存**上游
+#   （index_valuation timeout=15s + market_stats timeout=10s×2 retries），
+#   实测 Dashboard 首屏固定 4.6-5.0s。盘中估值/统计日内变化有限，用户
+#   2026-10-17 明确接受 5-10 分钟时效性 → 缓存 10 分钟；失败态 30s 短
+#   TTL 防错误数据锁死；「刷新」按钮 force=True 穿透（同 sw-sectors）。
+#   缓存对象为 (data, meta) 二元组——meta 含 updateTime，一并缓存保持
+#   前端时间 chip 语义不变。
+_MARKET_OVERVIEW_CACHE: dict = {"data": None, "meta": None, "ts": 0.0, "lock": threading.Lock(), "fail": False}
+_MARKET_OVERVIEW_TTL = 600
+#: 上游拿不到时的短缓存（秒）—— 失败不该被缓存 10 分钟，但也不该让首页每次白等
+_MARKET_OVERVIEW_TTL_FAIL = 30
+
+
 def _compute_erp() -> tuple[float | None, float | None, float | None, float | None]:
     """股权风险溢价 ERP = 1/CSI300PE_TTM - 10Y 国债收益率；并计算 3Y/5Y/10Y 历史分位
 
@@ -1120,8 +1136,34 @@ def get_macro_indicators_with_meta() -> tuple[dict, dict]:
     return result, _build_meta(False, f"AkShare WebAPI ({AKSHARE_HOST})")
 
 
-def get_market_overview_with_meta() -> tuple[dict, dict]:
-    """市场概况：指数行情 + 涨跌家数 + 成交额"""
+def get_market_overview_with_meta(force: bool = False) -> tuple[dict, dict]:
+    """市场概况：指数行情 + 涨跌家数 + 成交额。
+
+    ⚠️ 带 10 分钟进程内缓存（2026-10-17 P2-3，与 sw-sectors 同款模式）：
+    未命中缓存时透传 ``force`` 给底层取数并刷新缓存；命中直接返回
+    (data, meta) 二元组。失败态（indices 为空）走 30s 短 TTL。
+    """
+    if not force:
+        with _MARKET_OVERVIEW_CACHE["lock"]:
+            c = _MARKET_OVERVIEW_CACHE
+            if c["data"] is not None:
+                age = time.time() - c["ts"]
+                ttl = _MARKET_OVERVIEW_TTL_FAIL if c.get("fail") else _MARKET_OVERVIEW_TTL
+                if age <= ttl:
+                    return c["data"], c["meta"]
+    data, meta = _get_market_overview_uncached()
+    ok = bool(data.get("indices"))
+    with _MARKET_OVERVIEW_CACHE["lock"]:
+        c = _MARKET_OVERVIEW_CACHE
+        c["data"] = data
+        c["meta"] = meta
+        c["ts"] = time.time()
+        c["fail"] = not ok
+    return data, meta
+
+
+def _get_market_overview_uncached() -> tuple[dict, dict]:
+    """market/overview 无缓存原始实现（缓存包装见 get_market_overview_with_meta）。"""
     if USE_MOCK_DATA:
         return mock_data.MOCK_MACRO_DATA["marketOverview"], _build_meta(True, "MOCK(模拟数据)")
     realtime_indices, _ = _fetch_index_valuation_data()
