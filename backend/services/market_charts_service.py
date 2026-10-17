@@ -228,14 +228,38 @@ def _index_pe(symbol: str, timeout: int = 35) -> list[tuple[str, float]]:
     return _normalize(rows, _PE_KEYS)
 
 
+# 上游 value 接口连续失败静默期（2026-10-17 P1b）：
+#   网关把上游 403 限流包成 500 返回，doraemon 侧看到的都是「500 Server
+#   Error」，无法按状态码分类（403 静默 / 5xx 快重试的原方案不可行）。
+#   改用「连续失败升级」：同一路取数连续 _VALUE_FAIL_N 次失败后进入
+#   _VALUE_FAIL_SILENCE 秒静默，期间直接返回空——不再每 90s 硬闯已限流
+#   的上游（每次 2×35s，最坏占用 _REFRESH_SEM(2) 槽位 70s，拖慢其他图），
+#   也避免持续打扰上游导致反爬升级。
+#   单次/偶发失败（网关抖动）不触发静默，仍走 90s 失败态短 TTL 快重试；
+#   取数成功即复位计数。
+_VALUE_FAIL_N = 3
+_VALUE_FAIL_SILENCE = 30 * 60
+_DIV_VALUE_FAIL = {"n": 0, "until": 0.0}
+
+
 def _index_dividend(symbol: str, timeout: int = 35) -> list[tuple[str, float]]:
     """中证红利股息率（历史）。优先从 stock_zh_index_value_csindex 解析时间序列/最新值。
 
     该接口在不同 akshare 版本下结构不一（可能为 dict 当前值，或含历史序列），做容错解析。
     """
+    now = time.time()
+    if now < _DIV_VALUE_FAIL["until"]:
+        return []  # 静默期：不打扰已限流上游，不占刷新槽位
     raw = _gw("stock_zh_index_value_csindex", {"symbol": symbol}, retries=2, timeout=timeout)
     if not raw:
+        _DIV_VALUE_FAIL["n"] += 1
+        if _DIV_VALUE_FAIL["n"] >= _VALUE_FAIL_N:
+            _DIV_VALUE_FAIL["until"] = now + _VALUE_FAIL_SILENCE
+            print(f"[MarketCharts] {symbol} value 接口连续失败 {_VALUE_FAIL_N} 次，"
+                  f"静默 {_VALUE_FAIL_SILENCE // 60} 分钟")
         return []
+    _DIV_VALUE_FAIL["n"] = 0
+    _DIV_VALUE_FAIL["until"] = 0.0
     # 情况1：list[dict] 时间序列，含 股息率 / dividend_yield 列
     #   ⚠️ 2026-10-16：akshare 1.19 实际列名为「股息率1/股息率2」（静态/滚动两种口径），
     #   旧 keys 只写「股息率」永远匹配不上 → 该图永久空。补上带序号列名。

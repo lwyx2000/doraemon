@@ -40,11 +40,19 @@ function maybePoll() {
       pollTimer = setInterval(async () => {
         pollAttempts++
         try {
-          const res = await chartsApi.all(false)
-          const next = (res.data || []).filter(Boolean)
+          // 只补空图（2026-10-17 P1a）：单图端点 /charts/{id} 每张几 KB，
+          // 而全量 /charts/all 约 1.52MB（11 图 × 最多 12 轮 ≈ 18MB 浪费）。
+          // 无 id 的异常产物拉不了单图，保留原样等下次全量 load。
+          const empties = charts.value.filter((c) => c.id && !c.primary?.dates?.length)
+          const freshList = await Promise.all(
+            empties.map((c) => chartsApi.get(c.id).then((r) => r.data).catch(() => null))
+          )
+          const freshMap = new Map(
+            freshList.filter((c): c is MarketChart => !!c).map((c) => [c.id, c])
+          )
           // 仅用非空结果覆盖，避免回退到空
           charts.value = charts.value.map((old) => {
-            const fresh = next.find((n) => n.id === old.id)
+            const fresh = old.id ? freshMap.get(old.id) : undefined
             return fresh && fresh.primary?.dates?.length ? fresh : old
           })
         } catch {
