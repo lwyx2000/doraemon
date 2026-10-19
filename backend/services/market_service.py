@@ -901,17 +901,22 @@ _SW_SECTORS_TTL_FAIL = 30
 
 
 # ---------------------------------------------------------------------------
-# market/overview 进程内缓存（2026-10-17 P2-3，与 sw-sectors 同款模式）
+# market/overview 进程内缓存（2026-10-17 P2-3 骨架，2026-10-19 TTL 重定）
 # ---------------------------------------------------------------------------
 # ⚠️ 为什么加：`get_market_overview_with_meta` 每次串行打 2 个**无缓存**上游
 #   （index_valuation timeout=15s + market_stats timeout=10s×2 retries），
-#   实测 Dashboard 首屏固定 4.6-5.0s。盘中估值/统计日内变化有限，用户
-#   2026-10-17 明确接受 5-10 分钟时效性 → 缓存 10 分钟；失败态 30s 短
-#   TTL 防错误数据锁死；「刷新」按钮 force=True 穿透（同 sw-sectors）。
+#   实测 Dashboard 首屏固定 4.6-5.0s。失败态 30s 短 TTL 防错误数据锁死；
+#   「刷新」按钮 force=True 穿透（同 sw-sectors）。
 #   缓存对象为 (data, meta) 二元组——meta 含 updateTime，一并缓存保持
 #   前端时间 chip 语义不变。
+#
+# ⚠️ TTL 2026-10-19 由 600s 调至 15s（推翻 10-17「接受 5-10 分钟时效性」）：
+#   网关侧已把实时字段（新浪行情/腾讯 PE）拆出结果缓存、每次请求强制刷新
+#   （akshareProject 1126061），overview 属于实时数据，外层再压 10 分钟会把
+#   刚刷新的数据藏旧。15s 仅用于吸收同刻并发与前端重复请求；上游慢而能成
+#   的调用由 130s 超时兜底（不会因 TTL 短而丢数据）。
 _MARKET_OVERVIEW_CACHE: dict = {"data": None, "meta": None, "ts": 0.0, "lock": threading.Lock(), "fail": False}
-_MARKET_OVERVIEW_TTL = 600
+_MARKET_OVERVIEW_TTL = 15
 #: 上游拿不到时的短缓存（秒）—— 失败不该被缓存 10 分钟，但也不该让首页每次白等
 _MARKET_OVERVIEW_TTL_FAIL = 30
 
@@ -1146,9 +1151,9 @@ def get_macro_indicators_with_meta() -> tuple[dict, dict]:
 def get_market_overview_with_meta(force: bool = False) -> tuple[dict, dict]:
     """市场概况：指数行情 + 涨跌家数 + 成交额。
 
-    ⚠️ 带 10 分钟进程内缓存（2026-10-17 P2-3，与 sw-sectors 同款模式）：
-    未命中缓存时透传 ``force`` 给底层取数并刷新缓存；命中直接返回
-    (data, meta) 二元组。失败态（indices 为空）走 30s 短 TTL。
+    ⚠️ 带 15s 进程内缓存（2026-10-17 P2-3 骨架，2026-10-19 由 600s 调短，
+    实时数据不再压旧）：未命中缓存时透传 ``force`` 给底层取数并刷新缓存；
+    命中直接返回 (data, meta) 二元组。失败态（indices 为空）走 30s 短 TTL。
     """
     if not force:
         with _MARKET_OVERVIEW_CACHE["lock"]:

@@ -254,7 +254,7 @@ ms._fetch_index_valuation_data = slow_idx
 ms.get_market_stats_real = slow_stats
 
 t0 = time.time()
-data, meta = ms.get_market_overview_with_meta()
+data, meta = ms.get_market_overview_with_meta(force=True)
 elapsed = time.time() - t0
 
 check("两上游真并行(峰值并发 2)", overlap["max"] == 2, f"峰值并发 {overlap['max']}")
@@ -262,15 +262,19 @@ check("并行总耗时≈单个耗时", elapsed < 0.55, f"耗时 {elapsed:.2f}s�
 check("指数与统计均合并", data["indices"][0]["code"] == "000300" and data["upCount"] == 3301)
 check("正常 meta", meta["isMock"] is False and meta.get("gatewayEmpty", False) is False)
 
-# 一方失败：indices 空 + stats 正常 → 部分数据分支，不抛错
+# 命中缓存路径：同参数二次调用直接返回缓存（不打上游）
+data_cached, meta_cached = ms.get_market_overview_with_meta()
+check("缓存命中返回同数据", data_cached["upCount"] == 3301 and data_cached["indices"][0]["code"] == "000300")
+
+# 一方失败：indices 空 + stats 正常 → 部分数据分支，不抛错（force 穿透 15s 缓存）
 ms._fetch_index_valuation_data = lambda: ([], [])
-data2, meta2 = ms.get_market_overview_with_meta()
+data2, meta2 = ms.get_market_overview_with_meta(force=True)
 check("指数缺失退化为部分数据", data2["indices"] == [] and data2["upCount"] == 3301
       and meta2.get("gatewayEmpty", False) is False)
 
-# 双方失败：网关无数据分支
+# 双方失败：网关无数据分支（force 穿透）
 ms.get_market_stats_real = lambda: None
-data3, meta3 = ms.get_market_overview_with_meta()
+data3, meta3 = ms.get_market_overview_with_meta(force=True)
 check("双方失败走网关无数据", data3["status"] == "数据获取中"
       and meta3["gatewayEmpty"] is True and meta3["dataSource"] == "网关无数据")
 
