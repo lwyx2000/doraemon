@@ -14,7 +14,6 @@ import type {
   ZTStats,
   FundRankingItem,
   SectionSourceMeta,
-  SwSector,
   FearGreedLatest,
   FearGreedPoint,
 } from '../types'
@@ -27,7 +26,6 @@ import FieldHelp from '../components/FieldHelp.vue'
 import GlossaryPanel from '../components/GlossaryPanel.vue'
 import MarketOverview from '../components/MarketOverview.vue'
 import BoardSectorPanel from '../components/BoardSectorPanel.vue'
-import SwHeatmap from '../components/SwHeatmap.vue'
 import FundFlowPanel from '../components/FundFlowPanel.vue'
 import ZTStatsPanel from '../components/ZTStatsPanel.vue'
 import FundRankingPanel from '../components/FundRankingPanel.vue'
@@ -47,7 +45,6 @@ const boardSectors = ref<BoardSector[]>([])
 const fundFlows = ref<FundFlows | null>(null)
 const ztStats = ref<ZTStats | null>(null)
 const fundRanking = ref<FundRankingItem[]>([])
-const swSectors = ref<SwSector[]>([])
 const fearGreedLatest = ref<FearGreedLatest | null>(null)
 const fearGreedHistory = ref<FearGreedPoint[]>([])
 
@@ -57,8 +54,8 @@ const showAiInterpret = ref(false)
 // 各分区数据来源标记（真实/模拟）
 const sectionSources = ref<Record<string, SectionSourceMeta>>({})
 
-type SectionKey = 'indicators' | 'indices' | 'overview' | 'boardSectors' | 'fundFlows' | 'ztStats' | 'fundRanking' | 'swSectors' | 'fearGreed'
-const TOTAL_SECTIONS = 9
+type SectionKey = 'indicators' | 'indices' | 'overview' | 'boardSectors' | 'fundFlows' | 'ztStats' | 'fundRanking' | 'fearGreed'
+const TOTAL_SECTIONS = 8
 
 // 各分区加载状态：骨架屏按分区独立显示，任一接口完成即渲染对应模块
 const sectionLoading = ref<Record<SectionKey, boolean>>({
@@ -69,7 +66,6 @@ const sectionLoading = ref<Record<SectionKey, boolean>>({
   fundFlows: true,
   ztStats: true,
   fundRanking: true,
-  swSectors: true,
   fearGreed: true,
 })
 
@@ -86,7 +82,6 @@ const sectionError = ref<Record<SectionKey, boolean>>({
   fundFlows: false,
   ztStats: false,
   fundRanking: false,
-  swSectors: false,
   fearGreed: false,
 })
 
@@ -109,7 +104,6 @@ const hasData = computed(() =>
   !!fundFlows.value ||
   !!ztStats.value ||
   fundRanking.value.length > 0 ||
-  swSectors.value.length > 0 ||
   !!fearGreedLatest.value
 )
 
@@ -176,7 +170,9 @@ async function fetchMacroData(force = false) {
     reg('fundFlows', () => api.getMarketFundFlows(), (d) => { fundFlows.value = d }),
     reg('ztStats', () => api.getMarketZTStats(), (d) => { ztStats.value = d }),
     reg('fundRanking', () => api.getMarketFundRanking(), (d) => { fundRanking.value = d }),
-    reg('swSectors', () => api.getSwSectors(), (d) => { swSectors.value = d }),
+    // ⚠️ 2026-10-19 P0 止血：申万热力图分区已临时下线——后端 /api/v1/market/sw-sectors
+    // 落库 base_sw_sector_daily 时 duckdb native 段错误（backend 崩溃循环、看板 502）。
+    // 表修复后恢复：此处加回 reg('swSectors', () => api.getSwSectors(), ...) + 模板热力图区块。
     reg('fearGreed', async () => {
       const [latestRes, historyRes] = await Promise.all([
         api.getFearGreedLatest(),
@@ -294,9 +290,6 @@ const indicesUpdateMeta = computed(() => {
   if (parts.length > 0) return parts.join(' · ')
   return time ? `Last update: ${time}` : 'Last update: —'
 })
-
-// 申万热力图数据更新时间（后端 meta.updateTime = 取数时刻；网关侧有 10 分钟缓存）
-const swSectorsUpdatedAt = computed(() => sectionSources.value.swSectors?.updateTime ?? null)
 
 // 宏观指标区是否有有效数据：空对象/无关键利率数据时不渲染4个指标卡片
 const hasIndicatorsData = computed(() => {
@@ -529,19 +522,6 @@ function handleCheckedChange(keys: (string | number)[]) {
         <SectionFallback v-else key="fallback" :error="sectionError.fundRanking ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.fundRanking?.isMock && sectionSources.fundRanking?.gatewayEmpty" :min-height="160" @retry="retrySection('fundRanking')" />
       </Transition>
     </div>
-
-    <!-- 申万一级行业热力图 -->
-    <Transition name="fade" mode="out-in">
-      <SectionSkeleton v-if="sectionLoading.swSectors" key="skeleton" variant="card" :rows="6" />
-      <SwHeatmap
-        v-else-if="swSectors.length > 0"
-        key="content"
-        :sectors="swSectors"
-        title="A股行业热力图（申万一级）"
-        :updated-at="swSectorsUpdatedAt"
-      />
-      <SectionFallback v-else key="fallback" :error="sectionError.swSectors ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.swSectors?.isMock && sectionSources.swSectors?.gatewayEmpty" :min-height="160" @retry="retrySection('swSectors')" />
-    </Transition>
 
     <!-- 跨市场指数估值（默认收起） -->
     <div class="market-valuation-section">

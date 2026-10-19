@@ -898,6 +898,9 @@ _SW_SECTORS_CACHE: dict = {"data": None, "ts": 0.0, "lock": threading.Lock(), "f
 _SW_SECTORS_TTL = 180
 #: 上游拿不到时的短缓存（秒）—— 失败不该被缓存 10 分钟，但也不该让首页每次白等
 _SW_SECTORS_TTL_FAIL = 30
+#: P0 止血（2026-10-19）：base_sw_sector_daily 损坏致 duckdb 段错误，
+#: _save_sw_sector_snapshot 默认拒绝落库，只打印一次提示
+_SW_SNAPSHOT_WRITE_DISABLED_LOGGED = False
 
 
 # ---------------------------------------------------------------------------
@@ -1403,6 +1406,19 @@ def _save_sw_sector_snapshot(sectors: list[dict], trade_date: str | None = None)
     Returns:
         实际写入的行数（失败返回 0）。
     """
+    # ⚠️ 2026-10-19 P0 止血：base_sw_sector_daily 表再次损坏，duckdb native 段错误
+    # （backend 崩溃循环、宏观看板 502；10-15 曾修复过一次，10-19 复发）。
+    # 所有写入口（热力图顺带落库 / 回填 / 定时快照）都收敛到本函数，
+    # 此处一个 env 开关全部切断；表修复后置 SW_SNAPSHOT_WRITE=1 恢复。
+    if os.getenv("SW_SNAPSHOT_WRITE", "0") != "1":
+        global _SW_SNAPSHOT_WRITE_DISABLED_LOGGED
+        if not _SW_SNAPSHOT_WRITE_DISABLED_LOGGED:
+            _SW_SNAPSHOT_WRITE_DISABLED_LOGGED = True
+            print(
+                "[SW Snapshot] 落库已禁用（SW_SNAPSHOT_WRITE!=1，P0 segfault 止血，2026-10-19）；"
+                "表修复后置 SW_SNAPSHOT_WRITE=1 恢复"
+            )
+        return 0
     if not sectors:
         return 0
     try:

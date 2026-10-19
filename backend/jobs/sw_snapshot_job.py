@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from datetime import date, datetime
@@ -122,6 +123,14 @@ def start_sw_snapshot_scheduler() -> None:
 
     if USE_MOCK_DATA:
         print("[SW Job] MOCK 模式，不启动快照定时任务")
+        return
+
+    # ⚠️ 2026-10-19 P0 止血：base_sw_sector_daily 表再次损坏，15:30 快照 job 触发
+    # duckdb native 段错误（backend 崩溃循环、看板 502；10-15 修复过一次，10-19 复发）。
+    # 表修复后置 SW_SNAPSHOT_JOB=1 恢复定时任务（落库开关见 market_service
+    # _save_sw_sector_snapshot 的 SW_SNAPSHOT_WRITE）。
+    if os.getenv("SW_SNAPSHOT_JOB", "0") != "1":
+        print("[SW Job] SW_SNAPSHOT_JOB!=1，快照定时任务不启动（P0 segfault 止血，2026-10-19）")
         return
 
     try:
