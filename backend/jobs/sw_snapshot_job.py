@@ -43,6 +43,7 @@ _backfill_running = False
 #    这里保留原函数名做薄封装，全文其余调用点无需改动（行为完全一致）。
 from services.trading_calendar import is_trading_day as _is_trading_day  # noqa: E402
 from services.trading_calendar import load_trading_days as _load_trading_days  # noqa: E402
+from services import trading_calendar as _trading_calendar  # noqa: E402  （_trading_days 缓存探针）
 
 
 def _job_daily_snapshot() -> None:
@@ -204,5 +205,5 @@ def scheduler_status() -> dict:
         "running": _scheduler is not None and _scheduler.running,
         "snapshotTime": f"{SNAPSHOT_HOUR:02d}:{SNAPSHOT_MINUTE:02d}",
         "backfillRunning": _backfill_running,
-        "tradingCalendarLoaded": _trading_days is not None,
+        "tradingCalendarLoaded": _trading_calendar._trading_days is not None,
     }

@@ -16,10 +16,11 @@ services:
       - DINGTALK_WEBHOOK_URL=${DINGTALK_WEBHOOK_URL:-}
       # 段错误时打印 Python native 栈（2026-10-19 加：定位 duckdb segfault）
       - PYTHONFAULTHANDLER=1
-      # P0 止血（2026-10-19）：base_sw_sector_daily 表损坏致 duckdb native 段错误，
-      # SW 快照写入/定时任务默认关闭；表修复后将两个值改 1 并重新部署即恢复
-      - SW_SNAPSHOT_WRITE=0
-      - SW_SNAPSHOT_JOB=0
+      # P0 止血（2026-10-19）：base_sw_sector_daily 表损坏致 duckdb native 段错误。
+      # 2026-10-19 已修复（副本隔离验证坐实损坏 → DROP 重建 + 03:30 备份灌回 8058 行），
+      # 两个开关恢复为 1；若再次段错误，改回 0 止血
+      - SW_SNAPSHOT_WRITE=1
+      - SW_SNAPSHOT_JOB=1
     volumes:
       - doraemon_data:/data
     restart: unless-stopped
