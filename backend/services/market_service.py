@@ -892,9 +892,10 @@ _MACRO_TTL_INCOMPLETE = 60
 #   （两次连测20.07s / 20.02s，确认是真在重拉而非偶发），而该接口被
 #   **Dashboard.vue（首页）** 使用 → 每次打开首页都要干等 20 秒。
 #   原因是它每次都打 2 个上游（index_realtime_sw + sw_index_first_info）且**无缓存**。
-#   行业数据日内变化有限，缓存 10 分钟足够；「刷新」按钮仍走 force=True 穿透。
+#   行业数据日内变化有限，缓存 3 分钟足够（原 10min 对盘中涨跌幅偏旧，
+#   2026-10-19 调短）；「刷新」按钮仍走 force=True 穿透。
 _SW_SECTORS_CACHE: dict = {"data": None, "ts": 0.0, "lock": threading.Lock(), "fail": False}
-_SW_SECTORS_TTL = 600
+_SW_SECTORS_TTL = 180
 #: 上游拿不到时的短缓存（秒）—— 失败不该被缓存 10 分钟，但也不该让首页每次白等
 _SW_SECTORS_TTL_FAIL = 30
 
@@ -2085,8 +2086,9 @@ def _market_by_code_or_name(item: dict) -> str:
 # processed_data(index_valuation)，原先无缓存无去重 → 一次 Dashboard 加载
 # 双打，且用户点「刷新」立即重打全套上游。此处在 _processed_data_request
 # 之上包一层：
-# - TTL 30s：日内行情 30s 新鲜度足够（sw-sectors 已 10min、macro 1h），
-#   同页双打与 30s 内的重复刷新全部命中缓存；
+# - TTL 10s：网关侧已把实时字段（行情/PE）拆出来每次请求强制刷新（2026-10-19），
+#   本地只保留 10s 吸收同刻并发（/market/indices 与 /market/overview 双打），
+#   不再压实时性；「刷新」走 force=True 穿透；
 # - singleflight：未命中时只放一个请求在途，其余并发请求等它落地后读缓存，
 #   避免冷启动瞬间多线程同时打网关；
 # - 失败不写缓存（无负缓存），下次请求立即重试，故障恢复无延迟。
@@ -2096,7 +2098,7 @@ def _market_by_code_or_name(item: dict) -> str:
 #   （冷首调要遍历 12 个指数的 baostock/中证/腾讯/新浪/国证源，实测可到 ~50-120s），
 #   doraemon 原先 timeout=15 会在网关即将成功前主动断开 → overview 长期显示
 #   「网关无数据」。调到 130s：网关 120s 内算完就能拿到数据；真 504 也只多等 10s。
-_INDEX_VAL_TTL = 30
+_INDEX_VAL_TTL = 10
 _INDEX_VAL_CACHE: dict[str, Any] = {"data": None, "ts": 0.0}
 _INDEX_VAL_LOCK = threading.Lock()
 _INDEX_VAL_INFLIGHT: threading.Event | None = None
@@ -2104,7 +2106,7 @@ _INDEX_VAL_TIMEOUT = 130  # > 网关 120s 执行上限，慢而成功的调用�
 
 
 def _fetch_index_valuation_raw(force: bool = False) -> list | None:
-    """index_valuation 原始上游数据（30s TTL + singleflight）。
+    """index_valuation 原始上游数据（10s TTL + singleflight）。
 
     force=True 穿透缓存与在途等待，直接打上游（预留手动刷新用）。
     """

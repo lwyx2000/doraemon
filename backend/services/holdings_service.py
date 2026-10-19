@@ -38,7 +38,7 @@ HOLDING_TYPES: dict[str, str] = {
 
 # 行情缓存：{ "ts": float, "quotes": { code: {"price": x, "prev_close": y} } }
 _QUOTE_CACHE: dict[str, Any] = {"ts": 0.0, "quotes": {}}
-_QUOTE_TTL = 60  # 秒
+_QUOTE_TTL = 30  # 秒（2026-10-19 从 60s 调短：对齐前端 30s 轮询，报价类实时数据不再被缓存双倍压旧）
 
 # mock 模式内存存储
 _mock_holdings: dict[str, list[dict]] = {}
