@@ -1768,12 +1768,15 @@ def get_sw_sector_relative_strength(days: int = 5) -> list[dict]:
         latest_date = latest[0]
 
         # 取最近 days+1 个交易日的数据（用于计算 N 日涨跌幅）
-        # 注意：DISTINCT+ORDER BY+LIMIT 在 DuckDB 1.5.x 会漏行，必须用 GROUP BY 写法
+        # 注意：DISTINCT+ORDER BY+LIMIT 在 DuckDB 1.5.x 会漏行，必须用 GROUP BY 写法；
+        # 也不要用 >= (子查询)（1.5.x 按标量子查询处理，多行报 InvalidInputException，
+        # 且被 except 静默吞掉返回空——2026-10-19 修复 relative-strength 潜伏空数据 bug），
+        # 用 IN + GROUP BY（与 get_sw_sector_rank_trend 同款模式，日期不足时优雅降级）
         rows = db.fetchall(
             """
             SELECT sector_code, sector_name, trade_date, change_pct, price, pe, pb, dividend_yield
             FROM base_sw_sector_daily
-            WHERE trade_date >= (
+            WHERE trade_date IN (
                 SELECT trade_date FROM base_sw_sector_daily
                 GROUP BY trade_date ORDER BY trade_date DESC LIMIT ?
             )
@@ -1824,7 +1827,9 @@ def get_sw_sector_relative_strength(days: int = 5) -> list[dict]:
         # 按相对强度降序
         result.sort(key=lambda x: x.get("relative_strength") or -999, reverse=True)
         return result
-    except Exception:
+    except Exception as e:
+        # 不吞真实报错：打印后返回空（与相邻快照函数风格一致）
+        print(f"[market_service] get_sw_sector_relative_strength error: {e}")
         return []
 
 
