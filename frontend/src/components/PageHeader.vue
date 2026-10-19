@@ -8,6 +8,7 @@ import { ref, computed } from 'vue'
 import { NIcon, NModal, NButton } from 'naive-ui'
 import { HelpCircleOutline, BulbOutline, AnalyticsOutline, TimeOutline } from '@vicons/ionicons5'
 import { pageHelpContent } from '../composables/helpContent'
+import { formatBackendTime } from '../utils/time'
 
 const props = defineProps<{
   title: string
@@ -28,11 +29,10 @@ const helpData = computed(() => {
 })
 
 // 时间 chip 文案：有数据日期时以数据日期为主，附取数时间
+// 注意：后端 meta.updateTime 是容器 UTC 的 naive 串，直接 new Date 会按本地
+// 解析少 8 小时 —— 统一走 formatBackendTime（按 UTC 解析后转本地展示）
 function fmtTime(iso: string): string {
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return ''
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  return formatBackendTime(iso)
 }
 
 const timeChipText = computed(() => {

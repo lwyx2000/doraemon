@@ -3,6 +3,7 @@ import { ref, computed, watch } from 'vue'
 import { NModal, NSpin, NEmpty, NText, NSelect } from 'naive-ui'
 import type { SwSector, SwSectorHistoryItem, SwSectorValuationItem, SwSectorStrength } from '../types'
 import { api } from '../utils/api'
+import { formatBackendTime } from '../utils/time'
 import BaseChart from './BaseChart.vue'
 
 const props = withDefaults(defineProps<{
@@ -11,13 +12,12 @@ const props = withDefaults(defineProps<{
   updatedAt?: string | null
 }>(), { title: 'A股行业热力图（申万一级）', updatedAt: null })
 
-// 数据更新时间（仅到分钟，秒级无意义；网关取数本身有 10 分钟缓存）
+// 数据更新时间（仅到分钟，秒级无意义；后端 sw-sectors 进程内缓存 3 分钟，
+// 失败态 30 秒；「刷新」按钮走 force=True 穿透）
+// 注意：后端 meta.updateTime 是容器 UTC 的 naive 串，须按 UTC 解析转本地，
+// 直接 new Date 会按本地时间解析导致显示少 8 小时（2026-10-19 修复）
 function fmtUpdatedAt(): string {
-  if (!props.updatedAt) return ''
-  const d = new Date(props.updatedAt)
-  if (Number.isNaN(d.getTime())) return ''
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  return formatBackendTime(props.updatedAt)
 }
 
 // 按涨跌幅降序：领涨行业排在最前（无涨跌幅的排最后）
@@ -39,9 +39,12 @@ function textColor(chg: number | null): string {
   return Math.abs(v) > 0.5 ? '#ffffff' : 'var(--text-primary)'
 }
 
+// 防御性格式化：后端理论上应返回 number，但 DuckDB DECIMAL 曾被序列化成字符串，
+// 直接 toFixed 会 TypeError（2026-10-19 修复）。这里统一 Number() 兜底。
 function fmt(n: number | null, d = 2): string {
   if (n == null) return '--'
-  return n.toFixed(d)
+  const v = Number(n)
+  return Number.isFinite(v) ? v.toFixed(d) : '--'
 }
 
 // 涨跌幅缺失时的副标题：展示 PE 估值兜底信息（网关实时接口降级时至少可读）

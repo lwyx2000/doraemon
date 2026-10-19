@@ -1795,16 +1795,23 @@ def get_sw_sector_relative_strength(days: int = 5) -> list[dict]:
             grouped[r[0]].append(r)
 
         result = []
+        # DuckDB 1.5.x 的 DECIMAL 列经 Python 客户端返回 decimal.Decimal，
+        # 且 round(Decimal, 2) 仍是 Decimal；直接塞进响应会被序列化成字符串，
+        # 违反前端 number 契约（toFixed 崩溃，2026-10-19 修复）。
+        # 与 get_sw_sector_history 保持同一显式 float() 转换模式。
+        def _num(v):
+            return float(v) if v is not None else None
+
         for sector_code, records in grouped.items():
             if len(records) < 2:
                 continue
             # 当日（最后一条）涨跌幅
-            today_change = records[-1][3] if records[-1][3] is not None else None
+            today_change = _num(records[-1][3])
             # 近 N 日累计涨跌幅（第一条到最后一条的 price 变化）
-            first_price = records[0][4]
-            last_price = records[-1][4]
+            first_price = _num(records[0][4])
+            last_price = _num(records[-1][4])
             cum_change = None
-            if first_price and last_price and first_price > 0:
+            if first_price is not None and last_price is not None and first_price > 0:
                 cum_change = round((last_price - first_price) / first_price * 100, 2)
 
             # 相对强度
@@ -1818,14 +1825,17 @@ def get_sw_sector_relative_strength(days: int = 5) -> list[dict]:
                 "today_change_pct": today_change,
                 "cum_change_pct": cum_change,
                 "relative_strength": rel_strength,
-                "pe": records[-1][5] if records[-1][5] else None,
-                "pb": records[-1][6] if records[-1][6] else None,
-                "dividend_yield": records[-1][7] if records[-1][7] else None,
+                "pe": _num(records[-1][5]),
+                "pb": _num(records[-1][6]),
+                "dividend_yield": _num(records[-1][7]),
                 "latest_date": str(records[-1][2]),
             })
 
-        # 按相对强度降序
-        result.sort(key=lambda x: x.get("relative_strength") or -999, reverse=True)
+        # 按相对强度降序（注意 0.0 是 falsy，不能用 `or -999`，会把 0 排到最后）
+        result.sort(
+            key=lambda x: x["relative_strength"] if x["relative_strength"] is not None else -999,
+            reverse=True,
+        )
         return result
     except Exception as e:
         # 不吞真实报错：打印后返回空（与相邻快照函数风格一致）
