@@ -116,11 +116,16 @@ async def lifespan(app: FastAPI):
                 from services.market_service import (
                     _fetch_index_valuation_raw,
                     get_market_stats_real,
+                    get_market_overview_with_meta,
                 )
 
                 print("[Startup] 预热市场概况上游(index_valuation / market_stats)...")
                 _fetch_index_valuation_raw(force=True)
                 get_market_stats_real()
+                # overview 整体预热（2026-10-19）：填充 overview 进程内缓存，
+                # 并顺带把指数补录负缓存跑热（北证50 网关固定 15s 后 500，
+                # 不预热则重启后第一个点刷新/首次冷路径的用户要白等 15s+）
+                get_market_overview_with_meta(force=True)
                 print("[Startup] 市场概况上游预热完成")
             except Exception as e:
                 print(f"[Startup] 市场概况上游预热失败(忽略, 不影响启动): {e!r}")
