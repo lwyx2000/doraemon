@@ -1,7 +1,7 @@
 <script setup lang="ts">
 defineOptions({ name: 'IndexValuation' })
 import { ref, computed, watch, onMounted } from 'vue'
-import { NDataTable, NTag, NSpin, NEmpty, NModal, NButton, NAlert, NTabs, NTabPane, useMessage } from 'naive-ui'
+import { NDataTable, NTag, NSpin, NEmpty, NModal, NButton, NAlert, NTabs, NTabPane, NTooltip, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { api } from '../utils/api'
 import type { BroadIndexValuation, IndustryValuation, SectionSourceMeta, SpreadHistoryPoint } from '../types'
@@ -88,6 +88,19 @@ function percentileLabel(pct: number | null): string {
   return '过热'
 }
 
+// ==================== 分位序列口径（tooltip 展示参照系） ====================
+// 不同指数的 PB/PE 历史起点不一（如创业板50 自 2015 起、上证红利自 2007 起），
+// 「全史分位」横向不可直接比较；把序列起止与样本数挂到 tooltip，读数自带上下文。
+function seriesScope(row: BroadIndexValuation, kind: 'pb' | 'pe' | 'spread'): string {
+  const hist = kind === 'pb' ? row.pb_history : kind === 'pe' ? row.pe_history : row.spread_history
+  const valid = (hist ?? []).filter((p: any) => {
+    const v = kind === 'pb' ? p.pb : kind === 'pe' ? p.pe_ttm : p.spread
+    return v != null
+  })
+  if (valid.length < 2) return '有效样本不足'
+  return `${valid[0].date.slice(0, 7)} ~ ${valid[valid.length - 1].date.slice(0, 7)}（${valid.length} 个月）`
+}
+
 // ==================== ERP 稳健 Z-score 配色（MAD，最近10年滚动窗口） ====================
 // Z_MAD > 1.5 → 低估(便宜/green)；Z_MAD < -1.5 → 高估(贵/red)；之间 → 中性
 function zscoreColor(zc: string | null): 'default' | 'success' | 'warning' | 'error' {
@@ -158,30 +171,45 @@ const columns: DataTableColumns<BroadIndexValuation> = [
     key: 'valuation_percentile',
     width: 140,
     align: 'center',
-    render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
-      h(PercentileIndicator, { value: row.valuation_percentile, width: 60 }),
-      h(NTag, { color: pctColorStyle(row.valuation_percentile), size: 'small', bordered: false }, () => percentileLabel(row.valuation_percentile)),
-    ]),
+    render: (row) => h(NTooltip, { trigger: 'hover' }, {
+      trigger: () => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
+        h(PercentileIndicator, { value: row.valuation_percentile, width: 60 }),
+        h(NTag, { color: pctColorStyle(row.valuation_percentile), size: 'small', bordered: false }, () => percentileLabel(row.valuation_percentile)),
+      ]),
+      default: () => row.insufficient_history
+        ? `历史样本仅 ${row.history_samples ?? 0} 个月（不足 24 个月），为保证统计意义未计算分位`
+        : `基于股债利差月度序列 ${seriesScope(row, 'spread')}\n当前 10Y 国债 ${row.yield_10y?.toFixed(2) ?? '—'}%，处历史低位——会机械抬高利差、压低本分位，「便宜」部分来自债券端`,
+    }),
   },
   {
     title: 'PE分位',
     key: 'pe_percentile',
     width: 140,
     align: 'center',
-    render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
-      h(PercentileIndicator, { value: row.pe_percentile, width: 60 }),
-      h(NTag, { color: pctColorStyle(row.pe_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pe_percentile)),
-    ]),
+    render: (row) => h(NTooltip, { trigger: 'hover' }, {
+      trigger: () => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
+        h(PercentileIndicator, { value: row.pe_percentile, width: 60 }),
+        h(NTag, { color: pctColorStyle(row.pe_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pe_percentile)),
+      ]),
+      default: () => row.insufficient_history
+        ? `历史样本仅 ${row.history_samples ?? 0} 个月（不足 24 个月），为保证统计意义未计算分位`
+        : `基于 PE(TTM) 月度序列 ${seriesScope(row, 'pe')}，全史升序百分位（高=贵）\n注意：盈利下行期 PE 会被动抬高分位，与 PB 分位背离时以 PB/利差口径交叉验证`,
+    }),
   },
   {
     title: 'PB分位',
     key: 'pb_percentile',
     width: 140,
     align: 'center',
-    render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
-      h(PercentileIndicator, { value: row.pb_percentile, width: 60 }),
-      h(NTag, { color: pctColorStyle(row.pb_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pb_percentile)),
-    ]),
+    render: (row) => h(NTooltip, { trigger: 'hover' }, {
+      trigger: () => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
+        h(PercentileIndicator, { value: row.pb_percentile, width: 60 }),
+        h(NTag, { color: pctColorStyle(row.pb_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pb_percentile)),
+      ]),
+      default: () => row.insufficient_history
+        ? `历史样本仅 ${row.history_samples ?? 0} 个月（不足 24 个月），为保证统计意义未计算分位`
+        : `基于 PB 月度序列 ${seriesScope(row, 'pb')}，全史升序百分位（高=贵）\nPB 便宜 + ROE 中枢下移时，警惕价值陷阱——参考 ROE均值(5Y) 列交叉判断`,
+    }),
   },
   {
     title: '拥挤度',
@@ -1040,7 +1068,12 @@ const macroParams = computed(() => {
             股债利差 = ROE均值(近5年) ÷ PB − 10年期国债收益率 + 0.3 × CPI同比<br>
             估值分位 = 100 − 利差在历史中的升序百分位（越小=越便宜）<br>
             拥挤度 = (指数PB ÷ 中证全指PB) 在历史中的百分位（越小=相对越便宜）<br>
-            ERP Z分数 = (当前利差 − 近10年中位数) ÷ (MAD × 1.4826)，&gt;1.5 低估 / &lt;−1.5 高估（MAD 稳健，抗极端值）
+            ERP Z分数 = (当前利差 − 近10年中位数) ÷ (MAD × 1.4826)，&gt;1.5 低估 / &lt;−1.5 高估（MAD 稳健，抗极端值）<br>
+            <span style="color: #f59e0b;">
+              口径提示：①各指数历史序列起点不一（表格内悬停查看起止与样本数），「全史分位」横向不可直接比较；<br>
+              ②10Y 国债收益率处历史低位时，会机械抬高利差、压低估值分位——读数偏低部分来自债券端而非股票变便宜；<br>
+              ③盈利下行期 PE 分位会被动抬高，PB 便宜 + ROE 中枢下移时警惕价值陷阱。
+            </span>
           </n-text>
         </div>
       </div>
