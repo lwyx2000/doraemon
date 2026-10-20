@@ -22,13 +22,6 @@ export const glossaryByPage: Record<string, GlossaryItem[]> = {
     { abbr: 'PE', full: 'Price to Earnings Ratio', cn: '市盈率，股价/每股收益，衡量估值高低' },
     { abbr: 'PB', full: 'Price to Book Ratio', cn: '市净率，股价/每股净资产，适合重资产行业' },
   ],
-  indexAnalysis: [
-    { abbr: 'PE', full: 'Price to Earnings Ratio', cn: '市盈率，股价/每股收益，衡量估值高低' },
-    { abbr: 'PB', full: 'Price to Book Ratio', cn: '市净率，股价/每股净资产，适合重资产行业' },
-    { abbr: 'ERP', full: 'Equity Risk Premium', cn: '股权风险溢价，股票收益率减无风险利率' },
-    { abbr: 'DR007', full: 'Depository Institutions 7-Day Repo Rate', cn: '银行间7天质押式回购利率' },
-    { abbr: 'TTM', full: 'Trailing Twelve Months', cn: '滚动十二个月，指最近4个季度的财务数据' },
-  ],
   indexValuation: [
     { abbr: 'PE', full: 'Price to Earnings Ratio', cn: '市盈率，股价/每股收益，衡量估值高低（越高越贵）' },
     { abbr: 'PB', full: 'Price to Book Ratio', cn: '市净率，股价/每股净资产，重资产行业更看 PB' },

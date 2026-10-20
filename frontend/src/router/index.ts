@@ -13,10 +13,9 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '大类资产配置看板', icon: 'dashboard' },
   },
   {
+    // 指数分析页已合并进宽基估值分位（2026-10-20）：旧书签/外链 301 到新页，避免 404
     path: '/index-analysis',
-    name: 'IndexAnalysis',
-    component: () => import('../pages/IndexAnalysis.vue'),
-    meta: { title: '指数估值分析', icon: 'analytics' },
+    redirect: '/index-valuation',
   },
   {
     path: '/index-valuation',

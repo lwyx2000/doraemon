@@ -384,18 +384,150 @@ const bandStats = computed(() => {
   }
 })
 
+// ============================================================
+// 滚动布林通道（自指数分析页合并，2026-10-20）——借鉴公众号「股债利差布林择时」的可视化形态：
+// 月频序列按 N 个自然月滚动窗口算均值/标准差 → 中轨 / 上轨(+2σ) / 下轨(−2σ)。
+// 与静态分位线互补：分位线看"历史分布排位"，布林带看"离近期常态波动区间边界多远"。
+// 纯前端计算，不改动任何口径；窗口以自然月回找，不受降采样步长影响。
+// 口径与主时间窗口解耦：通道基于全量历史序列计算，主窗口只决定 x 轴显示范围。
+// ============================================================
+const BOLL_WINDOW_OPTIONS = [36, 60] as const // 布林滚动窗口（月）：36=3Y 口径 / 60=5Y 口径
+const bollWindow = ref(60) // 默认 5Y（更长窗口更平滑）
+const BOLL_MIN_SAMPLES = 25 // 窗口样本不足则断开（该点不出通道），宁缺勿假
+
+function shiftMonths(dateStr: string, months: number): string {
+  const d = new Date(dateStr)
+  d.setMonth(d.getMonth() + months)
+  return d.toISOString().slice(0, 10)
+}
+
+function bollingerAt(pts: SpreadHistoryPoint[], i: number): { mid: number; upper: number; lower: number } | null {
+  const cutoff = shiftMonths(pts[i].date, -bollWindow.value)
+  // 月频升序序列：线性回找窗口起点（序列 ≤ 数百点，无需二分）
+  let lo = 0
+  while (lo < i && pts[lo].date < cutoff) lo++
+  const win = pts.slice(lo, i + 1).map(p => p.spread)
+  if (win.length < BOLL_MIN_SAMPLES) return null
+  const mean = win.reduce((s, v) => s + v, 0) / win.length
+  const variance = win.reduce((s, v) => s + (v - mean) ** 2, 0) / win.length
+  const sd = Math.sqrt(variance)
+  return { mid: mean, upper: mean + 2 * sd, lower: mean - 2 * sd }
+}
+
+// 通道三线（与主折线共用同一 category 轴）：先在**全量**序列上逐点算通道，再按 date 映射回
+// 当前窗口的 sampled 点——主窗口截断不影响带的完整性（1Y/3Y 短窗口同样全图有带）
+const bollinger = computed(() => {
+  const full = spreadHist.value
+  const pts = windowedHist.value
+  if (!pts.length || full.length < BOLL_MIN_SAMPLES) return null
+  const stepFull = Math.max(1, Math.floor(full.length / 200))
+  const fullBands = new Map<string, { mid: number; upper: number; lower: number }>()
+  for (let i = 0; i < full.length; i++) {
+    if (i % stepFull !== 0 && i !== full.length - 1) continue
+    const b = bollingerAt(full, i)
+    if (b) fullBands.set(full[i].date, b)
+  }
+  const step = Math.max(1, Math.floor(pts.length / 200))
+  const bands: ({ mid: number; upper: number; lower: number } | null)[] = []
+  for (let i = 0; i < pts.length; i++) {
+    if (i % step !== 0 && i !== pts.length - 1) continue
+    bands.push(fullBands.get(pts[i].date) ?? null)
+  }
+  return bands.some(b => b !== null) ? bands : null
+})
+
+// 沪深300 ERP 历史大顶/大底事件竖线（时间标注；事件点位为历史统计参考，与当前口径数值不混标）
+const ERP_EVENTS: { date: string; label: string }[] = [
+  { date: '2007-10-01', label: '2007 顶' },
+  { date: '2013-06-01', label: '2013 底' },
+  { date: '2015-06-01', label: '2015 顶' },
+  { date: '2021-02-01', label: '2021 顶' },
+]
+
 // 股债利差估值带：历史序列 + 90/70/50/10 分位线（月频降采样 ≤200 点）
+// + 布林通道三轨 + 沪深300 ERP 历史事件竖线（自指数分析页合并）
 const spreadBandOption = computed(() => {
   const stats = bandStats.value
   const pts = windowedHist.value
   if (!stats || pts.length < 2) return {}
   const step = Math.max(1, Math.floor(pts.length / 200))
   const sampled = pts.filter((_, i) => i % step === 0 || i === pts.length - 1)
+  const bands = bollinger.value
+  const series: any[] = []
+  if (bands) {
+    // 通道带用 stack 双线法：上轨透明占位 + 下轨以 delta 绘制，填充区即 上轨~下轨 之间
+    series.push({
+      name: '上轨', type: 'line', showSymbol: false, silent: true, stack: 'boll', smooth: false,
+      data: bands.map(b => (b ? +b.upper.toFixed(3) : null)),
+      lineStyle: { opacity: 0 }, areaStyle: { opacity: 0 }, tooltip: { show: false },
+    })
+    series.push({
+      name: '下轨', type: 'line', showSymbol: false, silent: true, stack: 'boll', smooth: false,
+      data: bands.map(b => (b ? +(b.lower - b.upper).toFixed(3) : null)),
+      lineStyle: { width: 1, type: 'dashed', color: 'rgba(100,116,139,0.55)' },
+      areaStyle: { color: 'rgba(100,116,139,0.14)' },
+      tooltip: { show: false },
+    })
+    series.push({
+      name: '中轨', type: 'line', showSymbol: false, silent: true, smooth: false,
+      data: bands.map(b => (b ? +b.mid.toFixed(3) : null)),
+      lineStyle: { width: 1, color: 'rgba(0,94,161,0.35)' },
+      tooltip: { show: false },
+    })
+  }
+  series.push({
+    name: '股债利差',
+    type: 'line',
+    smooth: false,
+    showSymbol: false,
+    data: sampled.map(p => p.spread),
+    lineStyle: { width: 2, color: '#005ea1' },
+    itemStyle: { color: '#005ea1' },
+    areaStyle: {
+      opacity: 0.1,
+      color: {
+        type: 'linear',
+        x: 0, y: 0, x2: 0, y2: 1,
+        colorStops: [
+          { offset: 0, color: 'rgba(0, 94, 161, 0.35)' },
+          { offset: 1, color: 'rgba(0, 94, 161, 0)' },
+        ],
+      },
+    },
+    markLine: {
+      symbol: 'none',
+      silent: true,
+      lineStyle: { type: 'dashed', width: 1 },
+      data: [
+        { yAxis: stats.p90, lineStyle: { color: 'rgba(220,38,38,0.5)' }, label: { formatter: '90%', position: 'end', fontSize: 9, color: '#dc2626' } },
+        { yAxis: stats.p70, lineStyle: { color: 'rgba(249,115,22,0.5)' }, label: { formatter: '70%', position: 'end', fontSize: 9, color: '#f97316' } },
+        { yAxis: stats.p50, lineStyle: { color: 'rgba(107,114,128,0.5)' }, label: { formatter: '50%', position: 'end', fontSize: 9, color: '#6b7280' } },
+        { yAxis: stats.p10, lineStyle: { color: 'rgba(59,130,246,0.5)' }, label: { formatter: '10%', position: 'end', fontSize: 9, color: '#3b82f6' } },
+        // 沪深300 ERP 历史大顶/大底事件竖线（仅沪深300：事件统计基于该指数；落点取当月首个采样点）
+        ...(selectedItem.value?.name === '沪深300'
+          ? ERP_EVENTS.map(e => {
+              // 事件日期须落在当前窗口数据范围内：数据始于 2011-09（2007 顶无落点），
+              // 早于窗口起点的事件不画——否则 find 会错误塌到窗口首点，多条竖线重叠、标签堆叠
+              if (e.date < pts[0].date) return null
+              const hit = sampled.find(p => p.date >= e.date)
+              return hit
+                ? {
+                    xAxis: hit.date,
+                    lineStyle: { color: 'rgba(139,92,246,0.6)', width: 1 },
+                    label: { show: true, formatter: e.label, position: 'start', fontSize: 9, color: '#8b5cf6', distance: 2 },
+                  }
+                : null
+            }).filter(Boolean)
+          : []),
+      ],
+    },
+  })
   return {
     tooltip: {
       trigger: 'axis',
       formatter: (params: any) => {
-        const p = params[0]
+        // 通道三线 silent + tooltip.show=false，仅主利差线进入提示
+        const p = (params as any[]).find(x => x.seriesName === '股债利差') ?? params[0]
         return `${p.axisValue}<br/>股债利差: <b>${p.value}%</b>`
       },
     },
@@ -415,38 +547,7 @@ const spreadBandOption = computed(() => {
       axisLabel: { fontSize: 10, color: '#717782', formatter: '{value}%' },
       splitLine: { lineStyle: { type: 'dashed', color: 'rgba(0,0,0,0.06)' } },
     },
-    series: [
-      {
-        type: 'line',
-        smooth: false,
-        showSymbol: false,
-        data: sampled.map(p => p.spread),
-        lineStyle: { width: 2, color: '#005ea1' },
-        itemStyle: { color: '#005ea1' },
-        areaStyle: {
-          opacity: 0.1,
-          color: {
-            type: 'linear',
-            x: 0, y: 0, x2: 0, y2: 1,
-            colorStops: [
-              { offset: 0, color: 'rgba(0, 94, 161, 0.35)' },
-              { offset: 1, color: 'rgba(0, 94, 161, 0)' },
-            ],
-          },
-        },
-        markLine: {
-          symbol: 'none',
-          silent: true,
-          lineStyle: { type: 'dashed', width: 1 },
-          data: [
-            { yAxis: stats.p90, lineStyle: { color: 'rgba(220,38,38,0.5)' }, label: { formatter: '90%', position: 'end', fontSize: 9, color: '#dc2626' } },
-            { yAxis: stats.p70, lineStyle: { color: 'rgba(249,115,22,0.5)' }, label: { formatter: '70%', position: 'end', fontSize: 9, color: '#f97316' } },
-            { yAxis: stats.p50, lineStyle: { color: 'rgba(107,114,128,0.5)' }, label: { formatter: '50%', position: 'end', fontSize: 9, color: '#6b7280' } },
-            { yAxis: stats.p10, lineStyle: { color: 'rgba(59,130,246,0.5)' }, label: { formatter: '10%', position: 'end', fontSize: 9, color: '#3b82f6' } },
-          ],
-        },
-      },
-    ],
+    series,
   }
 })
 
@@ -853,6 +954,11 @@ const macroParams = computed(() => {
               <div class="legend-item"><span class="legend-line dashed-orange" />70% 分位</div>
               <div class="legend-item"><span class="legend-line dashed-gray" />50% 分位</div>
               <div class="legend-item"><span class="legend-line dashed-blue" />10% 分位</div>
+              <div v-if="bollinger" class="legend-item"><span class="legend-line band" />布林通道({{ bollWindow === 60 ? '5Y' : '3Y' }}±2σ)</div>
+              <div v-if="bollinger" class="boll-toggle">
+                <span class="boll-toggle-label">布林窗口</span>
+                <button v-for="w in BOLL_WINDOW_OPTIONS" :key="w" type="button" class="boll-btn" :class="{ active: bollWindow === w }" @click="bollWindow = w">{{ w === 60 ? '5Y' : '3Y' }}</button>
+              </div>
             </div>
             <BaseChart :option="spreadBandOption" :height="260" />
             <div class="analysis-summary">
@@ -1186,6 +1292,35 @@ const macroParams = computed(() => {
 .legend-line.dashed-orange { border-top: 1px dashed rgba(249,115,22,0.6); height: 0; }
 .legend-line.dashed-gray { border-top: 1px dashed rgba(107,114,128,0.6); height: 0; }
 .legend-line.dashed-blue { border-top: 1px dashed rgba(59,130,246,0.6); height: 0; }
+.legend-line.band {
+  height: 7px;
+  background: rgba(100,116,139,0.14);
+  border-top: 1px dashed rgba(100,116,139,0.55);
+  border-bottom: 1px dashed rgba(100,116,139,0.55);
+}
+.boll-toggle {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.boll-toggle-label { font-size: 10px; color: #717782; }
+.boll-btn {
+  font-size: 10px;
+  line-height: 1.6;
+  padding: 0 8px;
+  border: 1px solid #d3d7e0;
+  border-radius: 4px;
+  background: transparent;
+  color: #717782;
+  cursor: pointer;
+}
+.boll-btn:hover { border-color: #005ea1; color: #005ea1; }
+.boll-btn.active {
+  background: #005ea1;
+  border-color: #005ea1;
+  color: #fff;
+}
 
 /* 估值评估摘要 */
 .analysis-summary {
