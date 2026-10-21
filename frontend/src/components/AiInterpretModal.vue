@@ -125,7 +125,9 @@ function goConfig() {
       <span v-if="meta.context?.generated_at">数据时间 {{ String(meta.context.generated_at).replace('T', ' ').slice(0, 19) }} UTC</span>
       <span v-if="meta.docs?.length" class="ai-meta-docs">
         引用口径：
-        <b v-for="d in meta.docs" :key="d.id ?? d.title" class="ai-meta-doc">{{ d.title }}</b>
+        <b v-for="d in meta.docs" :key="d.id ?? d.title" class="ai-meta-doc">
+          {{ d.title }}<span v-if="d.source === 'import'" class="ai-meta-doc-import">导入</span>
+        </b>
       </span>
     </div>
 
@@ -169,6 +171,10 @@ function goConfig() {
 .ai-meta-doc {
   font-weight: 600; color: var(--color-primary);
   background: var(--bg-hover); border-radius: 999px; padding: 1px 8px;
+}
+.ai-meta-doc-import {
+  font-size: 10px; font-weight: 400; margin-left: 4px;
+  color: var(--text-muted);
 }
 .ai-loading {
   display: flex; align-items: center; gap: 10px;

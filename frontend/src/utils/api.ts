@@ -585,6 +585,23 @@ export const api = {
 
   getKnowledgeDoc: (id: string) => request<KnowledgeDoc>(`/api/v1/ai/knowledge/${id}`),
 
+  importKnowledgeDoc: (data: { title: string; content: string; tags?: string[] }) =>
+    request<KnowledgeDocMeta>('/api/v1/ai/knowledge/import', undefined, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  deleteKnowledgeDoc: (id: string) =>
+    request<{ id: string; deleted: boolean }>(`/api/v1/ai/knowledge/${id}`, undefined, {
+      method: 'DELETE',
+    }),
+
+  toggleKnowledgeDoc: (id: string, enabled: boolean) =>
+    request<KnowledgeDocMeta>(`/api/v1/ai/knowledge/${id}/toggle`, undefined, {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    }),
+
   // ============================================================
   // AI 解读 / 问答（SSE 流式）
   // ============================================================
@@ -947,6 +964,7 @@ import type {
   AiChannelsView,
   KnowledgeIndex,
   KnowledgeDoc,
+  KnowledgeDocMeta,
   AiStreamMeta,
   AiStreamError,
   Holding,

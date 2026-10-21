@@ -256,6 +256,21 @@ BIZ_TABLES = [
         updated_at   TEXT
     )
     """,
+    # 用户导入的知识库文档：与 backend/knowledge/ 内置文档双源合并，
+    # 落 SQLite 持久卷（容器重建不丢），AI 解读/问答按启用态挂载。
+    """
+    CREATE TABLE IF NOT EXISTS biz_knowledge_docs (
+        id          TEXT PRIMARY KEY,
+        fk_user     INTEGER,
+        title       TEXT NOT NULL,
+        content     TEXT NOT NULL,
+        tags        TEXT,
+        enabled     INTEGER DEFAULT 1,
+        char_count  INTEGER DEFAULT 0,
+        created_at  TEXT,
+        updated_at  TEXT
+    )
+    """,
     # 任务注册表：持久化后台任务执行状态，重启后保留（原内存态重启清零的根因）。
     """
     CREATE TABLE IF NOT EXISTS job_registry (

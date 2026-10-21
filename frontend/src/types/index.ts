@@ -567,8 +567,13 @@ export interface KnowledgeDocMeta {
   id: string
   category: string
   title: string
-  file: string
+  file?: string
   tags: string[]
+  /** import=用户导入（SQLite 持久化，可启停/删除）；缺省=内置（随镜像分发，只读） */
+  source?: 'builtin' | 'import'
+  enabled?: boolean
+  char_count?: number
+  updated_at?: string
 }
 
 export interface KnowledgeDoc extends KnowledgeDocMeta {
@@ -587,7 +592,7 @@ export interface AiStreamMeta {
   type: 'meta'
   context_type?: string
   context?: Record<string, unknown> | null
-  docs?: Array<{ id?: string; title?: string; snippet?: string }>
+  docs?: Array<{ id?: string; title?: string; snippet?: string; source?: 'builtin' | 'import' }>
 }
 
 export interface AiStreamError {
