@@ -334,6 +334,10 @@ def chat_complete(
         )
     except requests.RequestException as e:
         raise LlmError(f"LLM 请求失败: {e}") from e
+    # 上游 LLM（OpenAI 兼容渠道）的响应普遍不带 charset，requests 对
+    # text/event-stream 会回退 ISO-8859-1，中文 delta 被 Latin-1 解码成
+    # mojibake（2026-10-21「AI 解读」整页乱码根因）。显式锁定 UTF-8。
+    resp.encoding = "utf-8"
     if resp.status_code != 200:
         raise LlmError(f"LLM 返回 {resp.status_code}: {resp.text[:300]}")
     try:
@@ -369,6 +373,10 @@ def chat_stream(
         )
     except requests.RequestException as e:
         raise LlmError(f"LLM 请求失败: {e}") from e
+    # 同 chat_complete：上游 SSE 不带 charset 时 requests 默认 ISO-8859-1，
+    # 必须显式锁定 UTF-8，否则流式中文字段全乱（iter_lines(decode_unicode=True)
+    # 按 resp.encoding 解码）。
+    resp.encoding = "utf-8"
     if resp.status_code != 200:
         body = resp.text[:300]
         resp.close()
