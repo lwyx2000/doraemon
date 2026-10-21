@@ -40,6 +40,16 @@ function handleSessionExpired(path: string): void {
 }
 
 /**
+ * 重置「会话过期一次性开关」。
+ * 必须在建立新会话时调用（见 useAuth.setAuth）：该开关只置位、永不复位，
+ * 而 Login.vue 登录成功后走 router.push 软导航，JS 模块上下文跨登录保持，
+ * 若不重置，重新登录后的第二次会话过期不会再跳登录页，页面只会裸显错误条。
+ */
+export function resetSessionExpiredFlag(): void {
+  _sessionExpiredHandled = false
+}
+
+/**
  * 发送请求并返回 { data, meta }。
  * meta 为后端 ApiResponse 中的附加信息（如数据来源标记 isMock/dataSource）。
  */

@@ -1,6 +1,6 @@
 // 认证状态管理（模块级单例）
 import { ref, computed } from 'vue'
-import { api } from '../utils/api'
+import { api, resetSessionExpiredFlag } from '../utils/api'
 
 const TOKEN_KEY = 'qt_token'
 const USER_KEY = 'qt_user'
@@ -30,6 +30,9 @@ function setAuth(
   localStorage.setItem(USER_KEY, u)
   localStorage.setItem(IS_ADMIN_KEY, isAdminVal ? '1' : '0')
   localStorage.setItem(FORCE_CHANGE_KEY, forceChangeVal ? '1' : '0')
+  // 新会话建立：重置 api.ts 的 401 一次性开关，保证本次会话再次过期仍能跳登录页
+  // （否则 Login.vue 软导航后开关保持置位，第二次过期只会裸显错误条）
+  resetSessionExpiredFlag()
 }
 
 function logout() {
