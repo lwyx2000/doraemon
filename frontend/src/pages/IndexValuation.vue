@@ -193,7 +193,10 @@ const columns: DataTableColumns<BroadIndexValuation> = [
       ]),
       default: () => row.insufficient_history
         ? `历史样本仅 ${row.history_samples ?? 0} 个月（不足 24 个月），为保证统计意义未计算分位`
-        : `基于 PE(TTM) 月度序列 ${seriesScope(row, 'pe')}，全史升序百分位（高=贵）\n注意：盈利下行期 PE 会被动抬高分位，与 PB 分位背离时以 PB/利差口径交叉验证`,
+        : `基于 PE(TTM) 月度序列 ${seriesScope(row, 'pe')}，全史升序百分位（高=贵）
+聚合口径：亏损股纳入分母（对齐中证官方，负利润摊薄指数利润）
+窗口口径：全史月度；外部源（万得/中证）多用10Y日度，跨源读数可能差10~25pp
+注意：盈利下行期 PE 会被动抬高分位，与 PB 分位背离时以 PB/利差口径交叉验证`,
     }),
   },
   {
@@ -208,7 +211,10 @@ const columns: DataTableColumns<BroadIndexValuation> = [
       ]),
       default: () => row.insufficient_history
         ? `历史样本仅 ${row.history_samples ?? 0} 个月（不足 24 个月），为保证统计意义未计算分位`
-        : `基于 PB 月度序列 ${seriesScope(row, 'pb')}，全史升序百分位（高=贵）\nPB 便宜 + ROE 中枢下移时，警惕价值陷阱——参考 ROE均值(5Y) 列交叉判断`,
+        : `基于 PB 月度序列 ${seriesScope(row, 'pb')}，全史升序百分位（高=贵）
+聚合口径：剔除净资产为负（PB≤0）成分股
+窗口口径：全史月度；外部源（万得/中证）多用10Y日度——全史含2007/2015泡沫顶，本分位通常比10Y口径低10~30pp
+PB 便宜 + ROE 中枢下移时，警惕价值陷阱——参考 ROE均值(5Y) 列交叉判断`,
     }),
   },
   {
@@ -873,6 +879,13 @@ const macroParams = computed(() => {
           />
           <n-empty v-else-if="!loading" description="暂无数据，请确保后端服务正常运行" style="padding: 60px 0" />
         </n-spin>
+        <!-- 分位口径脚注：全史月度 vs 外部10Y日度的窗口差异说明（PB分位受影响最大） -->
+        <n-text v-if="data.length" depth="3" style="font-size: 12px; line-height: 1.7; display: block; margin-top: 4px;">
+          分位口径：PE/PB 分位 = 当前值在该指数<b>全历史月度序列</b>中的升序百分位（各指数序列起点见列头 tooltip）。
+          PE 聚合已对齐中证官方口径（亏损股纳入分母，负利润摊薄指数利润）；PB 剔除净资产为负成分股。
+          外部常见口径（万得/中证官方，多为近 10 年日度）与本口径存在窗口差异——全史含 2007/2015 泡沫顶，
+          <b>PB 分位通常比 10Y 口径低 10~30pp</b>，PE 分位受亏损股口径影响方向不一；跨源对比请以 PE/PB 绝对值为准、分位作相对参考。
+        </n-text>
       </n-tab-pane>
 
       <n-tab-pane name="industry" tab="行业估值">
