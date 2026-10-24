@@ -101,6 +101,18 @@ function seriesScope(row: BroadIndexValuation, kind: 'pb' | 'pe' | 'spread'): st
   return `${valid[0].date.slice(0, 7)} ~ ${valid[valid.length - 1].date.slice(0, 7)}（${valid.length} 个月）`
 }
 
+// 10Y 窗口分位的实际生效范围：序列不足 120 个月时退化为全史（与全史列读数相同）
+function seriesScope10y(row: BroadIndexValuation, kind: 'pb' | 'pe'): string {
+  const hist = kind === 'pb' ? row.pb_history : row.pe_history
+  const valid = (hist ?? []).filter((p: any) => {
+    const v = kind === 'pb' ? p.pb : p.pe_ttm
+    return v != null
+  })
+  if (valid.length < 2) return '有效样本不足'
+  const win = valid.slice(-120)
+  return `${win[0].date.slice(0, 7)} ~ ${win[win.length - 1].date.slice(0, 7)}（${win.length} 个月${valid.length <= 120 ? '，历史不足120个月，实为全史口径' : ''}）`
+}
+
 // ==================== ERP 稳健 Z-score 配色（MAD，最近10年滚动窗口） ====================
 // Z_MAD > 1.5 → 低估(便宜/green)；Z_MAD < -1.5 → 高估(贵/red)；之间 → 中性
 function zscoreColor(zc: string | null): 'default' | 'success' | 'warning' | 'error' {
@@ -196,7 +208,26 @@ const columns: DataTableColumns<BroadIndexValuation> = [
         : `基于 PE(TTM) 月度序列 ${seriesScope(row, 'pe')}，全史升序百分位（高=贵）
 聚合口径：亏损股纳入分母（对齐中证官方，负利润摊薄指数利润）
 窗口口径：全史月度；外部源（万得/中证）多用10Y日度，跨源读数可能差10~25pp
-注意：盈利下行期 PE 会被动抬高分位，与 PB 分位背离时以 PB/利差口径交叉验证`,
+注意：盈利下行期 PE 会被动抬高分位，与 PB 分位背离时以 PB/利差口径交叉验证
+同窗口对比：见「PE分位(10Y)」列（对齐万得/中证官方常用口径）`,
+    }),
+  },
+  {
+    title: 'PE分位(10Y)',
+    key: 'pe_percentile_10y',
+    width: 140,
+    align: 'center',
+    render: (row) => h(NTooltip, { trigger: 'hover' }, {
+      trigger: () => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
+        h(PercentileIndicator, { value: row.pe_percentile_10y ?? null, width: 60 }),
+        h(NTag, { color: pctColorStyle(row.pe_percentile_10y ?? null), size: 'small', bordered: false }, () => percentileLabel(row.pe_percentile_10y ?? null)),
+      ]),
+      default: () => row.insufficient_history
+        ? `历史样本仅 ${row.history_samples ?? 0} 个月（不足 24 个月），为保证统计意义未计算分位`
+        : `基于 PE(TTM) 月度序列 ${seriesScope10y(row, 'pe')}，近10年窗口升序百分位（高=贵）
+对齐万得/中证官方常用口径（近10年），可直接跨源对比
+月度过采样 vs 外部日度，读数可能差 1~3pp；序列不足120个月时本列与全史列相同
+聚合口径不变：亏损股纳入分母`,
     }),
   },
   {
@@ -214,7 +245,26 @@ const columns: DataTableColumns<BroadIndexValuation> = [
         : `基于 PB 月度序列 ${seriesScope(row, 'pb')}，全史升序百分位（高=贵）
 聚合口径：剔除净资产为负（PB≤0）成分股
 窗口口径：全史月度；外部源（万得/中证）多用10Y日度——全史含2007/2015泡沫顶，本分位通常比10Y口径低10~30pp
-PB 便宜 + ROE 中枢下移时，警惕价值陷阱——参考 ROE均值(5Y) 列交叉判断`,
+PB 便宜 + ROE 中枢下移时，警惕价值陷阱——参考 ROE均值(5Y) 列交叉判断
+同窗口对比：见「PB分位(10Y)」列（对齐万得/中证官方常用口径）`,
+    }),
+  },
+  {
+    title: 'PB分位(10Y)',
+    key: 'pb_percentile_10y',
+    width: 140,
+    align: 'center',
+    render: (row) => h(NTooltip, { trigger: 'hover' }, {
+      trigger: () => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
+        h(PercentileIndicator, { value: row.pb_percentile_10y ?? null, width: 60 }),
+        h(NTag, { color: pctColorStyle(row.pb_percentile_10y ?? null), size: 'small', bordered: false }, () => percentileLabel(row.pb_percentile_10y ?? null)),
+      ]),
+      default: () => row.insufficient_history
+        ? `历史样本仅 ${row.history_samples ?? 0} 个月（不足 24 个月），为保证统计意义未计算分位`
+        : `基于 PB 月度序列 ${seriesScope10y(row, 'pb')}，近10年窗口升序百分位（高=贵）
+对齐万得/中证官方常用口径（近10年），可直接跨源对比
+月度过采样 vs 外部日度，读数可能差 1~3pp；序列不足120个月时本列与全史列相同
+聚合口径不变：剔除净资产为负（PB≤0）成分股`,
     }),
   },
   {
@@ -321,11 +371,12 @@ const rowProps = (row: BroadIndexValuation) => ({
 
 // 导出宽基估值 CSV（原指数分析页功能）
 function exportCSV() {
-  const headers = ['指数', 'PB', 'PE(TTM)', 'ROE均值(%)', '股债利差(%)', '估值分位(%)', 'PE分位(%)', 'PB分位(%)', '拥挤度(%)', 'ERP Z分数', 'ERP Z分类']
+  const headers = ['指数', 'PB', 'PE(TTM)', 'ROE均值(%)', '股债利差(%)', '估值分位(%)', 'PE分位(%)', 'PE分位10Y(%)', 'PB分位(%)', 'PB分位10Y(%)', '拥挤度(%)', 'ERP Z分数', 'ERP Z分类']
   const rows = data.value.map(idx => [
     idx.name, idx.pb ?? '', idx.pe_ttm ?? '', idx.roe_mean ?? '',
     idx.spread ?? '', idx.valuation_percentile ?? '',
-    idx.pe_percentile ?? '', idx.pb_percentile ?? '', idx.crowding ?? '',
+    idx.pe_percentile ?? '', idx.pe_percentile_10y ?? '',
+    idx.pb_percentile ?? '', idx.pb_percentile_10y ?? '', idx.crowding ?? '',
     idx.erp_zscore ?? '', zscoreLabel(idx.erp_zscore_class),
   ])
   const csv = [headers, ...rows].map(r => r.join(',')).join('\n')
@@ -874,17 +925,18 @@ const macroParams = computed(() => {
             :single-line="false"
             size="small"
             :max-height="560"
-            :scroll-x="1200"
+            :scroll-x="1480"
             :row-props="rowProps"
           />
           <n-empty v-else-if="!loading" description="暂无数据，请确保后端服务正常运行" style="padding: 60px 0" />
         </n-spin>
-        <!-- 分位口径脚注：全史月度 vs 外部10Y日度的窗口差异说明（PB分位受影响最大） -->
+        <!-- 分位口径脚注：全史月度 vs 近10Y窗口的口径差异说明（PB分位受影响最大） -->
         <n-text v-if="data.length" depth="3" style="font-size: 12px; line-height: 1.7; display: block; margin-top: 4px;">
-          分位口径：PE/PB 分位 = 当前值在该指数<b>全历史月度序列</b>中的升序百分位（各指数序列起点见列头 tooltip）。
+          分位口径：<b>PE分位 / PB分位</b> = 当前值在该指数<b>全历史月度序列</b>中的升序百分位（各指数序列起点见列头 tooltip）；
+          <b>PE分位(10Y) / PB分位(10Y)</b> = 同一序列<b>近 120 个月（约10年）窗口</b>内的升序百分位，对齐万得/中证官方常用口径，可直接跨源对比。
           PE 聚合已对齐中证官方口径（亏损股纳入分母，负利润摊薄指数利润）；PB 剔除净资产为负成分股。
-          外部常见口径（万得/中证官方，多为近 10 年日度）与本口径存在窗口差异——全史含 2007/2015 泡沫顶，
-          <b>PB 分位通常比 10Y 口径低 10~30pp</b>，PE 分位受亏损股口径影响方向不一；跨源对比请以 PE/PB 绝对值为准、分位作相对参考。
+          两组读数差异来自窗口长度——全史含 2007/2015 泡沫顶，<b>全史 PB 分位通常比 10Y 口径低 10~30pp</b>，PE 分位受亏损股口径影响方向不一；
+          历史不足 120 个月的指数，(10Y) 列退化为全史口径，两列读数相同。跨源对比请以 PE/PB 绝对值为准、分位作相对参考。
         </n-text>
       </n-tab-pane>
 

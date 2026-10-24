@@ -598,6 +598,17 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
         pb_percentile = round(_percentile(current_pb, pb_values_all), 2) if (current_pb is not None and pb_values_all) else None
         pe_percentile = round(_percentile(current_pe, pe_values_all), 2) if (current_pe is not None and pe_values_all) else None
 
+        # 近 10Y（120 个月）窗口分位：对齐万得/中证官方常用口径，可直接跨源对比。
+        # 注意：月度序列最后 120 点 ≈ 10 年；若历史不足 120 个月则退化为全史（与全史列相同）。
+        pb_values_10y = pb_values_all[-120:]
+        pe_values_10y = pe_values_all[-120:]
+        pb_percentile_10y = (
+            round(_percentile(current_pb, pb_values_10y), 2) if (current_pb is not None and pb_values_10y) else None
+        )
+        pe_percentile_10y = (
+            round(_percentile(current_pe, pe_values_10y), 2) if (current_pe is not None and pe_values_10y) else None
+        )
+
         # 拥挤度 = (指数PB / 基准PB) 的历史分位
         crowding = None
         ratio_history: list[float] = []
@@ -631,6 +642,8 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
             valuation_percentile = None
             pb_percentile = None
             pe_percentile = None
+            pb_percentile_10y = None
+            pe_percentile_10y = None
             crowding = None
         else:
             erp_zscore_info = _current_erp_zscore(spread_history)
@@ -669,6 +682,8 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
             "valuation_percentile": valuation_percentile,
             "pe_percentile": pe_percentile,
             "pb_percentile": pb_percentile,
+            "pe_percentile_10y": pe_percentile_10y,
+            "pb_percentile_10y": pb_percentile_10y,
             "crowding": crowding,
             "erp_zscore": erp_zscore,
             "erp_zscore_class": erp_zscore_class,

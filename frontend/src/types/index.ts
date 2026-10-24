@@ -248,6 +248,9 @@ export interface BroadIndexValuation {
   valuation_percentile: number | null  // 估值分位 0-100, 越小越便宜
   pe_percentile: number | null    // PE 历史分位 0-100, 高=贵
   pb_percentile: number | null    // PB 历史分位 0-100, 高=贵
+  // 近 10Y（120 个月）窗口分位：对齐万得/中证官方常用口径，可直接跨源对比
+  pe_percentile_10y?: number | null
+  pb_percentile_10y?: number | null
   crowding: number | null        // 拥挤度 0-100, 越小相对越便宜
   // ERP 稳健 Z-score（MAD，最近10年滚动窗口）：>1.5 低估 / <-1.5 高估 / 之间 中性
   erp_zscore: number | null
