@@ -162,7 +162,9 @@ def _get_pe_history(index_code: str) -> list[dict]:
     """获取指数 PE 月度历史（网关 /api/index-valuation 接口）。
 
     Returns:
-        [{"date": "2005-04-29", "pe_ttm": 15.2, "pe_static": 14.8, "index_value": 932.40}, ...]
+        [{"date": "2005-04-29", "pe_ttm": 15.2, "pe_ttm_ex": 14.9,
+          "pe_static": 14.8, "index_value": 932.40}, ...]
+        （pe_ttm=纳亏口径展示值；pe_ttm_ex=剔亏口径、分位基准，旧行为 None）
     """
     now = time.time()
     cached = _pe_cache.get(index_code)
@@ -578,6 +580,15 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
 
         current_pb = pb_data[-1].get("pb") if pb_data else None
         current_pe = pe_data[-1].get("pe_ttm") if pe_data else None
+        # 剔亏口径当前值（分位基准，2026-10-24 锚点校准后确立）：
+        # 官方分位序列在剔亏侧（legulegu 剔亏全史 43.4% = 官方截图 43），
+        # 纳亏口径会把小盘 PE 抬高最高约 3 倍、分位虚高 20~35pp。
+        # 旧行/未重导指数 pe_ttm_ex 为 None，回退纳亏值（不炸）。
+        current_pe_ex = None
+        if pe_data:
+            current_pe_ex = pe_data[-1].get("pe_ttm_ex")
+            if current_pe_ex is None:
+                current_pe_ex = pe_data[-1].get("pe_ttm")
 
         roe_data = _compute_roe_history(pb_data, pe_data)
         roe_mean = _compute_roe_mean(roe_data)
@@ -593,20 +604,25 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
             valuation_percentile = round(100 - spread_pct, 2)
 
         # PE / PB 历史分位（升序百分位，高=贵），与行业口径一致
+        # PE 分位走**剔亏口径**（pe_ttm_ex，仅聚 PE>0）：与中证官方分位口径对齐；
+        # 绝对值列（pe_ttm）仍为纳亏口径，展示用。逐点回退纳亏值兼容旧行。
         pb_values_all = [x.get("pb") for x in pb_data if x.get("pb") is not None]
-        pe_values_all = [x.get("pe_ttm") for x in pe_data if x.get("pe_ttm") is not None]
+        pe_values_all_ex = [
+            (x.get("pe_ttm_ex") if x.get("pe_ttm_ex") is not None else x.get("pe_ttm"))
+            for x in pe_data if x.get("pe_ttm") is not None
+        ]
         pb_percentile = round(_percentile(current_pb, pb_values_all), 2) if (current_pb is not None and pb_values_all) else None
-        pe_percentile = round(_percentile(current_pe, pe_values_all), 2) if (current_pe is not None and pe_values_all) else None
+        pe_percentile = round(_percentile(current_pe_ex, pe_values_all_ex), 2) if (current_pe_ex is not None and pe_values_all_ex) else None
 
         # 近 10Y（120 个月）窗口分位：对齐万得/中证官方常用口径，可直接跨源对比。
         # 注意：月度序列最后 120 点 ≈ 10 年；若历史不足 120 个月则退化为全史（与全史列相同）。
         pb_values_10y = pb_values_all[-120:]
-        pe_values_10y = pe_values_all[-120:]
+        pe_values_10y = pe_values_all_ex[-120:]
         pb_percentile_10y = (
             round(_percentile(current_pb, pb_values_10y), 2) if (current_pb is not None and pb_values_10y) else None
         )
         pe_percentile_10y = (
-            round(_percentile(current_pe, pe_values_10y), 2) if (current_pe is not None and pe_values_10y) else None
+            round(_percentile(current_pe_ex, pe_values_10y), 2) if (current_pe_ex is not None and pe_values_10y) else None
         )
 
         # 拥挤度 = (指数PB / 基准PB) 的历史分位
@@ -658,9 +674,11 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
         pb_history = pb_data
 
         # PE 历史与指数点数历史（完整序列，供详情弹窗画图）
+        # pe_ttm=纳亏口径（展示），pe_ttm_ex=剔亏口径（分位基准，2026-10-24）
         pe_src = pe_data
         pe_history = [
-            {"date": r["date"], "pe_ttm": r.get("pe_ttm"), "pe_static": r.get("pe_static")}
+            {"date": r["date"], "pe_ttm": r.get("pe_ttm"), "pe_ttm_ex": r.get("pe_ttm_ex"),
+             "pe_static": r.get("pe_static")}
             for r in pe_src if r.get("pe_ttm") is not None or r.get("pe_static") is not None
         ]
         price_src = pb_data

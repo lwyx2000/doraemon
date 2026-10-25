@@ -162,7 +162,12 @@ const columns: DataTableColumns<BroadIndexValuation> = [
     key: 'pe_ttm',
     width: 90,
     align: 'right',
-    render: (row) => row.pe_ttm != null ? row.pe_ttm.toFixed(1) : '—',
+    render: (row) => h(NTooltip, { trigger: 'hover' }, {
+      trigger: () => h('div', { style: 'text-align:right;' }, row.pe_ttm != null ? row.pe_ttm.toFixed(1) : '—'),
+      default: () => `绝对值口径：纳亏（亏损股负利润纳入分母 Σmv/Σ(mv/PE)）——反映指数真实盈利收益率，与万得展示一致。
+分位列（右列）走剔亏口径（仅聚 PE>0），两列口径不同、不可直接互推。
+亏损面越大两口径差越大：沪深300≈0%，中证2000 纳亏口径约为剔亏 3 倍。`,
+    }),
   },
   {
     title: 'ROE均值(5Y)',
@@ -206,7 +211,8 @@ const columns: DataTableColumns<BroadIndexValuation> = [
       default: () => row.insufficient_history
         ? `历史样本仅 ${row.history_samples ?? 0} 个月（不足 24 个月），为保证统计意义未计算分位`
         : `基于 PE(TTM) 月度序列 ${seriesScope(row, 'pe')}，全史升序百分位（高=贵）
-聚合口径：亏损股纳入分母（对齐中证官方，负利润摊薄指数利润）
+聚合口径：剔亏（仅聚 PE>0 成分股）——2026-10-24 锚点校准确认中证官方分位在剔亏侧；纳亏口径会把小盘分位虚高 20~35pp
+当前值与序列同口径（剔亏）；「PE(TTM)」绝对值列仍为纳亏口径，两列不可直接互推
 窗口口径：全史月度；外部源（万得/中证）多用10Y日度，跨源读数可能差10~25pp
 注意：盈利下行期 PE 会被动抬高分位，与 PB 分位背离时以 PB/利差口径交叉验证
 同窗口对比：见「PE分位(10Y)」列（对齐万得/中证官方常用口径）`,
@@ -226,8 +232,8 @@ const columns: DataTableColumns<BroadIndexValuation> = [
         ? `历史样本仅 ${row.history_samples ?? 0} 个月（不足 24 个月），为保证统计意义未计算分位`
         : `基于 PE(TTM) 月度序列 ${seriesScope10y(row, 'pe')}，近10年窗口升序百分位（高=贵）
 对齐万得/中证官方常用口径（近10年），可直接跨源对比
-月度过采样 vs 外部日度，读数可能差 1~3pp；序列不足120个月时本列与全史列相同
-聚合口径不变：亏损股纳入分母`,
+聚合口径：剔亏（仅聚 PE>0 成分股）——与中证官方分位口径一致
+月度过采样 vs 外部日度，读数可能差 1~3pp；序列不足120个月时本列与全史列相同`,
     }),
   },
   {
@@ -930,12 +936,15 @@ const macroParams = computed(() => {
           />
           <n-empty v-else-if="!loading" description="暂无数据，请确保后端服务正常运行" style="padding: 60px 0" />
         </n-spin>
-        <!-- 分位口径脚注：全史月度 vs 近10Y窗口的口径差异说明（PB分位受影响最大） -->
+        <!-- 分位口径脚注：全史月度 vs 近10Y窗口 + 纳亏/剔亏双口径说明（2026-10-24 锚点校准后更新） -->
         <n-text v-if="data.length" depth="3" style="font-size: 12px; line-height: 1.7; display: block; margin-top: 4px;">
           分位口径：<b>PE分位 / PB分位</b> = 当前值在该指数<b>全历史月度序列</b>中的升序百分位（各指数序列起点见列头 tooltip）；
           <b>PE分位(10Y) / PB分位(10Y)</b> = 同一序列<b>近 120 个月（约10年）窗口</b>内的升序百分位，对齐万得/中证官方常用口径，可直接跨源对比。
-          PE 聚合已对齐中证官方口径（亏损股纳入分母，负利润摊薄指数利润）；PB 剔除净资产为负成分股。
-          两组读数差异来自窗口长度——全史含 2007/2015 泡沫顶，<b>全史 PB 分位通常比 10Y 口径低 10~30pp</b>，PE 分位受亏损股口径影响方向不一；
+          <b>PE 双口径（2026-10-24 锚点校准后确立）</b>：绝对值列「PE(TTM)」为<b>纳亏</b>口径（亏损股负利润纳入分母，与万得展示一致）；
+          <b>PE 分位列为剔亏口径</b>（仅聚 PE&gt;0 成分股）——经锚点校准（官方截图 vs legulegu 剔亏全史 43.4% 精确命中）确认中证官方分位在剔亏侧。
+          亏损面越大两口径差越大：沪深300 亏损面 2.2%（两口径几乎相同）→ 中证1000 13.9%（纳亏 PE 高约 44%）→ 中证2000 24.5%（纳亏 PE 高约 195%、分位虚高 20~35pp）。
+          PB 剔除净资产为负成分股。
+          两组读数差异来自窗口长度——全史含 2007/2015 泡沫顶，<b>全史 PB 分位通常比 10Y 口径低 10~30pp</b>；
           历史不足 120 个月的指数，(10Y) 列退化为全史口径，两列读数相同。跨源对比请以 PE/PB 绝对值为准、分位作相对参考。
         </n-text>
       </n-tab-pane>

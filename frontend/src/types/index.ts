@@ -277,7 +277,10 @@ export interface ValuationHistPoint {
 
 export interface PeHistPoint {
   date: string
+  /** 纳亏口径（亏损股进分母）：绝对值展示 */
   pe_ttm: number | null
+  /** 剔亏口径（仅聚 PE>0）：分位计算基准；旧行为 null，消费方回退 pe_ttm */
+  pe_ttm_ex?: number | null
   pe_static: number | null
 }
 
