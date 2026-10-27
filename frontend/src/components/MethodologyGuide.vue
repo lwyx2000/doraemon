@@ -11,7 +11,7 @@ import { NIcon, NCollapseTransition, NTag } from 'naive-ui'
 import { InformationCircleOutline, ChevronDownOutline, ChevronUpOutline } from '@vicons/ionicons5'
 
 // 内容节数，用于标题栏徽标
-const SECTION_COUNT = 6
+const SECTION_COUNT = 7
 
 const expanded = ref(false)
 </script>
@@ -76,6 +76,34 @@ const expanded = ref(false)
             <li>通胀系数 0.3、ROE 取近年均值、起点选 2005 等均为<strong>经验设定</strong>，会影响分位绝对值。</li>
             <li>风险溢价（市场情绪）未被量化，是整套体系最「软」的一环。</li>
           </ul>
+        </div>
+
+        <!-- 五、多算法对比（加权 / 等权 / 中位） -->
+        <div class="guide-section">
+          <h5 class="gs-title">五、多算法对比（加权 / 等权 / 中位）</h5>
+          <p class="gs-text">
+            主表「PB / PE(TTM)」列为<b>市值加权</b>口径（买 ETF 的真实估值：<code>Σ市值 ÷ Σ市值/指标</code>），
+            被大市值成分股主导。为看清「成分股整体」的便宜程度，本页额外给出两种算法：
+          </p>
+          <ul class="gs-list">
+            <li><b>等权</b>：成分股该指标<b>算术均值</b>——每只等权，反映指数成分股<b>广度</b>上的便宜程度，不被权重股掩盖。</li>
+            <li><b>中位</b>：成分股该指标<b>中位数</b>——剔除极大/极小极值后的<b>中枢</b>，抗单只畸变样本，常与等权接近。</li>
+          </ul>
+          <p class="gs-text">
+            三指标（PB / PE(TTM)纳亏 / PE(TTM)剔亏）各含加权 + 等权 + 中位，共 6 组绝对值；
+            每组再算<b>全史分位</b>与<b>近10年分位</b>。纳亏口径含亏损股（PE&lt;0），剔亏口径仅聚 PE&gt;0（分位基准，与中证官方一致）。
+          </p>
+          <p class="gs-note">
+            ⚠️ 口径对照：本页「加权」≈ 买 ETF 的真实估值；「等权 / 中位」与 <b>legulegu 等权 / 中位</b> 口径对齐，可直接跨源比较。
+            权重股越集中的指数（如上证50），加权与等权/中位差距越大——差距本身即提示「便宜是被少数大盘股拉低还是普遍现象」。
+            全史含 2007/2015 泡沫顶，全史分位通常比近10年分位低 10~30pp，跨窗口对比须同口径。
+          </p>
+          <p class="gs-note">
+            ⚠️ 等权 <b>PE</b> 的固有缺陷（必读）：PE 算术均值对「接近盈亏平衡」的成分股极度敏感——盈利趋近 0 时 PE 趋向 ±∞，
+            单只微利股（PE 数千）即可把整列均值拉高数倍；微亏股（PE 为大负数）则反向拉低。
+            实测 2026-10-31：中证2000 加权 PE 127.35，<b>等权 却为 -0.36</b>（被微亏股的大负 PE 拖成负值），中位 43.66 才稳健。
+            因此 <b>PE 等权列仅供跨源对照，判断贵贱请优先看「中位」或「加权」</b>；PB 等权无此问题（PB 恒为正、分布有界）。
+          </p>
         </div>
 
         <p class="guide-foot">

@@ -129,6 +129,25 @@ function zscoreLabel(zc: string | null): string {
   return '—'
 }
 
+// ==================== 多算法对比单元格（等权/中位，2026-10-27） ====================
+// 同一指标三种聚合：加权(买ETF真实口径) / 等权(成分股算术均值) / 中位(中位数，抗极值)。
+// 单元格展示：上方绝对值 + 下方全史分位条；10Y 分位挂 tooltip。
+function algoCell(
+  value: number | null,
+  pctAll: number | null,
+  pct10y: number | null,
+  tip: string,
+): any {
+  return h(NTooltip, { trigger: 'hover' }, {
+    trigger: () => h('div', { style: 'display:flex; flex-direction:column; align-items:flex-end; gap:3px;' }, [
+      h('div', { style: 'font-family: "JetBrains Mono", monospace; font-weight:700; font-size:13px;' },
+        value != null ? value.toFixed(2) : '—'),
+      h(PercentileIndicator, { value: pctAll ?? null, width: 64 }),
+    ]),
+    default: () => `${tip}\n全史分位：${pctAll != null ? pctAll.toFixed(1) + '%' : '—'}\n近10年分位：${pct10y != null ? pct10y.toFixed(1) + '%' : '—'}`,
+  })
+}
+
 // ==================== 表格列定义 ====================
 const columns: DataTableColumns<BroadIndexValuation> = [
   {
@@ -168,6 +187,54 @@ const columns: DataTableColumns<BroadIndexValuation> = [
 分位列（右列）走剔亏口径（仅聚 PE>0），两列口径不同、不可直接互推。
 亏损面越大两口径差越大：沪深300≈0%，中证2000 纳亏口径约为剔亏 3 倍。`,
     }),
+  },
+  {
+    title: 'PB(等权)',
+    key: 'pb_eq',
+    width: 120,
+    align: 'right',
+    render: (row) => algoCell(row.pb_eq, row.pb_eq_percentile ?? null, row.pb_eq_percentile_10y ?? null,
+      'PB 等权：成分股 PB 算术均值（不按市值加权）——不被大市值股主导，反映成分股整体便宜程度。'),
+  },
+  {
+    title: 'PB(中位)',
+    key: 'pb_med',
+    width: 120,
+    align: 'right',
+    render: (row) => algoCell(row.pb_med, row.pb_med_percentile ?? null, row.pb_med_percentile_10y ?? null,
+      'PB 中位：成分股 PB 中位数——剔除极大/极小极值后的中枢，抗样本畸变，常与等权接近。'),
+  },
+  {
+    title: 'PE(等权)',
+    key: 'pe_ttm_eq',
+    width: 120,
+    align: 'right',
+    render: (row) => algoCell(row.pe_ttm_eq, row.pe_ttm_eq_percentile ?? null, row.pe_ttm_eq_percentile_10y ?? null,
+      'PE(TTM) 等权（纳亏口径）：成分股 PE 算术均值，含亏损股（PE<0）——与「PE(TTM)」列同口径、不同加权。\n⚠️ 算术均值对微利/微亏股极敏感（PE 趋 ±∞）：亏损面大的指数此列可能被拖成负数或虚高，判断贵贱请优先看「中位」或「加权」列。'),
+  },
+  {
+    title: 'PE(中位)',
+    key: 'pe_ttm_med',
+    width: 120,
+    align: 'right',
+    render: (row) => algoCell(row.pe_ttm_med, row.pe_ttm_med_percentile ?? null, row.pe_ttm_med_percentile_10y ?? null,
+      'PE(TTM) 中位（纳亏口径）：成分股 PE 中位数，抗极值——亏损股（PE<0）仍计入排序。'),
+  },
+  {
+    title: 'PE剔亏(等权)',
+    key: 'pe_ttm_ex_eq',
+    width: 130,
+    align: 'right',
+    render: (row) => algoCell(row.pe_ttm_ex_eq, row.pe_ttm_ex_eq_percentile ?? null, row.pe_ttm_ex_eq_percentile_10y ?? null,
+      'PE(TTM) 等权（剔亏口径）：仅 PE>0 成分股算术均值——分位计算基准，与中证官方分位口径一致；与「PE分位」列同口径、不同加权。\n⚠️ 剔掉负 PE 后均值被微利股的高 PE 拉得更偏（实测沪深300 此列 51.78 vs 加权 12.97），仅作跨源对照，判断贵贱请优先看「中位」列。'),
+  },
+  {
+    title: 'PE剔亏(中位)',
+    key: 'pe_ttm_ex_med',
+    width: 130,
+    align: 'right',
+    render: (row) => algoCell(row.pe_ttm_ex_med, row.pe_ttm_ex_med_percentile ?? null, row.pe_ttm_ex_med_percentile_10y ?? null,
+      'PE(TTM) 中位（剔亏口径）：仅 PE>0 成分股中位数——抗极值，与等权口径互校。'),
   },
   {
     title: 'ROE均值(5Y)',
@@ -741,12 +808,13 @@ const pbChartOption = computed(() => {
   if (!hist.length) return {}
   return {
     tooltip: { trigger: 'axis' },
-    grid: { left: 50, right: 30, top: 20, bottom: 40 },
+    legend: { data: ['PB(加权)', 'PB(等权)', 'PB(中位)'], top: 0, textStyle: { fontSize: 10, color: '#717782' } },
+    grid: { left: 50, right: 30, top: 30, bottom: 40 },
     xAxis: { type: 'category', data: hist.map(h => h.date), boundaryGap: false, axisLabel: { fontSize: 10, color: '#717782' } },
     yAxis: { type: 'value', name: 'PB', scale: true, axisLabel: { fontSize: 10, color: '#717782' } },
     dataZoom: [{ type: 'inside' }, { type: 'slider', height: 16, bottom: 5 }],
     series: [{
-      name: 'PB',
+      name: 'PB(加权)',
       type: 'line',
       data: hist.map(h => h.pb),
       smooth: true,
@@ -754,6 +822,22 @@ const pbChartOption = computed(() => {
       lineStyle: { width: 2, color: '#f59e0b' },
       itemStyle: { color: '#f59e0b' },
       areaStyle: { color: 'rgba(245,158,11,0.1)' },
+    }, {
+      name: 'PB(等权)',
+      type: 'line',
+      data: hist.map(h => h.pb_eq ?? null),
+      smooth: true,
+      showSymbol: false,
+      lineStyle: { width: 1.2, color: '#f59e0b', type: 'dashed', opacity: 0.85 },
+      itemStyle: { color: '#f59e0b' },
+    }, {
+      name: 'PB(中位)',
+      type: 'line',
+      data: hist.map(h => h.pb_med ?? null),
+      smooth: true,
+      showSymbol: false,
+      lineStyle: { width: 1.2, color: '#16a34a', type: 'dotted', opacity: 0.85 },
+      itemStyle: { color: '#16a34a' },
     }],
   }
 })
@@ -767,7 +851,13 @@ const peChartOption = computed(() => {
       formatter: (params: any) =>
         params.map((p: any) => `${p.marker}${p.seriesName}: <b>${p.value ?? '—'}</b>`).join('<br/>'),
     },
-    legend: { data: ['PE(TTM)', ...(peStaticDiffers.value ? ['PE(静态)'] : [])], top: 0, textStyle: { fontSize: 10, color: '#717782' } },
+    legend: {
+      data: [
+        'PE(TTM)', ...(peStaticDiffers.value ? ['PE(静态)'] : []),
+        'PE(TTM)等权', 'PE(TTM)中位', 'PE剔亏等权', 'PE剔亏中位',
+      ],
+      top: 0, textStyle: { fontSize: 10, color: '#717782' },
+    },
     grid: { left: 50, right: 30, top: 30, bottom: 40 },
     xAxis: { type: 'category', data: hist.map(h => h.date), boundaryGap: false, axisLabel: { fontSize: 10, color: '#717782' } },
     yAxis: { type: 'value', name: 'PE', scale: true, axisLabel: { fontSize: 10, color: '#717782' } },
@@ -791,6 +881,38 @@ const peChartOption = computed(() => {
         lineStyle: { width: 1.2, color: '#94a3b8', type: 'dashed' },
         itemStyle: { color: '#94a3b8' },
       }] : []),
+      {
+        name: 'PE(TTM)等权',
+        type: 'line',
+        data: hist.map(h => h.pe_ttm_eq ?? null),
+        smooth: true, showSymbol: false,
+        lineStyle: { width: 1.2, color: '#0ea5e9', type: 'dashed' },
+        itemStyle: { color: '#0ea5e9' },
+      },
+      {
+        name: 'PE(TTM)中位',
+        type: 'line',
+        data: hist.map(h => h.pe_ttm_med ?? null),
+        smooth: true, showSymbol: false,
+        lineStyle: { width: 1.2, color: '#8b5cf6', type: 'dotted' },
+        itemStyle: { color: '#8b5cf6' },
+      },
+      {
+        name: 'PE剔亏等权',
+        type: 'line',
+        data: hist.map(h => h.pe_ttm_ex_eq ?? null),
+        smooth: true, showSymbol: false,
+        lineStyle: { width: 1.2, color: '#f97316', type: 'dashed' },
+        itemStyle: { color: '#f97316' },
+      },
+      {
+        name: 'PE剔亏中位',
+        type: 'line',
+        data: hist.map(h => h.pe_ttm_ex_med ?? null),
+        smooth: true, showSymbol: false,
+        lineStyle: { width: 1.2, color: '#ef4444', type: 'dotted' },
+        itemStyle: { color: '#ef4444' },
+      },
     ],
   }
 })

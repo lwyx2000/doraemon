@@ -34,6 +34,11 @@ export const glossaryByPage: Record<string, GlossaryItem[]> = {
     { abbr: '拥挤度', full: 'Crowding', cn: '指数PB / 全A PB 的历史分位，衡量相对估值高低（非绝对贵贱）' },
     { abbr: 'CPI', full: 'Consumer Price Index', cn: '居民消费价格指数同比，公式中的通胀调整项（系数0.3）' },
     { abbr: '10Y国债', full: '10-Year Treasury Yield', cn: '10年期国债收益率，无风险利率基准，股债利差公式的减项' },
+    { abbr: '加权', full: 'Market-Cap Weighted', cn: '市值加权：Σ市值÷Σ(市值/指标)，买ETF真实估值，被大市值股主导（主表 PB/PE(TTM) 列即此口径）' },
+    { abbr: '等权', full: 'Equal-Weighted', cn: '等权：成分股指标算术均值，每只等权，反映成分股广度便宜度，不被权重股掩盖；与 legulegu 等权口径对齐。注意：PE 算术均值对微利/微亏股极敏感，亏损面大的指数可能失真甚至为负' },
+    { abbr: '中位', full: 'Median', cn: '中位：成分股指标中位数，剔除极大/极小极值后的中枢，抗单只畸变；与 legulegu 中位口径对齐' },
+    { abbr: '纳亏', full: 'Include Loss-Making', cn: '纳亏口径：亏损股(PE<0)负利润纳入分母，绝对值展示，与万得一致（PE(TTM) 等权/中位列沿用此口径）' },
+    { abbr: '剔亏', full: 'Exclude Loss-Making', cn: '剔亏口径：仅聚 PE>0 成分股，分位计算基准，与中证官方分位口径一致（PE剔亏 等权/中位列沿用此口径）' },
   ],
   lofFunds: [
     { abbr: 'LOF', full: 'Listed Open-end Fund', cn: '上市开放式基金，可同时在场内外交易' },
