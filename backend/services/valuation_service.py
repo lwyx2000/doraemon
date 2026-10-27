@@ -621,9 +621,14 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
         # PE 分位走**剔亏口径**（pe_ttm_ex，仅聚 PE>0）：与中证官方分位口径对齐；
         # 绝对值列（pe_ttm）仍为纳亏口径，展示用。逐点回退纳亏值兼容旧行。
         pb_values_all = [x.get("pb") for x in pb_data if x.get("pb") is not None]
+        # 注意（2026-10-28）：过滤条件必须兼容「只有 pe_ttm_ex 有值」的行——
+        # 2005-2009 段由 legulegu 补齐，那段只有剔亏口径（pe_ttm 留空，避免
+        # 与纳亏口径混在同一序列里）。旧写法 `if x.get("pe_ttm") is not None`
+        # 会把整段补齐数据丢掉，PE 全史分位仍退回 2010 起。
         pe_values_all_ex = [
             (x.get("pe_ttm_ex") if x.get("pe_ttm_ex") is not None else x.get("pe_ttm"))
-            for x in pe_data if x.get("pe_ttm") is not None
+            for x in pe_data
+            if (x.get("pe_ttm_ex") is not None or x.get("pe_ttm") is not None)
         ]
         # 等权/中位历史序列（2026-10-27）：六类聚合各自的全史样本。
         # 三指标：PB / PE(TTM)纳亏 / PE(TTM)剔亏，各含等权(eq)与中位(med)。
