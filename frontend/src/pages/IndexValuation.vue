@@ -9,6 +9,7 @@ import PageHeader from '../components/PageHeader.vue'
 import PercentileIndicator from '../components/PercentileIndicator.vue'
 import BaseChart from '../components/BaseChart.vue'
 import GlossaryPanel from '../components/GlossaryPanel.vue'
+import PercentileGlossary from '../components/PercentileGlossary.vue'
 import MethodologyGuide from '../components/MethodologyGuide.vue'
 import { pctColor, pctColorStyle } from '../utils/percentile'
 
@@ -130,7 +131,7 @@ function zscoreLabel(zc: string | null): string {
 }
 
 // ==================== 多算法对比单元格（等权/中位，2026-10-27） ====================
-// 同一指标三种聚合：加权(买ETF真实口径) / 等权(成分股算术均值) / 中位(中位数，抗极值)。
+// 同一指标三种聚合：加权(买ETF真实口径) / 等权(成分股截尾均值，PE 截 95 分位) / 中位(中位数，抗极值)。
 // 单元格展示：上方绝对值 + 下方全史分位条；10Y 分位挂 tooltip。
 function algoCell(
   value: number | null,
@@ -210,7 +211,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
     width: 120,
     align: 'right',
     render: (row) => algoCell(row.pe_ttm_eq, row.pe_ttm_eq_percentile ?? null, row.pe_ttm_eq_percentile_10y ?? null,
-      'PE(TTM) 等权（纳亏口径）：成分股 PE 算术均值，含亏损股（PE<0）——与「PE(TTM)」列同口径、不同加权。\n⚠️ 算术均值对微利/微亏股极敏感（PE 趋 ±∞）：亏损面大的指数此列可能被拖成负数或虚高，判断贵贱请优先看「中位」或「加权」列。'),
+      'PE(TTM) 等权（纳亏口径）：成分股 PE 的 95 分位截尾均值，含亏损股（PE<0）——与「PE(TTM)」列同口径、不同加权。\n截尾：超出 5%/95% 分位的极值被拉回分位值后再平均，避免单只微利/微亏股（PE 趋 ±∞）主导整列（2026-10-28 修正；此前纯算术均值下中证2000 此列为 -0.36，现为 20.10）。\n⚠️ 亏损面大的指数（如科创50 现 -10.69）此列仍可能为负，判断贵贱请优先看「中位」或「加权」列。'),
   },
   {
     title: 'PE(中位)',
@@ -226,7 +227,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
     width: 130,
     align: 'right',
     render: (row) => algoCell(row.pe_ttm_ex_eq, row.pe_ttm_ex_eq_percentile ?? null, row.pe_ttm_ex_eq_percentile_10y ?? null,
-      'PE(TTM) 等权（剔亏口径）：仅 PE>0 成分股算术均值——分位计算基准，与中证官方分位口径一致；与「PE分位」列同口径、不同加权。\n⚠️ 剔掉负 PE 后均值被微利股的高 PE 拉得更偏（实测沪深300 此列 51.78 vs 加权 12.97），仅作跨源对照，判断贵贱请优先看「中位」列。'),
+      'PE(TTM) 等权（剔亏口径）：仅 PE>0 成分股，取 95 分位截尾均值——分位计算基准，与中证官方分位口径一致；与「PE分位」列同口径、不同加权。\n已与 legulegu「等权滚动市盈率」对齐：2026-10-27 对拍沪深300 28.86 vs 28.33（+1.9%）、上证50 -1.2%、深证100 +1.4%；小盘残差略大（中证1000 +12.3%，因财报时点差异）。'),
   },
   {
     title: 'PE剔亏(中位)',
@@ -967,6 +968,7 @@ const macroParams = computed(() => {
     <!-- 页面顶部说明：估值方法说明（公众号方法论）+ 缩写词典，均为可折叠、默认隐藏 -->
     <div class="top-guides">
       <MethodologyGuide />
+      <PercentileGlossary />
       <GlossaryPanel page-key="indexValuation" />
     </div>
 
