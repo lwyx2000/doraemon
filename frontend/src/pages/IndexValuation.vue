@@ -142,7 +142,7 @@ function algoCell(
   // 单元格：上方「底层绝对值 + 全史分位%」（左值右分位），下方全史分位填充条；
   // 10Y 分位挂 tooltip。分位条改用 PercentileIndicator 的填充条形式（更直观）。
   return h(NTooltip, { trigger: 'hover' }, {
-    trigger: () => h(PercentileIndicator, { value: pctAll ?? null, metric: value, width: 100 }),
+    trigger: () => h(PercentileIndicator, { value: pctAll ?? null, metric: value, width: 80 }),
     default: () => `${tip}\n全史分位：${pctAll != null ? pctAll.toFixed(1) + '%' : '—'}\n近10年分位：${pct10y != null ? pct10y.toFixed(1) + '%' : '—'}`,
   })
 }
@@ -152,7 +152,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
   {
     title: '指数',
     key: 'name',
-    width: 110,
+    width: 92,
     fixed: 'left',
     render: (row) => {
       const label = row.name + (row.is_benchmark ? ' ★' : '')
@@ -171,14 +171,14 @@ const columns: DataTableColumns<BroadIndexValuation> = [
   {
     title: 'PB',
     key: 'pb',
-    width: 80,
+    width: 54,
     align: 'right',
     render: (row) => row.pb != null ? row.pb.toFixed(2) : '—',
   },
   {
     title: 'PE(TTM)',
     key: 'pe_ttm',
-    width: 90,
+    width: 62,
     align: 'right',
     render: (row) => h(NTooltip, { trigger: 'hover' }, {
       trigger: () => h('div', { style: 'text-align:right;' }, row.pe_ttm != null ? row.pe_ttm.toFixed(1) : '—'),
@@ -190,7 +190,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
   {
     title: 'PB(等权)',
     key: 'pb_eq',
-    width: 120,
+    width: 96,
     align: 'right',
     render: (row) => algoCell(row.pb_eq, row.pb_eq_percentile ?? null, row.pb_eq_percentile_10y ?? null,
       'PB 等权：成分股 PB 算术均值（不按市值加权）——不被大市值股主导，反映成分股整体便宜程度。'),
@@ -198,7 +198,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
   {
     title: 'PB(中位)',
     key: 'pb_med',
-    width: 120,
+    width: 96,
     align: 'right',
     render: (row) => algoCell(row.pb_med, row.pb_med_percentile ?? null, row.pb_med_percentile_10y ?? null,
       'PB 中位：成分股 PB 中位数——剔除极大/极小极值后的中枢，抗样本畸变，常与等权接近。'),
@@ -206,7 +206,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
   {
     title: 'PE(等权)',
     key: 'pe_ttm_eq',
-    width: 120,
+    width: 96,
     align: 'right',
     render: (row) => algoCell(row.pe_ttm_eq, row.pe_ttm_eq_percentile ?? null, row.pe_ttm_eq_percentile_10y ?? null,
       'PE(TTM) 等权（纳亏口径）：成分股 PE 的 95 分位截尾均值，含亏损股（PE<0）——与「PE(TTM)」列同口径、不同加权。\n截尾：超出 5%/95% 分位的极值被拉回分位值后再平均，避免单只微利/微亏股（PE 趋 ±∞）主导整列（2026-10-28 修正；此前纯算术均值下中证2000 此列为 -0.36，现为 20.10）。\n⚠️ 亏损面大的指数（如科创50 现 -10.69）此列仍可能为负，判断贵贱请优先看「中位」或「加权」列。'),
@@ -214,7 +214,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
   {
     title: 'PE(中位)',
     key: 'pe_ttm_med',
-    width: 120,
+    width: 96,
     align: 'right',
     render: (row) => algoCell(row.pe_ttm_med, row.pe_ttm_med_percentile ?? null, row.pe_ttm_med_percentile_10y ?? null,
       'PE(TTM) 中位（纳亏口径）：成分股 PE 中位数，抗极值——亏损股（PE<0）仍计入排序。'),
@@ -222,7 +222,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
   {
     title: 'PE剔亏(等权)',
     key: 'pe_ttm_ex_eq',
-    width: 130,
+    width: 100,
     align: 'right',
     render: (row) => algoCell(row.pe_ttm_ex_eq, row.pe_ttm_ex_eq_percentile ?? null, row.pe_ttm_ex_eq_percentile_10y ?? null,
       'PE(TTM) 等权（剔亏口径）：仅 PE>0 成分股，取 95 分位截尾均值——分位计算基准，与中证官方分位口径一致；与「PE分位」列同口径、不同加权。\n已与 legulegu「等权滚动市盈率」对齐：2026-10-27 对拍沪深300 28.86 vs 28.33（+1.9%）、上证50 -1.2%、深证100 +1.4%；小盘残差略大（中证1000 +12.3%，因财报时点差异）。'),
@@ -230,7 +230,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
   {
     title: 'PE剔亏(中位)',
     key: 'pe_ttm_ex_med',
-    width: 130,
+    width: 100,
     align: 'right',
     render: (row) => algoCell(row.pe_ttm_ex_med, row.pe_ttm_ex_med_percentile ?? null, row.pe_ttm_ex_med_percentile_10y ?? null,
       'PE(TTM) 中位（剔亏口径）：仅 PE>0 成分股中位数——抗极值，与等权口径互校。'),
@@ -238,25 +238,25 @@ const columns: DataTableColumns<BroadIndexValuation> = [
   {
     title: 'ROE均值(5Y)',
     key: 'roe_mean',
-    width: 110,
+    width: 74,
     align: 'right',
     render: (row) => row.roe_mean != null ? row.roe_mean.toFixed(2) + '%' : '—',
   },
   {
     title: '股债利差',
     key: 'spread',
-    width: 100,
+    width: 72,
     align: 'right',
     render: (row) => row.spread != null ? row.spread.toFixed(2) + '%' : '—',
   },
   {
     title: '估值分位',
     key: 'valuation_percentile',
-    width: 140,
+    width: 112,
     align: 'center',
     render: (row) => h(NTooltip, { trigger: 'hover' }, {
       trigger: () => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
-        h(PercentileIndicator, { value: row.valuation_percentile, width: 60 }),
+        h(PercentileIndicator, { value: row.valuation_percentile, width: 52 }),
         h(NTag, { color: pctColorStyle(row.valuation_percentile), size: 'small', bordered: false }, () => percentileLabel(row.valuation_percentile)),
       ]),
       default: () => row.insufficient_history
@@ -267,11 +267,11 @@ const columns: DataTableColumns<BroadIndexValuation> = [
   {
     title: 'PE分位',
     key: 'pe_percentile',
-    width: 140,
+    width: 112,
     align: 'center',
     render: (row) => h(NTooltip, { trigger: 'hover' }, {
       trigger: () => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
-        h(PercentileIndicator, { value: row.pe_percentile, width: 60 }),
+        h(PercentileIndicator, { value: row.pe_percentile, width: 52 }),
         h(NTag, { color: pctColorStyle(row.pe_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pe_percentile)),
       ]),
       default: () => row.insufficient_history
@@ -287,11 +287,11 @@ const columns: DataTableColumns<BroadIndexValuation> = [
   {
     title: 'PE分位(10Y)',
     key: 'pe_percentile_10y',
-    width: 140,
+    width: 112,
     align: 'center',
     render: (row) => h(NTooltip, { trigger: 'hover' }, {
       trigger: () => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
-        h(PercentileIndicator, { value: row.pe_percentile_10y ?? null, width: 60 }),
+        h(PercentileIndicator, { value: row.pe_percentile_10y ?? null, width: 52 }),
         h(NTag, { color: pctColorStyle(row.pe_percentile_10y ?? null), size: 'small', bordered: false }, () => percentileLabel(row.pe_percentile_10y ?? null)),
       ]),
       default: () => row.insufficient_history
@@ -305,11 +305,11 @@ const columns: DataTableColumns<BroadIndexValuation> = [
   {
     title: 'PB分位',
     key: 'pb_percentile',
-    width: 140,
+    width: 112,
     align: 'center',
     render: (row) => h(NTooltip, { trigger: 'hover' }, {
       trigger: () => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
-        h(PercentileIndicator, { value: row.pb_percentile, width: 60 }),
+        h(PercentileIndicator, { value: row.pb_percentile, width: 52 }),
         h(NTag, { color: pctColorStyle(row.pb_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pb_percentile)),
       ]),
       default: () => row.insufficient_history
@@ -324,11 +324,11 @@ PB 便宜 + ROE 中枢下移时，警惕价值陷阱——参考 ROE均值(5Y) �
   {
     title: 'PB分位(10Y)',
     key: 'pb_percentile_10y',
-    width: 140,
+    width: 112,
     align: 'center',
     render: (row) => h(NTooltip, { trigger: 'hover' }, {
       trigger: () => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
-        h(PercentileIndicator, { value: row.pb_percentile_10y ?? null, width: 60 }),
+        h(PercentileIndicator, { value: row.pb_percentile_10y ?? null, width: 52 }),
         h(NTag, { color: pctColorStyle(row.pb_percentile_10y ?? null), size: 'small', bordered: false }, () => percentileLabel(row.pb_percentile_10y ?? null)),
       ]),
       default: () => row.insufficient_history
@@ -342,17 +342,17 @@ PB 便宜 + ROE 中枢下移时，警惕价值陷阱——参考 ROE均值(5Y) �
   {
     title: '拥挤度',
     key: 'crowding',
-    width: 140,
+    width: 112,
     align: 'center',
     render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
-      h(PercentileIndicator, { value: row.crowding, width: 60 }),
+      h(PercentileIndicator, { value: row.crowding, width: 52 }),
       h(NTag, { color: pctColorStyle(row.crowding), size: 'small', bordered: false }, () => row.crowding != null ? row.crowding.toFixed(0) + '%' : '—'),
     ]),
   },
   {
     title: 'ERP Z分数',
     key: 'erp_zscore',
-    width: 150,
+    width: 112,
     align: 'center',
     render: (row) => {
       if (row.erp_zscore == null) {
@@ -407,7 +407,7 @@ const industryColumns: DataTableColumns<IndustryValuation> = [
     width: 130,
     align: 'center',
     render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
-      h(PercentileIndicator, { value: row.pe_percentile, width: 60 }),
+      h(PercentileIndicator, { value: row.pe_percentile, width: 52 }),
       h(NTag, { color: pctColorStyle(row.pe_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pe_percentile)),
     ]),
   },
@@ -417,7 +417,7 @@ const industryColumns: DataTableColumns<IndustryValuation> = [
     width: 130,
     align: 'center',
     render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
-      h(PercentileIndicator, { value: row.pb_percentile, width: 60 }),
+      h(PercentileIndicator, { value: row.pb_percentile, width: 52 }),
       h(NTag, { color: pctColorStyle(row.pb_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pb_percentile)),
     ]),
   },
@@ -427,7 +427,7 @@ const industryColumns: DataTableColumns<IndustryValuation> = [
     width: 130,
     align: 'center',
     render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
-      h(PercentileIndicator, { value: row.crowding, width: 60 }),
+      h(PercentileIndicator, { value: row.crowding, width: 52 }),
       h(NTag, { color: pctColorStyle(row.crowding), size: 'small', bordered: false }, () => row.crowding != null ? row.crowding.toFixed(0) + '%' : '—'),
     ]),
   },
@@ -1053,7 +1053,7 @@ const macroParams = computed(() => {
             :single-line="false"
             size="small"
             :max-height="560"
-            :scroll-x="1480"
+            :scroll-x="1722"
             :row-props="rowProps"
           />
           <n-empty v-else-if="!loading" description="暂无数据，请确保后端服务正常运行" style="padding: 60px 0" />
@@ -1626,5 +1626,11 @@ const macroParams = computed(() => {
 .zscore-note b {
   font-family: 'JetBrains Mono', monospace;
   color: var(--text-primary);
+}
+
+/* 压缩单元格内边距，配合收窄列宽让整表尽量不滚动 */
+.index-valuation-page :deep(.n-data-table-td),
+.index-valuation-page :deep(.n-data-table-th) {
+  padding: 4px 6px;
 }
 </style>
