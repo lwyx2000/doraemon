@@ -1,6 +1,6 @@
 <script setup lang="ts">
 defineOptions({ name: 'IndexValuation' })
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, h } from 'vue'
 import { NDataTable, NTag, NSpin, NEmpty, NModal, NButton, NAlert, NTabs, NTabPane, NTooltip, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { api } from '../utils/api'
@@ -147,10 +147,47 @@ function algoCell(
   })
 }
 
+// ==================== 表头悬停说明 ====================
+// 鼠标悬停列标题时弹出该列含义说明；标题禁止换行（CSS .n-data-table-th white-space:nowrap）。
+const HEADER_HELP: Record<string, string> = {
+  // 宽基表
+  name: '指数名称；★ 表示基准指数。⚠ 表示该指数历史样本不足 24 个月，估值分位 / PE·PB分位 / 拥挤度未计算。',
+  pb: '市净率（加权）：指数成分股总市值 / 净资产，反映"按净资产买贵不贵"。',
+  pe_ttm: '市盈率(TTM，滚动十二个月，纳亏口径)：含亏损股（负利润纳入分母），与万得展示一致；分位列走剔亏口径，两列口径不同、不可互推。',
+  pb_eq: 'PB 等权：成分股 PB 算术均值（不按市值加权），不被大市值股主导，反映成分股整体便宜程度。',
+  pb_med: 'PB 中位：成分股 PB 中位数，剔除极大/极小极值后的中枢，抗样本畸变。',
+  pe_ttm_eq: 'PE(TTM) 等权（纳亏口径，95 分位截尾均值），含亏损股；与「PE(TTM)」列同口径、不同加权。',
+  pe_ttm_med: 'PE(TTM) 中位（纳亏口径）：成分股 PE 中位数，抗极值；亏损股仍计入排序。',
+  pe_ttm_ex_eq: 'PE(TTM) 等权（剔亏口径）：仅 PE>0 成分股取 95 分位截尾均值，与中证官方分位口径一致。',
+  pe_ttm_ex_med: 'PE(TTM) 中位（剔亏口径）：仅 PE>0 成分股中位数，与等权口径互校。',
+  roe_mean: '净资产收益率均值(近5年)：成分股 ROE 的 5 年算术均值(%)，用于判断"便宜是否有价值陷阱"。',
+  spread: '股债利差 = 指数盈利收益率(1/PE) − 10Y 国债收益率(%)，越高表示股票相对债券越便宜。',
+  valuation_percentile: '综合估值分位：基于股债利差月度序列的全史升序百分位（高=便宜）。',
+  pe_percentile: 'PE 全史分位：基于 PE(TTM) 月度序列（剔亏口径）的全史升序百分位（高=贵）。',
+  pe_percentile_10y: 'PE 近10年分位：同一序列近 120 个月窗口升序百分位，对齐万得/中证官方常用口径。',
+  pb_percentile: 'PB 全史分位：基于 PB 月度序列（剔除净资产为负）的全史升序百分位（高=贵）。',
+  pb_percentile_10y: 'PB 近10年分位：同一序列近 120 个月窗口升序百分位，对齐万得/中证官方常用口径。',
+  crowding: '拥挤度：成分股成交/市值集中度分位（高=交易拥挤，潜在回调风险）。',
+  erp_zscore: 'ERP 稳健 Z 分数：基于近10年股债利差的 MAD 稳健 Z 值（>1.5 低估 / <-1.5 高估）。',
+  // 行业表
+  pe: '行业整体市盈率(TTM)：行业内成分股 PE 加权值。',
+  dividend_yield: '股息率：行业成分股现金分红收益率均值(%)。',
+}
+
+// 返回带悬停说明的表头标题（NTooltip 包裹）；标题文字 nowrap 由 CSS 强制单行。
+function headerWithHelp(key: string, title: string): any {
+  const tip = HEADER_HELP[key]
+  if (!tip) return title
+  return h(NTooltip, { trigger: 'hover' }, {
+    trigger: () => h('span', { style: 'white-space: nowrap; cursor: help;' }, title),
+    default: () => tip,
+  })
+}
+
 // ==================== 表格列定义 ====================
 const columns: DataTableColumns<BroadIndexValuation> = [
   {
-    title: '指数',
+    title: () => headerWithHelp('name', '指数'),
     key: 'name',
     width: 92,
     fixed: 'left',
@@ -169,16 +206,16 @@ const columns: DataTableColumns<BroadIndexValuation> = [
     },
   },
   {
-    title: 'PB',
+    title: () => headerWithHelp('pb', 'PB'),
     key: 'pb',
     width: 54,
     align: 'right',
     render: (row) => row.pb != null ? row.pb.toFixed(2) : '—',
   },
   {
-    title: 'PE(TTM)',
+    title: () => headerWithHelp('pe_ttm', 'PE(TTM)'),
     key: 'pe_ttm',
-    width: 62,
+    width: 74,
     align: 'right',
     render: (row) => h(NTooltip, { trigger: 'hover' }, {
       trigger: () => h('div', { style: 'text-align:right;' }, row.pe_ttm != null ? row.pe_ttm.toFixed(1) : '—'),
@@ -188,7 +225,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
     }),
   },
   {
-    title: 'PB(等权)',
+    title: () => headerWithHelp('pb_eq', 'PB(等权)'),
     key: 'pb_eq',
     width: 96,
     align: 'right',
@@ -196,7 +233,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
       'PB 等权：成分股 PB 算术均值（不按市值加权）——不被大市值股主导，反映成分股整体便宜程度。'),
   },
   {
-    title: 'PB(中位)',
+    title: () => headerWithHelp('pb_med', 'PB(中位)'),
     key: 'pb_med',
     width: 96,
     align: 'right',
@@ -204,7 +241,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
       'PB 中位：成分股 PB 中位数——剔除极大/极小极值后的中枢，抗样本畸变，常与等权接近。'),
   },
   {
-    title: 'PE(等权)',
+    title: () => headerWithHelp('pe_ttm_eq', 'PE(等权)'),
     key: 'pe_ttm_eq',
     width: 96,
     align: 'right',
@@ -212,7 +249,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
       'PE(TTM) 等权（纳亏口径）：成分股 PE 的 95 分位截尾均值，含亏损股（PE<0）——与「PE(TTM)」列同口径、不同加权。\n截尾：超出 5%/95% 分位的极值被拉回分位值后再平均，避免单只微利/微亏股（PE 趋 ±∞）主导整列（2026-10-28 修正；此前纯算术均值下中证2000 此列为 -0.36，现为 20.10）。\n⚠️ 亏损面大的指数（如科创50 现 -10.69）此列仍可能为负，判断贵贱请优先看「中位」或「加权」列。'),
   },
   {
-    title: 'PE(中位)',
+    title: () => headerWithHelp('pe_ttm_med', 'PE(中位)'),
     key: 'pe_ttm_med',
     width: 96,
     align: 'right',
@@ -220,37 +257,37 @@ const columns: DataTableColumns<BroadIndexValuation> = [
       'PE(TTM) 中位（纳亏口径）：成分股 PE 中位数，抗极值——亏损股（PE<0）仍计入排序。'),
   },
   {
-    title: 'PE剔亏(等权)',
+    title: () => headerWithHelp('pe_ttm_ex_eq', 'PE剔亏(等权)'),
     key: 'pe_ttm_ex_eq',
-    width: 100,
+    width: 112,
     align: 'right',
     render: (row) => algoCell(row.pe_ttm_ex_eq, row.pe_ttm_ex_eq_percentile ?? null, row.pe_ttm_ex_eq_percentile_10y ?? null,
       'PE(TTM) 等权（剔亏口径）：仅 PE>0 成分股，取 95 分位截尾均值——分位计算基准，与中证官方分位口径一致；与「PE分位」列同口径、不同加权。\n已与 legulegu「等权滚动市盈率」对齐：2026-10-27 对拍沪深300 28.86 vs 28.33（+1.9%）、上证50 -1.2%、深证100 +1.4%；小盘残差略大（中证1000 +12.3%，因财报时点差异）。'),
   },
   {
-    title: 'PE剔亏(中位)',
+    title: () => headerWithHelp('pe_ttm_ex_med', 'PE剔亏(中位)'),
     key: 'pe_ttm_ex_med',
-    width: 100,
+    width: 112,
     align: 'right',
     render: (row) => algoCell(row.pe_ttm_ex_med, row.pe_ttm_ex_med_percentile ?? null, row.pe_ttm_ex_med_percentile_10y ?? null,
       'PE(TTM) 中位（剔亏口径）：仅 PE>0 成分股中位数——抗极值，与等权口径互校。'),
   },
   {
-    title: 'ROE均值(5Y)',
+    title: () => headerWithHelp('roe_mean', 'ROE均值(5Y)'),
     key: 'roe_mean',
-    width: 74,
+    width: 84,
     align: 'right',
     render: (row) => row.roe_mean != null ? row.roe_mean.toFixed(2) + '%' : '—',
   },
   {
-    title: '股债利差',
+    title: () => headerWithHelp('spread', '股债利差'),
     key: 'spread',
     width: 72,
     align: 'right',
     render: (row) => row.spread != null ? row.spread.toFixed(2) + '%' : '—',
   },
   {
-    title: '估值分位',
+    title: () => headerWithHelp('valuation_percentile', '估值分位'),
     key: 'valuation_percentile',
     width: 112,
     align: 'center',
@@ -265,7 +302,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
     }),
   },
   {
-    title: 'PE分位',
+    title: () => headerWithHelp('pe_percentile', 'PE分位'),
     key: 'pe_percentile',
     width: 112,
     align: 'center',
@@ -285,7 +322,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
     }),
   },
   {
-    title: 'PE分位(10Y)',
+    title: () => headerWithHelp('pe_percentile_10y', 'PE分位(10Y)'),
     key: 'pe_percentile_10y',
     width: 112,
     align: 'center',
@@ -303,7 +340,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
     }),
   },
   {
-    title: 'PB分位',
+    title: () => headerWithHelp('pb_percentile', 'PB分位'),
     key: 'pb_percentile',
     width: 112,
     align: 'center',
@@ -322,7 +359,7 @@ PB 便宜 + ROE 中枢下移时，警惕价值陷阱——参考 ROE均值(5Y) �
     }),
   },
   {
-    title: 'PB分位(10Y)',
+    title: () => headerWithHelp('pb_percentile_10y', 'PB分位(10Y)'),
     key: 'pb_percentile_10y',
     width: 112,
     align: 'center',
@@ -340,7 +377,7 @@ PB 便宜 + ROE 中枢下移时，警惕价值陷阱——参考 ROE均值(5Y) �
     }),
   },
   {
-    title: '拥挤度',
+    title: () => headerWithHelp('crowding', '拥挤度'),
     key: 'crowding',
     width: 112,
     align: 'center',
@@ -350,7 +387,7 @@ PB 便宜 + ROE 中枢下移时，警惕价值陷阱——参考 ROE均值(5Y) �
     ]),
   },
   {
-    title: 'ERP Z分数',
+    title: () => headerWithHelp('erp_zscore', 'ERP Z分数'),
     key: 'erp_zscore',
     width: 112,
     align: 'center',
@@ -374,35 +411,35 @@ PB 便宜 + ROE 中枢下移时，警惕价值陷阱——参考 ROE均值(5Y) �
 
 const industryColumns: DataTableColumns<IndustryValuation> = [
   {
-    title: '行业',
+    title: () => headerWithHelp('name', '行业'),
     key: 'name',
     width: 130,
     fixed: 'left',
     render: (row) => row.name || row.code,
   },
   {
-    title: 'PE',
+    title: () => headerWithHelp('pe', 'PE'),
     key: 'pe',
     width: 80,
     align: 'right',
     render: (row) => row.pe != null ? row.pe.toFixed(1) : '—',
   },
   {
-    title: 'PB',
+    title: () => headerWithHelp('pb', 'PB'),
     key: 'pb',
     width: 80,
     align: 'right',
     render: (row) => row.pb != null ? row.pb.toFixed(2) : '—',
   },
   {
-    title: '股息率',
+    title: () => headerWithHelp('dividend_yield', '股息率'),
     key: 'dividend_yield',
     width: 90,
     align: 'right',
     render: (row) => row.dividend_yield != null ? row.dividend_yield.toFixed(2) + '%' : '—',
   },
   {
-    title: 'PE分位',
+    title: () => headerWithHelp('pe_percentile', 'PE分位'),
     key: 'pe_percentile',
     width: 130,
     align: 'center',
@@ -412,7 +449,7 @@ const industryColumns: DataTableColumns<IndustryValuation> = [
     ]),
   },
   {
-    title: 'PB分位',
+    title: () => headerWithHelp('pb_percentile', 'PB分位'),
     key: 'pb_percentile',
     width: 130,
     align: 'center',
@@ -422,7 +459,7 @@ const industryColumns: DataTableColumns<IndustryValuation> = [
     ]),
   },
   {
-    title: '拥挤度',
+    title: () => headerWithHelp('crowding', '拥挤度'),
     key: 'crowding',
     width: 130,
     align: 'center',
@@ -432,8 +469,6 @@ const industryColumns: DataTableColumns<IndustryValuation> = [
     ]),
   },
 ]
-
-import { h } from 'vue'
 
 // 行点击直接打开详情弹窗
 const rowProps = (row: BroadIndexValuation) => ({
@@ -1053,7 +1088,7 @@ const macroParams = computed(() => {
             :single-line="false"
             size="small"
             :max-height="560"
-            :scroll-x="1722"
+            :scroll-x="1768"
             :row-props="rowProps"
           />
           <n-empty v-else-if="!loading" description="暂无数据，请确保后端服务正常运行" style="padding: 60px 0" />
@@ -1632,5 +1667,10 @@ const macroParams = computed(() => {
 .index-valuation-page :deep(.n-data-table-td),
 .index-valuation-page :deep(.n-data-table-th) {
   padding: 4px 6px;
+}
+
+/* 表头标题禁止换行：即便因此出现横向滚动条也不折行（PE(TTM) 等标题明确要求单行） */
+.index-valuation-page :deep(.n-data-table-th) {
+  white-space: nowrap;
 }
 </style>
