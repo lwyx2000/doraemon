@@ -640,6 +640,10 @@ export const api = {
       method: 'DELETE',
     }),
 
+  // 上传留痕日志（持仓页「上传记录」tab）
+  getImportLogs: (limit = 100) =>
+    request<ImportLog[]>('/api/v1/import-logs', { limit }),
+
   // ============================================================
   // 账户名（个人中心维护，持仓页编辑时选用）
   // ============================================================
@@ -1014,4 +1018,5 @@ import type {
   LqrWideBase,
   LqrHuazheng,
   LqrStatus,
+  ImportLog,
 } from '../types'

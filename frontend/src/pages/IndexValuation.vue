@@ -470,11 +470,41 @@ const industryColumns: DataTableColumns<IndustryValuation> = [
   },
 ]
 
-// 行点击直接打开详情弹窗
+// 双击行 → 打开详情弹窗（需求 A：双击打开明细，单击留给表格自身交互）
 const rowProps = (row: BroadIndexValuation) => ({
   style: 'cursor: pointer',
-  onClick: () => openDetail(row),
+  onDblclick: () => openDetail(row),
 })
+
+// ==================== 表格横向滚动（需求 A 改版） ====================
+// 在表格内按住 Shift + 滚轮 → 横向滚动；双击行看明细；
+// 普通（非 Shift）滚轮保持原生竖向滚动。
+// 运行时定位横向滚动容器（不依赖 naive-ui 内部 class，跨版本稳健）
+function findHScroller(root: HTMLElement): HTMLElement | null {
+  const byClass = root.querySelector('.n-data-table-scroll-x') as HTMLElement | null
+  if (byClass && byClass.scrollWidth > byClass.clientWidth + 1) return byClass
+  const stack: HTMLElement[] = [root]
+  while (stack.length) {
+    const el = stack.pop()!
+    for (const child of Array.from(el.children) as HTMLElement[]) {
+      const cs = getComputedStyle(child)
+      if ((cs.overflowX === 'auto' || cs.overflowX === 'scroll') && child.scrollWidth > child.clientWidth + 1) {
+        return child
+      }
+      stack.push(child)
+    }
+  }
+  return null
+}
+
+function onIvTableWheel(e: WheelEvent) {
+  if (!e.shiftKey) return // 非 Shift：原生竖向滚动
+  const wrap = e.currentTarget as HTMLElement
+  const scroller = findHScroller(wrap)
+  if (!scroller || scroller.scrollWidth <= scroller.clientWidth + 1) return
+  e.preventDefault() // 阻止原生竖向滚动，改用横向
+  scroller.scrollBy({ left: e.deltaY })
+}
 
 // 导出宽基估值 CSV（原指数分析页功能）
 function exportCSV() {
@@ -1079,20 +1109,25 @@ const macroParams = computed(() => {
         </n-alert>
 
         <!-- 数据表格 -->
-        <n-spin :show="loading">
-          <n-data-table
-            v-if="data.length"
-            :columns="columns"
-            :data="data"
-            :bordered="false"
-            :single-line="false"
-            size="small"
-            :max-height="560"
-            :scroll-x="1768"
-            :row-props="rowProps"
-          />
-          <n-empty v-else-if="!loading" description="暂无数据，请确保后端服务正常运行" style="padding: 60px 0" />
-        </n-spin>
+        <div class="iv-table-hint">
+          表格较宽：在表格内<b>按住 Shift + 滚轮</b>可左右滚动，<b>双击某一行</b>查看该指数详情；普通滚轮滚动不受影响。
+        </div>
+        <div class="iv-table-scroll" @wheel="onIvTableWheel">
+          <n-spin :show="loading">
+            <n-data-table
+              v-if="data.length"
+              :columns="columns"
+              :data="data"
+              :bordered="false"
+              :single-line="false"
+              size="small"
+              :max-height="560"
+              :scroll-x="1768"
+              :row-props="rowProps"
+            />
+            <n-empty v-else-if="!loading" description="暂无数据，请确保后端服务正常运行" style="padding: 60px 0" />
+          </n-spin>
+        </div>
         <!-- 分位口径脚注：全史月度 vs 近10Y窗口 + 纳亏/剔亏双口径说明（2026-10-24 锚点校准后更新） -->
         <n-text v-if="data.length" depth="3" style="font-size: 12px; line-height: 1.7; display: block; margin-top: 4px;">
           分位口径：<b>PE分位 / PB分位</b> = 当前值在该指数<b>全历史月度序列</b>中的升序百分位（各指数序列起点见列头 tooltip）；
@@ -1131,19 +1166,24 @@ const macroParams = computed(() => {
         >
           {{ industryMeta.message || '行业估值快照（本地 base_sw_sector_daily）尚未累积到数据，请确认网关可访问或稍后重试。' }}
         </n-alert>
-        <n-spin :show="industryLoading">
-          <n-data-table
-            v-if="industryData.length"
-            :columns="industryColumns"
-            :data="industryData"
-            :bordered="false"
-            :single-line="false"
-            size="small"
-            :max-height="560"
-            :scroll-x="780"
-          />
-          <n-empty v-else-if="!industryLoading" description="暂无行业估值数据" style="padding: 60px 0" />
-        </n-spin>
+        <div class="iv-table-hint">
+          表格较宽：在表格内<b>按住 Shift + 滚轮</b>可左右滚动，<b>双击某一行</b>查看该指数详情；普通滚轮滚动不受影响。
+        </div>
+        <div class="iv-table-scroll" @wheel="onIvTableWheel">
+          <n-spin :show="industryLoading">
+            <n-data-table
+              v-if="industryData.length"
+              :columns="industryColumns"
+              :data="industryData"
+              :bordered="false"
+              :single-line="false"
+              size="small"
+              :max-height="560"
+              :scroll-x="780"
+            />
+            <n-empty v-else-if="!industryLoading" description="暂无行业估值数据" style="padding: 60px 0" />
+          </n-spin>
+        </div>
       </n-tab-pane>
     </n-tabs>
 
@@ -1672,5 +1712,38 @@ const macroParams = computed(() => {
 /* 表头标题禁止换行：即便因此出现横向滚动条也不折行（PE(TTM) 等标题明确要求单行） */
 .index-valuation-page :deep(.n-data-table-th) {
   white-space: nowrap;
+}
+
+/* 需求 A：表格横向滚动交互 —— 提示文字 + 左右边缘可滚动视觉提示（不拦截点击） */
+.iv-table-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin-bottom: 8px;
+}
+.iv-table-hint b {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.iv-table-scroll {
+  position: relative;
+}
+.iv-table-scroll::before,
+.iv-table-scroll::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  pointer-events: none;
+  z-index: 2;
+}
+.iv-table-scroll::before {
+  left: 0;
+  background: linear-gradient(to right, rgba(128, 128, 128, 0.16), transparent);
+}
+.iv-table-scroll::after {
+  right: 0;
+  background: linear-gradient(to left, rgba(128, 128, 128, 0.16), transparent);
 }
 </style>

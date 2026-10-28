@@ -14,6 +14,8 @@ from fastapi import APIRouter, HTTPException, Query
 
 from models import ApiResponse, TradeUploadRequest
 from services.trades_service import get_trades, import_trades, list_trade_dates
+from services.broker_account_service import get_broker_by_code
+from services.import_log_service import add_import_log
 from core.deps import resolve_external_user_id
 
 router = APIRouter(prefix="/trades", tags=["trades"])
@@ -33,14 +35,27 @@ def _validate_trade_date(trade_date: str) -> None:
 def import_trades_endpoint(body: TradeUploadRequest):
     """【无鉴权】成交数据上传：按 (user, trade_date) 覆盖（同日期旧记录删除后全量重插），
     新 trade_date 自动新增。调用方须以 user_id 或 username 指明归属用户。
+
+    broker_code（券商管理中生成的券商标识）整批必传：缺失或非法时整批条目进入
+    failed（不整体拒绝），并在上传记录留痕。
     """
     _validate_trade_date(body.trade_date)
     user_id = resolve_external_user_id(body.user_id, body.username)
-    result = import_trades(
-        user_id, body.trade_date,
-        [item.model_dump() for item in body.items],
-        source=body.source or "api",
-    )
+    broker_acct = get_broker_by_code(user_id, body.broker_code) if body.broker_code is not None else None
+    if broker_acct is None:
+        failed = [
+            {"index": i, "code": str(it.code or ""), "reason": "broker_code 缺失或非法（不属于该用户）"}
+            for i, it in enumerate(body.items)
+        ]
+        result = {"deleted": 0, "inserted": 0, "failed": failed}
+        add_import_log(user_id, "trades", body.source or "api", body.broker_code or "", "", result, total=len(body.items))
+        return ApiResponse(data=result)
+    # batch-level 券商 code 决定券商名，覆盖每一条自带的 broker
+    items = [it.model_dump() for it in body.items]
+    for it in items:
+        it["broker"] = broker_acct["broker"]
+    result = import_trades(user_id, body.trade_date, items, source=body.source or "api")
+    add_import_log(user_id, "trades", body.source or "api", body.broker_code, broker_acct["broker"], result, total=len(items))
     return ApiResponse(data=result)
 
 

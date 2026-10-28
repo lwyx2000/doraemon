@@ -241,6 +241,7 @@ from routers.datasource_router import router as datasource_router
 from routers.jobs_router import router as jobs_router
 from routers.dividend_router import router as dividend_router
 from routers.longterm_router import router as longterm_router
+from routers.import_log_router import router as import_log_router
 
 app.include_router(auth_router, prefix=f"{API_PREFIX}/auth")
 app.include_router(broker_account_router, prefix=API_PREFIX)
@@ -267,6 +268,7 @@ app.include_router(datasource_router, prefix=f"{API_PREFIX}/datasources")
 app.include_router(jobs_router, prefix=f"{API_PREFIX}/jobs")
 app.include_router(dividend_router, prefix=f"{API_PREFIX}/dividend")
 app.include_router(longterm_router, prefix=f"{API_PREFIX}/longterm")
+app.include_router(import_log_router, prefix=API_PREFIX)
 
 
 # ============================================================

@@ -23,6 +23,15 @@ _mock_accounts: dict[str, list[dict]] = {}
 # DuckDB 懒建表
 # ============================================================
 
+def _generate_code(existing: set[str]) -> str:
+    """生成每用户唯一的券商 code：BRK- + 6 位大写 hex。"""
+    for _ in range(20):
+        code = "BRK-" + uuid.uuid4().hex[:6].upper()
+        if code not in existing:
+            return code
+    return "BRK-" + uuid.uuid4().hex[:8].upper()  # 极端兜底
+
+
 def _ensure_tables() -> None:
     global _TABLES_READY
     if _TABLES_READY or USE_MOCK_DATA:
@@ -35,12 +44,43 @@ def _ensure_tables() -> None:
             fk_user BIGINT NOT NULL,
             broker     VARCHAR(50) NOT NULL,
             account    VARCHAR(50) DEFAULT '',
+            code       VARCHAR(20) DEFAULT '',
             created_at VARCHAR,
             updated_at VARCHAR
         )
         """
     )
+    # 兼容老表：补 code 列（已存在则忽略），并回填空 code
+    try:
+        db.execute("ALTER TABLE biz_broker_accounts ADD COLUMN code VARCHAR(20) DEFAULT ''")
+    except Exception:
+        pass
+    _backfill_codes()
     _TABLES_READY = True
+
+
+def _backfill_codes() -> None:
+    """为历史空 code 行生成每用户唯一的 code（幂等，仅处理空值）。"""
+    db = get_biz_db()
+    rows = db.fetchall(
+        "SELECT id, fk_user FROM biz_broker_accounts WHERE code IS NULL OR code = ''",
+        [],
+    )
+    if not rows:
+        return
+    used_by_user: dict[str, set[str]] = {}
+    for rid, fk_user in rows:
+        used = used_by_user.setdefault(fk_user, set())
+        for r in db.fetchall(
+            "SELECT code FROM biz_broker_accounts WHERE fk_user = ? AND code <> ''",
+            [fk_user],
+        ):
+            used.add(r[0])
+    for rid, fk_user in rows:
+        used = used_by_user.setdefault(fk_user, set())
+        code = _generate_code(used)
+        used.add(code)
+        db.execute("UPDATE biz_broker_accounts SET code = ? WHERE id = ?", [code, rid])
 
 
 def _now_iso() -> str:
@@ -57,12 +97,15 @@ def _load_accounts(user_id: str) -> list[dict]:
     _ensure_tables()
     db = get_biz_db()
     rows = db.fetchall(
-        "SELECT id, broker, account, created_at, updated_at "
+        "SELECT id, broker, account, code, created_at, updated_at "
         "FROM biz_broker_accounts WHERE fk_user = ? ORDER BY created_at",
         [user_id],
     )
     return [
-        {"id": r[0], "broker": r[1], "account": r[2] or "", "created_at": r[3], "updated_at": r[4]}
+        {
+            "id": r[0], "broker": r[1], "account": r[2] or "", "code": r[3] or "",
+            "created_at": r[4], "updated_at": r[5],
+        }
         for r in rows
     ]
 
@@ -80,9 +123,9 @@ def _save_account(user_id: str, item: dict) -> None:
     db = get_biz_db()
     db.execute("DELETE FROM biz_broker_accounts WHERE id = ?", [item["id"]])
     db.execute(
-        "INSERT INTO biz_broker_accounts (id, fk_user, broker, account, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        [item["id"], user_id, item["broker"], item["account"], item["created_at"], item["updated_at"]],
+        "INSERT INTO biz_broker_accounts (id, fk_user, broker, account, code, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [item["id"], user_id, item["broker"], item["account"], item.get("code", ""), item["created_at"], item["updated_at"]],
     )
 
 
@@ -90,17 +133,32 @@ def list_broker_accounts(user_id: str) -> list[dict]:
     return _load_accounts(user_id)
 
 
+def get_broker_by_code(user_id: str, code: str) -> dict | None:
+    """按 code 查找该用户下的券商；不存在/不匹配返回 None。"""
+    code = (code or "").strip()
+    if not code:
+        return None
+    for a in _load_accounts(user_id):
+        if a.get("code") == code:
+            return a
+    return None
+
+
 def create_broker_account(user_id: str, broker: str, account: str = "") -> dict | None:
-    """新增券商账号；同 (broker, account) 已存在时返回 None（路由返回 409）。"""
+    """新增券商账号；同 (broker, account) 已存在时返回 None（路由返回 409）。
+    自动生成每用户唯一的券商 code（BRK- + 6 位 hex）。"""
     broker = (broker or "").strip()
     account = (account or "").strip()
     if not broker:
         return None
-    for a in _load_accounts(user_id):
+    existing = _load_accounts(user_id)
+    for a in existing:
         if a["broker"] == broker and (a["account"] or "") == account:
             return None
     now = _now_iso()
-    item = {"id": str(uuid.uuid4()), "broker": broker, "account": account, "created_at": now, "updated_at": now}
+    used = {a["code"] for a in existing if a.get("code")}
+    code = _generate_code(used)
+    item = {"id": str(uuid.uuid4()), "broker": broker, "account": account, "code": code, "created_at": now, "updated_at": now}
     _save_account(user_id, item)
     return item
 

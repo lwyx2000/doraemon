@@ -5,14 +5,14 @@ import { useRouter } from 'vue-router'
 import {
   NButton, NIcon, NDataTable, NModal, NInput, NInputNumber, NSelect, NTag,
   NRadioGroup, NRadioButton, NPopover, NCheckbox, NSwitch, NTooltip,
-  NTabs, NTabPane,
+  NTabs, NTabPane, NCard, NAlert,
   useMessage, useDialog,
 } from 'naive-ui'
 import type { PaginationProps } from 'naive-ui'
 import { CloudUploadOutline, RefreshOutline, CameraOutline, ClipboardOutline, SettingsOutline, FilterOutline } from '@vicons/ionicons5'
 import { useAsyncData } from '../composables/useApi'
 import { api } from '../utils/api'
-import type { Holding, HoldingsView, HoldingSnapshot, HoldingSummary, BrokerAccount, AccountName, HoldingHistory } from '../types'
+import type { Holding, HoldingsView, HoldingSnapshot, HoldingSummary, BrokerAccount, AccountName, HoldingHistory, ImportLog } from '../types'
 import PageHeader from '../components/PageHeader.vue'
 import StatCard from '../components/StatCard.vue'
 import DataPanel from '../components/DataPanel.vue'
@@ -49,7 +49,7 @@ function typeColor(type: string) {
 const { data: view, loading, error, refresh } = useAsyncData<HoldingsView>(() => api.getHoldings())
 const { data: snapshots, refresh: refreshSnapshots } = useAsyncData<HoldingSnapshot[]>(() => api.getHoldingSnapshots())
 const { data: history, loading: historyLoading, refresh: refreshHistory } = useAsyncData<HoldingHistory[]>(() => api.getHoldingHistory())
-const activeTab = ref<'current' | 'history'>('current')
+const activeTab = ref<'current' | 'history' | 'brokers' | 'imports'>('current')
 
 // 表格分页：每页默认 20 行，客户端分页
 const pagination = ref<PaginationProps>({
@@ -63,15 +63,8 @@ const pagination = ref<PaginationProps>({
     pagination.value.page = 1
   },
 })
-// 个人中心配置的券商列表（筛选/导入选用）
+// 个人中心配置的券商列表（筛选/导入选用；加载与维护见下方「券商管理」区块）
 const brokerAccounts = ref<BrokerAccount[]>([])
-async function loadBrokerAccounts() {
-  try {
-    brokerAccounts.value = await api.getBrokerAccounts()
-  } catch {
-    brokerAccounts.value = []
-  }
-}
 // 个人中心配置的账户名列表（独立表，筛选/导入选用）
 const accountNames = ref<AccountName[]>([])
 async function loadAccountNames() {
@@ -851,6 +844,142 @@ const historySummary = computed(() => {
   const totalRealized = items.reduce((s, i) => s + (i.realized_pnl ?? 0), 0)
   return { count: items.length, totalRealized }
 })
+
+// ============ 券商管理（持仓页 tab：券商管理） ============
+// 复用个人中心的券商账号维护能力，并额外展示自动生成的 code（外部上传接口必传）
+const newBrokerName = ref('')
+const newBrokerAccount = ref('')
+const baLoading = ref(false)
+const baSaving = ref(false)
+const brokersLoaded = ref(false)
+
+async function loadBrokerAccounts() {
+  if (baLoading.value) return
+  baLoading.value = true
+  try {
+    brokerAccounts.value = await api.getBrokerAccounts()
+    brokersLoaded.value = true
+  } catch (e: any) {
+    message.error('加载券商失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
+  } finally {
+    baLoading.value = false
+  }
+}
+
+async function addBrokerAccount() {
+  const broker = newBrokerName.value.trim()
+  if (!broker) {
+    message.warning('请输入券商名称')
+    return
+  }
+  const account = newBrokerAccount.value.trim()
+  if (brokerAccounts.value.some(a => a.broker === broker && (a.account || '') === account)) {
+    message.warning(account ? '该券商账户已存在' : '该券商已存在（无账户名）')
+    return
+  }
+  baSaving.value = true
+  try {
+    await api.createBrokerAccount(broker, account)
+    message.success('券商已添加')
+    newBrokerName.value = ''
+    newBrokerAccount.value = ''
+    await loadBrokerAccounts()
+  } catch (e: any) {
+    message.error('添加失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
+  } finally {
+    baSaving.value = false
+  }
+}
+
+async function deleteBrokerAccount(id: string) {
+  try {
+    await api.deleteBrokerAccount(id)
+    message.success('已删除')
+    await loadBrokerAccounts()
+  } catch (e: any) {
+    message.error('删除失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
+  }
+}
+
+function copyBrokerCode(code: string) {
+  if (!code) return
+  const done = () => message.success(`已复制 code：${code}`)
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(code).then(done, () => message.warning('复制失败，请手动复制'))
+  } else {
+    message.warning('当前环境不支持自动复制，请手动复制')
+  }
+}
+
+// ============ 上传记录（持仓页 tab：上传记录） ============
+// 展示外部上传接口（持仓/成交导入）每次调用的留痕日志，便于核对导入结果
+const importLogs = ref<ImportLog[]>([])
+const importLogsLoading = ref(false)
+const importLogsLoaded = ref(false)
+
+async function loadImportLogs() {
+  if (importLogsLoading.value) return
+  importLogsLoading.value = true
+  try {
+    importLogs.value = await api.getImportLogs(100)
+    importLogsLoaded.value = true
+  } catch (e: any) {
+    message.error('加载上传记录失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
+  } finally {
+    importLogsLoading.value = false
+  }
+}
+
+function parseFailDetail(row: ImportLog): Array<{ index: number; code: string; reason: string }> {
+  try {
+    const arr = JSON.parse(row.fail_detail || '[]')
+    return Array.isArray(arr) ? arr : []
+  } catch {
+    return []
+  }
+}
+
+const importLogColumns = [
+  {
+    type: 'expand' as const,
+    renderExpand: (row: ImportLog) => {
+      const fails = parseFailDetail(row)
+      if (!fails.length) return h('div', { class: 'import-fail-empty' }, '本次导入无失败条目')
+      return h(
+        'div',
+        { class: 'import-fail-list' },
+        fails.map((f) =>
+          h(
+            'div',
+            { class: 'import-fail-item' },
+            [
+              h('span', { class: 'mono import-fail-idx' }, `#${f.index}`),
+              h('span', { class: 'mono import-fail-code' }, f.code || '—'),
+              h('span', { class: 'import-fail-reason' }, f.reason),
+            ],
+          ),
+        ),
+      )
+    },
+  },
+  { title: '时间', key: 'created_at', width: 165, render: (row: ImportLog) => row.created_at ? new Date(row.created_at).toLocaleString('zh-CN') : '—' },
+  { title: '接口', key: 'endpoint', width: 90, render: (row: ImportLog) => row.endpoint === 'holdings' ? '持仓' : row.endpoint === 'trades' ? '成交' : row.endpoint },
+  { title: '来源', key: 'source', width: 110, render: (row: ImportLog) => row.source || '—' },
+  { title: '券商code', key: 'broker_code', width: 130, render: (row: ImportLog) => h('span', { class: 'mono' }, row.broker_code || '—') },
+  { title: '券商', key: 'broker', width: 100, render: (row: ImportLog) => row.broker || '—' },
+  { title: '总条数', key: 'total', width: 80, align: 'right' as const },
+  { title: '新增', key: 'added', width: 70, align: 'right' as const, render: (row: ImportLog) => h('span', { style: row.added ? { color: 'var(--color-success)' } : {} }, String(row.added)) },
+  { title: '更新', key: 'updated', width: 70, align: 'right' as const },
+  { title: '插入', key: 'inserted', width: 70, align: 'right' as const },
+  { title: '删除', key: 'deleted', width: 70, align: 'right' as const },
+  { title: '失败', key: 'failed', width: 70, align: 'right' as const, render: (row: ImportLog) => h('span', { style: row.failed ? { color: 'var(--color-danger)', fontWeight: 600 } : {} }, String(row.failed)) },
+]
+
+// 切换 tab 时按需加载（券商管理 / 上传记录）
+watch(activeTab, (tab) => {
+  if (tab === 'brokers') loadBrokerAccounts()
+  if (tab === 'imports') loadImportLogs()
+})
 </script>
 
 <template>
@@ -1033,8 +1162,62 @@ const historySummary = computed(() => {
               size="small"
               max-height="520"
             />
-            <div v-if="!historyLoading && (!history || !history.length)" class="history-empty">
-              暂无历史持仓。在「当前持仓」中平仓某标的即会归档到此。
+          <div v-if="!historyLoading && (!history || !history.length)" class="history-empty">
+            暂无历史持仓。在「当前持仓」中平仓某标的即会归档到此。
+          </div>
+        </DataPanel>
+        </n-tab-pane>
+
+        <n-tab-pane name="brokers" tab="券商管理">
+          <n-card :bordered="false" class="broker-mgmt-card">
+            <template #header>券商与账户</template>
+            <template #header-extra>
+              <n-button size="small" :loading="baLoading" @click="loadBrokerAccounts">刷新</n-button>
+            </template>
+            <div class="broker-form">
+              <n-input v-model:value="newBrokerName" placeholder="券商名称（如 华泰证券）" clearable @keyup.enter="addBrokerAccount" />
+              <n-input v-model:value="newBrokerAccount" placeholder="账户名（可选，如 普通 / 两融）" clearable @keyup.enter="addBrokerAccount" />
+              <n-button type="primary" :loading="baSaving" @click="addBrokerAccount">添加</n-button>
+            </div>
+            <n-alert type="info" :show-icon="false" class="broker-hint">
+              每个券商账户自动生成唯一 <b>code</b>；外部上传接口（持仓 / 成交导入）报文中需整批传入对应 <span class="mono">broker_code</span>。点击「复制」即可复制 code 用于接口调用。
+            </n-alert>
+            <div class="broker-list broker-list-scroll">
+              <div v-for="a in brokerAccounts" :key="a.id" class="broker-item">
+                <div class="broker-item-main">
+                  <span class="broker-item-name">{{ a.broker }}</span>
+                  <span v-if="a.account" class="broker-item-account">{{ a.account }}</span>
+                </div>
+                <div class="broker-item-code">
+                  <span class="mono broker-code-text">{{ a.code || '—' }}</span>
+                  <n-button v-if="a.code" text size="small" type="primary" @click="copyBrokerCode(a.code)">复制</n-button>
+                </div>
+                <n-button text size="small" type="error" @click="deleteBrokerAccount(a.id)">删除</n-button>
+              </div>
+              <div v-if="brokersLoaded && !brokerAccounts.length" class="broker-empty">
+                尚未配置券商账户，添加后可在上传接口中引用其 code
+              </div>
+            </div>
+          </n-card>
+        </n-tab-pane>
+
+        <n-tab-pane name="imports" tab="上传记录">
+          <DataPanel title="上传留痕记录">
+            <template #actions>
+              <n-button size="small" :loading="importLogsLoading" @click="loadImportLogs">刷新</n-button>
+            </template>
+            <n-data-table
+              :columns="importLogColumns"
+              :data="importLogs"
+              :row-key="(row: ImportLog) => row.id"
+              :bordered="false"
+              :single-line="false"
+              size="small"
+              :scroll-x="1100"
+              max-height="520"
+            />
+            <div v-if="importLogsLoaded && !importLogs.length" class="import-empty">
+              暂无上传记录。通过外部上传接口（持仓 / 成交导入）导入数据后即会出现在此。
             </div>
           </DataPanel>
         </n-tab-pane>
@@ -1376,6 +1559,41 @@ const historySummary = computed(() => {
 .history-summary { font-size: 13px; color: var(--text-secondary); margin: 4px 0 10px; padding: 8px 12px; background: var(--bg-subtle); border: 1px solid var(--border-default); border-radius: 6px; }
 .history-summary b { color: var(--text-primary); font-family: 'JetBrains Mono', monospace; }
 .history-empty { padding: 24px; text-align: center; font-size: 12px; color: var(--text-muted); background: var(--bg-subtle); border-radius: 6px; }
+
+/* 券商管理 Tab */
+.broker-mgmt-card { border-radius: 10px; }
+.broker-form { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.broker-form .n-input { flex: 1; min-width: 160px; }
+.broker-hint { margin-bottom: 12px; font-size: 12px; line-height: 1.6; }
+.broker-hint .mono { font-family: 'JetBrains Mono', monospace; color: var(--color-primary); }
+.broker-list { display: flex; flex-direction: column; gap: 6px; }
+.broker-list-scroll { max-height: 360px; overflow-y: auto; }
+.broker-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-default);
+}
+.broker-item-main { display: flex; align-items: baseline; gap: 8px; flex: 1; min-width: 0; }
+.broker-item-name { font-weight: 600; font-size: 14px; color: var(--text-primary); }
+.broker-item-account { font-size: 12px; color: var(--text-muted); }
+.broker-item-code { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.broker-code-text { font-size: 13px; color: var(--color-primary); font-weight: 600; }
+.broker-empty { padding: 16px; text-align: center; font-size: 12px; color: var(--text-muted); background: var(--bg-subtle); border-radius: 6px; }
+
+/* 上传记录 Tab */
+.import-empty { padding: 24px; text-align: center; font-size: 12px; color: var(--text-muted); background: var(--bg-subtle); border-radius: 6px; margin-top: 10px; }
+.import-fail-empty { padding: 8px 12px; font-size: 12px; color: var(--text-muted); }
+.import-fail-list { display: flex; flex-direction: column; gap: 4px; padding: 4px 8px; }
+.import-fail-item { display: flex; align-items: center; gap: 10px; font-size: 12px; padding: 4px 8px; background: var(--bg-subtle); border-radius: 4px; }
+.import-fail-idx { color: var(--text-muted); }
+.import-fail-code { color: var(--color-primary); }
+.import-fail-reason { color: var(--color-danger); flex: 1; }
+.broker-list-scroll::-webkit-scrollbar { width: 6px; }
+.broker-list-scroll::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 3px; }
 
 /* 价格闪烁（绿涨红跌） */
 .holdings-page .flash-up { animation: flashUp 0.9s ease-out; }

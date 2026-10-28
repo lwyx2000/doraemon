@@ -8,6 +8,7 @@
 
 - 用户定位：请求体里用 `user_id`（整数，对应用户表 `pk_user`）**或** `username`（字符串）二选一指明归属用户。两者都缺 / 不存在 → `400`。
 - 留痕：`source` 字段标记来源程序（任意字符串，如 `"my_bot"`），写入历史表便于追溯；缺省为 `"api"`。
+- **券商标识 `broker_code`（整批必传）**：请求体**顶层**传一个 `broker_code`（形如 `BRK-1A2B3C`，来自前端「持仓分析 → 券商管理」tab 自动生成），**整批统一归属该券商**。不要再给每个 item 传 `broker`（即便传了也会被忽略，实际券商名由 `broker_code` 解析得到并逐条回填）。`broker_code` 缺失或不属于该用户 → **整批条目进入 `failed`、不写入任何数据**（详见各接口响应说明）。
 - 响应统一结构：`{ "code": 0, "message": "ok", "data": {...} }`（`ApiResponse`）。
 
 ---
@@ -23,6 +24,8 @@
 
 ### 字段（每个 item）
 
+> 顶层必传 `broker_code`（见上方通用约定），整批统一券商；下方 `broker` 列由后端按 `broker_code` 解析逐条回填，**无需逐条传**。
+
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `code` | string | ✅ | 证券代码 |
@@ -30,7 +33,7 @@
 | `type` | string | ✅ | `stock` / `etf` / `fund_otc` / `option` / `future` / `hk_stock` |
 | `quantity` | number | ✅ | 持仓数量 |
 | `cost_price` | number | ✅ | 成本价 |
-| `broker` | string | 否 | 券商 |
+| `broker` | string | 否 | 券商（**由顶层 `broker_code` 解析填充、逐条覆盖，不传或传了均忽略**） |
 | `account` | string | 否 | 子账户（普通 / 两融等） |
 | `open_date` | string | 否 | 建仓日期 |
 | `currency` | string | 否 | 币种，默认 `CNY` |
@@ -44,12 +47,12 @@ curl -X POST 'http://192.168.3.53:9080/api/v1/holdings/import/api' \
   -d '{
     "user_id": 1,
     "source": "my_bot",
+    "broker_code": "BRK-1A2B3C",
     "items": [
       {
         "code": "510300",
         "name": "沪深300ETF",
         "type": "etf",
-        "broker": "华泰",
         "account": "普通",
         "quantity": 10000,
         "cost_price": 3.85,
@@ -60,7 +63,6 @@ curl -X POST 'http://192.168.3.53:9080/api/v1/holdings/import/api' \
         "code": "600519",
         "name": "贵州茅台",
         "type": "stock",
-        "broker": "华泰",
         "account": "普通",
         "quantity": 100,
         "cost_price": 1680.0
@@ -69,7 +71,8 @@ curl -X POST 'http://192.168.3.53:9080/api/v1/holdings/import/api' \
   }'
 ```
 
-> 也可用 `username` 定位：`{ "username": "sos", "source": "my_bot", "items": [...] }`
+> 也可用 `username` 定位：`{ "username": "sos", "broker_code": "BRK-1A2B3C", "source": "my_bot", "items": [...] }`
+> `broker_code` 缺失或非法时响应为 `{ "added": 0, "updated": 0, "failed": [ { "index": 0, "code": "", "reason": "broker_code 缺失或非法（不属于该用户）" }, ... ] }`，整批不入库。
 
 ### 响应（data 部分）
 
@@ -91,6 +94,8 @@ curl -X POST 'http://192.168.3.53:9080/api/v1/holdings/import/api' \
 
 ### 字段（每个 item）
 
+> 顶层必传 `broker_code`（见上方通用约定），整批统一券商；下方 `broker` 由后端按 `broker_code` 解析逐条回填，**无需逐条传**。
+
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `code` | string | ✅ | 证券代码 |
@@ -99,7 +104,7 @@ curl -X POST 'http://192.168.3.53:9080/api/v1/holdings/import/api' \
 | `quantity` | number | ✅ | 成交数量（>0） |
 | `name` | string | 否 | 证券名称 |
 | `type` | string | 否 | 默认 `stock` |
-| `broker` / `account` | string | 否 | 券商 / 子账户 |
+| `broker` / `account` | string | 否 | 券商由顶层 `broker_code` 解析填充（逐条覆盖）；`account` 仍为逐条子账户 |
 | `amount` | number | 否 | 成交额；缺省自动 `price*quantity` 四舍五入 2 位 |
 | `fee` | number | 否 | 手续费 |
 | `trade_time` | string | 否 | 成交时间 `YYYY-MM-DD HH:MM:SS` |
@@ -112,13 +117,13 @@ curl -X POST 'http://192.168.3.53:9080/api/v1/trades/import' \
   -d '{
     "username": "sos",
     "source": "my_bot",
+    "broker_code": "BRK-1A2B3C",
     "trade_date": "2026-10-28",
     "items": [
       {
         "code": "510300",
         "name": "沪深300ETF",
         "type": "etf",
-        "broker": "华泰",
         "account": "普通",
         "direction": "buy",
         "price": 3.92,
@@ -129,7 +134,6 @@ curl -X POST 'http://192.168.3.53:9080/api/v1/trades/import' \
         "code": "600519",
         "name": "贵州茅台",
         "type": "stock",
-        "broker": "华泰",
         "account": "普通",
         "direction": "sell",
         "price": 1700.5,

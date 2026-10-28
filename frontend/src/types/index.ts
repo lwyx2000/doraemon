@@ -774,8 +774,27 @@ export interface BrokerAccount {
   id: string
   broker: string
   account: string
+  code: string
   created_at: string
   updated_at: string
+}
+
+// 上传留痕日志（每次外部 API 导入调用的记录，持仓页「上传记录」tab 展示）
+export interface ImportLog {
+  id: string
+  fk_user: string
+  endpoint: string
+  source: string
+  broker_code: string
+  broker: string
+  total: number
+  added: number
+  updated: number
+  deleted: number
+  inserted: number
+  failed: number
+  fail_detail: string
+  created_at: string
 }
 
 // 账户名（独立列表，持仓页编辑时选用）

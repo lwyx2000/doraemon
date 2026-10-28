@@ -397,12 +397,14 @@ TABLES = [
 
     # 19.2 券商列表（持仓页筛选/导入选用）—— 实际由 broker_account_service 首次使用时懒创建，此处仅作文档化
     # 2026-08 重构：此表仅存券商名称，账户名拆到 biz_account_names 独立表
+    # 2026-10 新增 code 列：券商唯一标识，外部上传接口需传此 code 关联券商
     """
     CREATE TABLE IF NOT EXISTS biz_broker_accounts (
         id               VARCHAR PRIMARY KEY,
         fk_user BIGINT NOT NULL,
         broker           VARCHAR(50) NOT NULL,
         account          VARCHAR(50) DEFAULT '',
+        code             VARCHAR(20) DEFAULT '',
         created_at       VARCHAR,
         updated_at       VARCHAR
     )

@@ -537,10 +537,14 @@ class HoldingUploadRequest(BaseModel):
 
     增量合并（merge）：按 code+type+account 去重，重复导入=覆盖更新；
     覆盖前旧数据写入 biz_holdings_history 表留痕。
+
+    broker_code：整批券商标识（券商管理中生成，BRK-xxxxxx），必传；
+    非法/缺失时整批条目进入 failed（不整体拒绝）。
     """
     user_id: Optional[int] = None
     username: Optional[str] = None
     source: Optional[str] = ""       # 来源程序标记，写入历史表便于追溯
+    broker_code: Optional[str] = None
     items: list[HoldingUploadItem]
 
 
@@ -567,10 +571,14 @@ class TradeUploadRequest(BaseModel):
 
     已存在同 (user, trade_date) 的旧记录会被全量覆盖（删除后重插）；
     新 trade_date 直接全量新增。
+
+    broker_code：整批券商标识（券商管理中生成，BRK-xxxxxx），必传；
+    非法/缺失时整批条目进入 failed（不整体拒绝）。
     """
     user_id: Optional[int] = None
     username: Optional[str] = None
     source: Optional[str] = ""
+    broker_code: Optional[str] = None
     trade_date: str                  # YYYY-MM-DD，必填，归属交易日
     items: list[TradeImportItem]
 
