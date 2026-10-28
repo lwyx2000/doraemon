@@ -139,12 +139,10 @@ function algoCell(
   pct10y: number | null,
   tip: string,
 ): any {
+  // 单元格：上方「底层绝对值 + 全史分位%」（左值右分位），下方全史分位填充条；
+  // 10Y 分位挂 tooltip。分位条改用 PercentileIndicator 的填充条形式（更直观）。
   return h(NTooltip, { trigger: 'hover' }, {
-    trigger: () => h('div', { style: 'display:flex; flex-direction:column; align-items:flex-end; gap:3px;' }, [
-      h('div', { style: 'font-family: "JetBrains Mono", monospace; font-weight:700; font-size:13px;' },
-        value != null ? value.toFixed(2) : '—'),
-      h(PercentileIndicator, { value: pctAll ?? null, width: 64 }),
-    ]),
+    trigger: () => h(PercentileIndicator, { value: pctAll ?? null, metric: value, width: 100 }),
     default: () => `${tip}\n全史分位：${pctAll != null ? pctAll.toFixed(1) + '%' : '—'}\n近10年分位：${pct10y != null ? pct10y.toFixed(1) + '%' : '—'}`,
   })
 }

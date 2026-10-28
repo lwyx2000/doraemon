@@ -10,6 +10,7 @@
   ],
   "docs": [
     { "id": "erp-pe-pb", "category": "methodology", "title": "ERP 与指数 PE/PB 分位口径", "file": "erp-pe-pb.md", "tags": ["ERP", "PE", "PB", "分位", "估值", "胜率"] },
+    { "id": "pe-pb-roe", "category": "methodology", "title": "PE/PB/ROE 估值三件套详解", "file": "pe-pb-roe.md", "tags": ["PE", "PB", "ROE", "市盈率", "市净率", "净资产收益率", "估值", "杜邦", "价值陷阱"] },
     { "id": "fear-greed", "category": "methodology", "title": "贪婪恐惧指数算法口径", "file": "fear-greed.md", "tags": ["贪婪恐惧", "情绪", "min-max", "加权", "近似日"] },
     { "id": "tracking-error", "category": "methodology", "title": "跟踪误差计算口径", "file": "tracking-error.md", "tags": ["跟踪误差", "指数", "基金净值", "东财", "新浪"] },
     { "id": "percentile-color", "category": "methodology", "title": "分位色阶单一真源", "file": "percentile-color.md", "tags": ["分位", "配色", "percentile.ts", "涨跌色"] },

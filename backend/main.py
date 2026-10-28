@@ -225,6 +225,7 @@ from routers.reits_router import router as reits_router
 from routers.favorite_router import router as favorite_router
 from routers.portfolio_router import router as portfolio_router
 from routers.holdings_router import router as holdings_router
+from routers.trades_router import router as trades_router
 from routers.strategy_router import router as strategy_router
 from routers.alert_router import router as alert_router
 from routers.ai_router import router as ai_router
@@ -252,6 +253,7 @@ app.include_router(reits_router, prefix=f"{API_PREFIX}/reits")
 app.include_router(favorite_router, prefix=API_PREFIX)
 app.include_router(portfolio_router, prefix=API_PREFIX)
 app.include_router(holdings_router, prefix=API_PREFIX)
+app.include_router(trades_router, prefix=API_PREFIX)
 app.include_router(strategy_router, prefix=API_PREFIX)
 app.include_router(alert_router, prefix=API_PREFIX)
 app.include_router(ai_router, prefix=API_PREFIX)

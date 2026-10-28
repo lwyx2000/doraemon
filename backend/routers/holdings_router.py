@@ -6,18 +6,24 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
-from models import ApiResponse, HoldingImportRequest, HoldingUpdate
+from models import (
+    ApiResponse,
+    HoldingImportRequest,
+    HoldingUpdate,
+    HoldingUploadRequest,
+)
 from services.holdings_service import (
     HOLDING_TYPES,
     build_holdings_view,
     delete_holding,
     get_holding_history,
+    get_holdings_archive,
     get_snapshots,
     import_holdings,
     take_snapshot,
     update_holding,
 )
-from core.deps import get_current_user
+from core.deps import get_current_user, resolve_external_user_id
 
 router = APIRouter(prefix="/holdings", tags=["holdings"])
 
@@ -42,13 +48,38 @@ def list_holding_history(user_id: str = Depends(get_current_user)):
     return ApiResponse(data=get_holding_history(user_id))
 
 
+@router.get("/history/archive", response_model=ApiResponse[list[dict]])
+def list_holding_archive(hold_id: str | None = None, user_id: str = Depends(get_current_user)):
+    """覆盖更新前的持仓旧行快照（biz_holdings_history）：按归档时间倒序。
+    hold_id 非空时仅看某持仓被覆盖的历史。
+    """
+    return ApiResponse(data=get_holdings_archive(user_id, hold_id=hold_id))
+
+
 @router.post("/import", response_model=ApiResponse[dict])
 def import_holdings_endpoint(
     body: HoldingImportRequest,
     user_id: str = Depends(get_current_user),
 ):
     """JSON 文档批量导入：按 code+type+account 去重，重复导入为覆盖更新。"""
-    result = import_holdings(user_id, [item.model_dump() for item in body.items])
+    result = import_holdings(user_id, [item.model_dump() for item in body.items], source="web")
+    return ApiResponse(data=result)
+
+
+@router.post("/import/api", response_model=ApiResponse[dict])
+def import_holdings_api(body: HoldingUploadRequest):
+    """【无鉴权】机器 / 外部程序批量上传持仓：增量合并（merge）。
+
+    - 调用方须在 user_id / username 中指明归属用户（二选一）；
+    - 按 code+type+account 去重，已存在=覆盖更新，新增=插入；
+    - 覆盖更新前旧行写入 biz_holdings_history（source=传入的来源标记或 "api"），
+      满足「旧的数据存到数据表中，记录下」的留痕需求。
+    非用户浏览器调用接口，无需 JWT。
+    """
+    user_id = resolve_external_user_id(body.user_id, body.username)
+    result = import_holdings(
+        user_id, [item.model_dump() for item in body.items], source=body.source or "api",
+    )
     return ApiResponse(data=result)
 
 
@@ -129,7 +160,7 @@ async def import_holdings_csv(
     if not items:
         raise HTTPException(status_code=400, detail="未解析到有效持仓行")
 
-    result = import_holdings(user_id, items)
+    result = import_holdings(user_id, items, source="web")
     return ApiResponse(data=result)
 
 
