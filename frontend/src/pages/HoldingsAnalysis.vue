@@ -5,13 +5,14 @@ import { useRouter } from 'vue-router'
 import {
   NButton, NIcon, NDataTable, NModal, NInput, NInputNumber, NSelect, NTag,
   NRadioGroup, NRadioButton, NPopover, NCheckbox, NSwitch, NTooltip,
-  NTabs, NTabPane, NCard, NAlert,
+  NTabs, NTabPane, NCard, NAlert, NCollapse, NCollapseItem,
   useMessage, useDialog,
 } from 'naive-ui'
 import type { PaginationProps } from 'naive-ui'
 import { CloudUploadOutline, RefreshOutline, CameraOutline, ClipboardOutline, SettingsOutline, FilterOutline } from '@vicons/ionicons5'
 import { useAsyncData } from '../composables/useApi'
 import { api } from '../utils/api'
+import { useAuth } from '../composables/useAuth'
 import type { Holding, HoldingsView, HoldingSnapshot, HoldingSummary, BrokerAccount, AccountName, HoldingHistory, ImportLog } from '../types'
 import PageHeader from '../components/PageHeader.vue'
 import StatCard from '../components/StatCard.vue'
@@ -23,6 +24,7 @@ import GlossaryPanel from '../components/GlossaryPanel.vue'
 const message = useMessage()
 const dialog = useDialog()
 const router = useRouter()
+const { username: authUsername } = useAuth()
 
 const TYPE_LABELS: Record<string, string> = {
   stock: '股票',
@@ -454,7 +456,7 @@ const IMPORT_TEMPLATE = `[
 ]`
 
 const showImportModal = ref(false)
-const importMode = ref<'json' | 'csv'>('json')
+const importMode = ref<'json' | 'csv' | 'trades'>('json')
 const importText = ref('')
 const importErrors = ref<string[]>([])
 const importValidCount = ref(0)
@@ -462,6 +464,33 @@ const importing = ref(false)
 const csvFile = ref<File | null>(null)
 const csvBroker = ref('')
 const csvAccount = ref('')
+
+// 成交记录导入（复用无鉴权 POST /api/v1/trades/import，body 带当前 username）
+const TRADE_TEMPLATE = `{
+  "trade_date": "2026-10-22",
+  "items": [
+    { "code": "600519", "name": "贵州茅台", "type": "stock", "account": "普通", "direction": "buy", "price": 1700.5, "quantity": 100, "fee": 5.5 },
+    { "code": "510300", "name": "沪深300ETF", "type": "etf", "account": "普通", "direction": "sell", "price": 3.95, "quantity": 1000, "fee": 1.2 },
+    { "code": "00700", "name": "腾讯控股", "type": "hk_stock", "account": "普通", "direction": "buy", "price": 420, "quantity": 200, "currency": "HKD", "fee": 18 }
+  ]
+}`
+const tradeDate = ref('')
+const tradeDateTs = ref<number | null>(null)
+const tradeBrokerCode = ref('')
+const tradeText = ref('')
+const tradeErrors = ref<string[]>([])
+const tradeValidCount = ref(0)
+// 券商账户下拉（value=账户 code，作为成交上传的 broker_code）
+const tradeBrokerOptions = computed(() =>
+  brokerAccounts.value.map(a => ({ label: `${a.broker} · ${a.account}`, value: a.code })),
+)
+function fmtTradeDate(v: number | null): string {
+  if (!v) return ''
+  const d = new Date(v)
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${d.getFullYear()}-${m}-${day}`
+}
 
 function parseImportText(): { items: Array<Record<string, unknown>>; errors: string[] } {
   const errors: string[] = []
@@ -495,7 +524,83 @@ function previewImport() {
   importValidCount.value = items.length
 }
 
+// 成交记录 JSON 解析（顶层 { trade_date, items }）
+function parseTradeText(): { items: Array<Record<string, unknown>>; errors: string[] } {
+  const errors: string[] = []
+  if (!tradeDate.value) errors.push('请先填写「交易日期」（YYYY-MM-DD）')
+  if (!tradeBrokerCode.value) errors.push('请先选择「券商」（决定 broker_code，整批必传）')
+  if (errors.length) return { items: [], errors }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(tradeText.value)
+  } catch (e) {
+    return { items: [], errors: [`JSON 解析失败：${String(e)}`] }
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { items: [], errors: ['顶层必须是一个 JSON 对象 { "trade_date": "...", "items": [ ... ] }'] }
+  }
+  const obj = parsed as Record<string, unknown>
+  const arr = obj.items
+  if (!Array.isArray(arr)) return { items: [], errors: ['缺少 items 数组字段'] }
+  const items: Array<Record<string, unknown>> = []
+  arr.forEach((raw, i) => {
+    const line = `第 ${i + 1} 条`
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { errors.push(`${line}：必须是对象`); return }
+    const r = raw as Record<string, unknown>
+    if (!r.code || !r.name) { errors.push(`${line}：缺少 code 或 name`); return }
+    if (!TYPE_LABELS[r.type as string]) {
+      errors.push(`${line}：未知 type "${String(r.type)}"（可选：${Object.keys(TYPE_LABELS).join(' / ')}）`)
+      return
+    }
+    if (r.direction !== 'buy' && r.direction !== 'sell') {
+      errors.push(`${line}：direction 必须为 "buy" 或 "sell"`); return
+    }
+    if (typeof r.quantity !== 'number' || r.quantity === 0) { errors.push(`${line}：quantity 必须为非零数字`); return }
+    if (typeof r.price !== 'number') { errors.push(`${line}：price 必须为数字`); return }
+    items.push(r)
+  })
+  return { items, errors }
+}
+
+function previewTrade() {
+  const { items, errors } = parseTradeText()
+  tradeErrors.value = errors
+  tradeValidCount.value = items.length
+}
+
 async function submitImport() {
+  if (importMode.value === 'trades') {
+    const { items, errors } = parseTradeText()
+    tradeErrors.value = errors
+    tradeValidCount.value = items.length
+    if (items.length === 0) {
+      message.warning('没有可导入的有效成交条目，请检查格式')
+      return
+    }
+    importing.value = true
+    try {
+      const result = await api.importTrades({
+        username: authUsername.value || '',
+        source: 'web',
+        broker_code: tradeBrokerCode.value,
+        trade_date: tradeDate.value,
+        items,
+      })
+      let msg = `导入完成：新增 ${result.inserted}`
+      if (result.deleted) msg += `（覆盖删除 ${result.deleted}）`
+      if (result.failed.length) msg += `，失败 ${result.failed.length}（${result.failed[0].reason}…）`
+      message.success(msg)
+      showImportModal.value = false
+      tradeText.value = ''
+      tradeErrors.value = []
+      refreshAll()
+    } catch (e: any) {
+      message.error(e.message || '成交导入失败')
+    } finally {
+      importing.value = false
+    }
+    return
+  }
   if (importMode.value === 'json') {
     const { items, errors } = parseImportText()
     importErrors.value = errors
@@ -542,6 +647,15 @@ async function submitImport() {
 }
 
 function copyTemplate() {
+  if (importMode.value === 'trades') {
+    tradeText.value = TRADE_TEMPLATE
+    previewTrade()
+    navigator.clipboard.writeText(TRADE_TEMPLATE).then(
+      () => message.success('示例已填入输入框并复制到剪贴板'),
+      () => message.success('示例已填入输入框'),
+    )
+    return
+  }
   importText.value = IMPORT_TEMPLATE
   previewImport()
   navigator.clipboard.writeText(IMPORT_TEMPLATE).then(
@@ -1014,6 +1128,7 @@ watch(activeTab, (tab) => {
 
       <n-tabs type="line" v-model:value="activeTab" class="holdings-tabs">
         <n-tab-pane name="current" tab="当前持仓">
+      <div class="current-section">
       <!-- 风险预警条 -->
       <div v-if="summary && summary.warnings.length" class="warnings-strip">
         <div v-for="(w, i) in summary.warnings" :key="i" :class="['warning-item', w.level]">
@@ -1145,6 +1260,7 @@ watch(activeTab, (tab) => {
           max-height="260"
         />
       </DataPanel>
+      </div>
         </n-tab-pane>
 
         <n-tab-pane name="history" tab="历史持仓">
@@ -1226,42 +1342,74 @@ watch(activeTab, (tab) => {
     </div>
 
     <!-- 导入弹窗 -->
-    <n-modal v-model:show="showImportModal" preset="card" title="批量导入持仓" style="width: 720px; max-width: 94vw;" :bordered="false">
+    <n-modal v-model:show="showImportModal" preset="card" title="批量导入数据" style="width: 760px; max-width: 94vw;" :bordered="false">
       <n-radio-group v-model:value="importMode" size="small" style="margin-bottom: 12px;">
-        <n-radio-button value="json">JSON 粘贴</n-radio-button>
-        <n-radio-button value="csv">CSV/Excel 文件</n-radio-button>
+        <n-radio-button value="json">持仓 · JSON</n-radio-button>
+        <n-radio-button value="csv">持仓 · CSV</n-radio-button>
+        <n-radio-button value="trades">成交记录</n-radio-button>
       </n-radio-group>
 
-      <!-- 字段说明表 -->
-      <div class="import-field-docs">
-        <div class="import-docs-header">
-          <h4>字段说明</h4>
-          <n-button size="tiny" quaternary @click="copyTemplate">
-            <template #icon><n-icon :component="ClipboardOutline" /></template>
-            复制示例
-          </n-button>
+      <!-- ================= 成交记录导入 ================= -->
+      <template v-if="importMode === 'trades'">
+        <!-- 顶部参数：交易日期 + 券商账户 -->
+        <div class="trade-params">
+          <div class="edit-field" style="flex: 1; min-width: 160px;">
+            <label>交易日期（必填，YYYY-MM-DD）</label>
+            <n-date-picker
+              v-model:value="tradeDateTs"
+              type="date"
+              clearable
+              style="width: 100%;"
+              @update:value="(v: number | null) => { tradeDate = fmtTradeDate(v); previewTrade() }"
+            />
+          </div>
+          <div class="edit-field" style="flex: 1; min-width: 160px;">
+            <label>券商账户（决定 broker_code，整批必传）</label>
+            <n-select
+              v-model:value="tradeBrokerCode"
+              :options="tradeBrokerOptions"
+              placeholder="选择券商账户"
+              clearable
+              filterable
+              @update:value="previewTrade"
+            />
+          </div>
         </div>
-        <table class="import-field-table">
-          <thead>
-            <tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr>
-          </thead>
-          <tbody>
-            <tr><td class="ft-field">code</td><td class="ft-type">string</td><td class="ft-req">是</td><td class="ft-desc">证券代码（如 600519 / 510300 / 00700）</td></tr>
-            <tr><td class="ft-field">name</td><td class="ft-type">string</td><td class="ft-req">是</td><td class="ft-desc">证券名称（如 贵州茅台）</td></tr>
-            <tr><td class="ft-field">type</td><td class="ft-type">enum</td><td class="ft-req">是</td><td class="ft-desc">持仓类型：stock(股票) / etf(场内基金) / fund_otc(场外基金) / option(期权) / future(期货) / hk_stock(港股)</td></tr>
-            <tr><td class="ft-field">quantity</td><td class="ft-type">number</td><td class="ft-req">是</td><td class="ft-desc">持仓数量（股数/份数/张数，不能为0）</td></tr>
-            <tr><td class="ft-field">cost_price</td><td class="ft-type">number</td><td class="ft-req">是</td><td class="ft-desc">成本价（买入均价），单位与 currency 一致</td></tr>
-            <tr><td class="ft-field">broker</td><td class="ft-type">string</td><td class="ft-opt">否</td><td class="ft-desc">券商/渠道名称（如 华泰证券、天天基金）</td></tr>
-            <tr><td class="ft-field">account</td><td class="ft-type">string</td><td class="ft-opt">否</td><td class="ft-desc">子账户（如 普通 / 两融），用于分账户统计与筛选</td></tr>
-            <tr><td class="ft-field">open_date</td><td class="ft-type">string</td><td class="ft-opt">否</td><td class="ft-desc">建仓日期（YYYY-MM-DD）</td></tr>
-            <tr><td class="ft-field">currency</td><td class="ft-type">string</td><td class="ft-opt">否</td><td class="ft-desc">币种，默认 CNY（人民币）。港股可填 HKD</td></tr>
-            <tr><td class="ft-field">stop_loss_pct</td><td class="ft-type">number</td><td class="ft-opt">否</td><td class="ft-desc">止损线（收益率 %，负值如 -8），触发后顶部预警条与表格高亮提示</td></tr>
-            <tr><td class="ft-field">take_profit_pct</td><td class="ft-type">number</td><td class="ft-opt">否</td><td class="ft-desc">止盈线（收益率 %，正值如 20），触发后顶部预警条与表格高亮提示</td></tr>
-          </tbody>
-        </table>
-      </div>
+        <div v-if="!tradeBrokerOptions.length" class="import-errors" style="margin-bottom: 14px;">
+          尚未配置券商账户，请先到「券商管理」或「个人中心」添加券商账户（每项自动生成唯一 code）后再上传成交。
+        </div>
 
-      <template v-if="importMode === 'json'">
+        <!-- 字段说明表 -->
+        <div class="import-field-docs">
+          <div class="import-docs-header">
+            <h4>字段说明</h4>
+            <n-button size="tiny" quaternary @click="copyTemplate">
+              <template #icon><n-icon :component="ClipboardOutline" /></template>
+              复制示例
+            </n-button>
+          </div>
+          <table class="import-field-table">
+            <thead>
+              <tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="ft-field">trade_date</td><td class="ft-type">string</td><td class="ft-req">是*</td><td class="ft-desc">交易日期（YYYY-MM-DD），也可在上方日期选择器填写；按 (用户, 交易日) 覆盖上传</td></tr>
+              <tr><td class="ft-field">items</td><td class="ft-type">array</td><td class="ft-req">是</td><td class="ft-desc">成交明细数组，每条为一个成交对象（见下）</td></tr>
+              <tr><td class="ft-field">items[].code</td><td class="ft-type">string</td><td class="ft-req">是</td><td class="ft-desc">证券代码（如 600519 / 510300 / 00700）</td></tr>
+              <tr><td class="ft-field">items[].name</td><td class="ft-type">string</td><td class="ft-req">是</td><td class="ft-desc">证券名称（如 贵州茅台）</td></tr>
+              <tr><td class="ft-field">items[].type</td><td class="ft-type">enum</td><td class="ft-req">是</td><td class="ft-desc">持仓类型：stock / etf / fund_otc / option / future / hk_stock</td></tr>
+              <tr><td class="ft-field">items[].direction</td><td class="ft-type">enum</td><td class="ft-req">是</td><td class="ft-desc">买卖方向：buy（买入） / sell（卖出）</td></tr>
+              <tr><td class="ft-field">items[].price</td><td class="ft-type">number</td><td class="ft-req">是</td><td class="ft-desc">成交价格，单位与 currency 一致</td></tr>
+              <tr><td class="ft-field">items[].quantity</td><td class="ft-type">number</td><td class="ft-req">是</td><td class="ft-desc">成交数量（股数/份数/张数，不能为0）</td></tr>
+              <tr><td class="ft-field">items[].account</td><td class="ft-type">string</td><td class="ft-opt">否</td><td class="ft-desc">子账户（如 普通 / 两融）</td></tr>
+              <tr><td class="ft-field">items[].amount</td><td class="ft-type">number</td><td class="ft-opt">否</td><td class="ft-desc">成交金额，缺省自动 = price × quantity</td></tr>
+              <tr><td class="ft-field">items[].fee</td><td class="ft-type">number</td><td class="ft-opt">否</td><td class="ft-desc">手续费 / 佣金，单位与 currency 一致</td></tr>
+              <tr><td class="ft-field">items[].currency</td><td class="ft-type">string</td><td class="ft-opt">否</td><td class="ft-desc">币种，默认 CNY；港股可填 HKD</td></tr>
+              <tr><td class="ft-field">items[].trade_time</td><td class="ft-type">string</td><td class="ft-opt">否</td><td class="ft-desc">成交时间（HH:MM:SS，可选）</td></tr>
+            </tbody>
+          </table>
+        </div>
+
         <!-- JSON 示例 -->
         <div class="import-example">
           <div class="import-example-header">
@@ -1269,41 +1417,106 @@ watch(activeTab, (tab) => {
             <span class="import-example-hint">点击「复制示例」按钮可将示例填入输入框</span>
           </div>
           <div class="import-example-block">
-            <pre class="import-example-pre">{{ IMPORT_TEMPLATE }}</pre>
+            <pre class="import-example-pre">{{ TRADE_TEMPLATE }}</pre>
           </div>
         </div>
 
         <!-- 输入区 -->
         <div class="import-input-section">
-          <label class="import-input-label">粘贴您的持仓 JSON</label>
+          <label class="import-input-label">粘贴您的成交记录 JSON（含 trade_date 与 items 数组）</label>
           <n-input
-            v-model:value="importText"
+            v-model:value="tradeText"
             type="textarea"
-            placeholder='[{ "code": "600519", "name": "贵州茅台", "type": "stock", "broker": "华泰证券", "quantity": 100, "cost_price": 1700.5 }]'
+            placeholder='{ "trade_date": "2026-10-22", "items": [ { "code": "600519", "name": "贵州茅台", "type": "stock", "direction": "buy", "price": 1700.5, "quantity": 100 } ] }'
             :autosize="{ minRows: 6, maxRows: 14 }"
             class="mono"
-            @input="previewImport"
+            @input="previewTrade"
           />
         </div>
 
         <!-- 校验结果 -->
-        <div v-if="importErrors.length" class="import-errors">
-          <div v-for="(e, i) in importErrors" :key="i">{{ e }}</div>
+        <div v-if="tradeErrors.length" class="import-errors">
+          <div v-for="(e, i) in tradeErrors" :key="i">{{ e }}</div>
         </div>
-        <div v-else-if="importValidCount > 0" class="import-ok">
-          解析成功：{{ importValidCount }} 条有效持仓
+        <div v-else-if="tradeValidCount > 0" class="import-ok">
+          解析成功：{{ tradeValidCount }} 条有效成交
         </div>
       </template>
 
+      <!-- ================= 持仓导入（JSON / CSV） ================= -->
       <template v-else>
-        <div class="import-input-section">
-          <label class="import-input-label">上传 CSV 文件（支持华泰 PC 客户端导出的持仓表，或 Excel 另存为 CSV）</label>
-          <input type="file" accept=".csv,.txt" @change="e => csvFile = (e.target as HTMLInputElement).files?.[0] ?? null" />
-          <div style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">
-            列头可包含：证券代码、证券名称、持仓数量、成本价、账户 等；未识别的代码将按 6 位代码推断为股票或场内基金。
+        <!-- 字段说明表 -->
+        <div class="import-field-docs">
+          <div class="import-docs-header">
+            <h4>字段说明</h4>
+            <n-button size="tiny" quaternary @click="copyTemplate">
+              <template #icon><n-icon :component="ClipboardOutline" /></template>
+              复制示例
+            </n-button>
           </div>
+          <table class="import-field-table">
+            <thead>
+              <tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="ft-field">code</td><td class="ft-type">string</td><td class="ft-req">是</td><td class="ft-desc">证券代码（如 600519 / 510300 / 00700）</td></tr>
+              <tr><td class="ft-field">name</td><td class="ft-type">string</td><td class="ft-req">是</td><td class="ft-desc">证券名称（如 贵州茅台）</td></tr>
+              <tr><td class="ft-field">type</td><td class="ft-type">enum</td><td class="ft-req">是</td><td class="ft-desc">持仓类型：stock(股票) / etf(场内基金) / fund_otc(场外基金) / option(期权) / future(期货) / hk_stock(港股)</td></tr>
+              <tr><td class="ft-field">quantity</td><td class="ft-type">number</td><td class="ft-req">是</td><td class="ft-desc">持仓数量（股数/份数/张数，不能为0）</td></tr>
+              <tr><td class="ft-field">cost_price</td><td class="ft-type">number</td><td class="ft-req">是</td><td class="ft-desc">成本价（买入均价），单位与 currency 一致</td></tr>
+              <tr><td class="ft-field">broker</td><td class="ft-type">string</td><td class="ft-opt">否</td><td class="ft-desc">券商/渠道名称（如 华泰证券、天天基金）</td></tr>
+              <tr><td class="ft-field">account</td><td class="ft-type">string</td><td class="ft-opt">否</td><td class="ft-desc">子账户（如 普通 / 两融），用于分账户统计与筛选</td></tr>
+              <tr><td class="ft-field">open_date</td><td class="ft-type">string</td><td class="ft-opt">否</td><td class="ft-desc">建仓日期（YYYY-MM-DD）</td></tr>
+              <tr><td class="ft-field">currency</td><td class="ft-type">string</td><td class="ft-opt">否</td><td class="ft-desc">币种，默认 CNY（人民币）。港股可填 HKD</td></tr>
+              <tr><td class="ft-field">stop_loss_pct</td><td class="ft-type">number</td><td class="ft-opt">否</td><td class="ft-desc">止损线（收益率 %，负值如 -8），触发后顶部预警条与表格高亮提示</td></tr>
+              <tr><td class="ft-field">take_profit_pct</td><td class="ft-type">number</td><td class="ft-opt">否</td><td class="ft-desc">止盈线（收益率 %，正值如 20），触发后顶部预警条与表格高亮提示</td></tr>
+            </tbody>
+          </table>
         </div>
-        <div class="edit-form" style="margin-top: 12px;">
+
+        <template v-if="importMode === 'json'">
+          <!-- JSON 示例 -->
+          <div class="import-example">
+            <div class="import-example-header">
+              <h4>JSON 示例</h4>
+              <span class="import-example-hint">点击「复制示例」按钮可将示例填入输入框</span>
+            </div>
+            <div class="import-example-block">
+              <pre class="import-example-pre">{{ IMPORT_TEMPLATE }}</pre>
+            </div>
+          </div>
+
+          <!-- 输入区 -->
+          <div class="import-input-section">
+            <label class="import-input-label">粘贴您的持仓 JSON</label>
+            <n-input
+              v-model:value="importText"
+              type="textarea"
+              placeholder='[{ "code": "600519", "name": "贵州茅台", "type": "stock", "broker": "华泰证券", "quantity": 100, "cost_price": 1700.5 }]'
+              :autosize="{ minRows: 6, maxRows: 14 }"
+              class="mono"
+              @input="previewImport"
+            />
+          </div>
+
+          <!-- 校验结果 -->
+          <div v-if="importErrors.length" class="import-errors">
+            <div v-for="(e, i) in importErrors" :key="i">{{ e }}</div>
+          </div>
+          <div v-else-if="importValidCount > 0" class="import-ok">
+            解析成功：{{ importValidCount }} 条有效持仓
+          </div>
+        </template>
+
+        <template v-else>
+          <div class="import-input-section">
+            <label class="import-input-label">上传 CSV 文件（支持华泰 PC 客户端导出的持仓表，或 Excel 另存为 CSV）</label>
+            <input type="file" accept=".csv,.txt" @change="e => csvFile = (e.target as HTMLInputElement).files?.[0] ?? null" />
+            <div style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">
+              列头可包含：证券代码、证券名称、持仓数量、成本价、账户 等；未识别的代码将按 6 位代码推断为股票或场内基金。
+            </div>
+          </div>
+          <div class="edit-form" style="margin-top: 12px;">
 <div class="edit-field">
 <label>默认券商</label>
 <n-select v-model:value="csvBroker" :options="editBrokerOptions" placeholder="选择券商" clearable filterable />
@@ -1312,8 +1525,69 @@ watch(activeTab, (tab) => {
 <label>默认账户</label>
 <n-select v-model:value="csvAccount" :options="editAccountOptions" placeholder="选择账户" clearable filterable />
 </div>
-        </div>
+          </div>
+        </template>
       </template>
+
+      <!-- 上传接口说明面板：报文格式 / 接口地址 / curl 示例 -->
+      <n-collapse class="import-api-docs" :default-expanded-names="[]">
+        <n-collapse-item title="上传接口说明（报文格式 · 接口地址 · curl 示例）" name="api">
+          <div class="api-docs">
+            <h5>通用约定</h5>
+            <ul class="api-notes">
+              <li><b>接口前缀</b>：<span class="mono">/api/v1</span>（前端经 nginx <span class="mono">:9080</span> 反代；机器直连后端 <span class="mono">:8001</span>）</li>
+              <li><b>无鉴权</b>：机器 / 程序直接调用，无需 JWT。请求体用 <span class="mono">user_id</span> 或 <span class="mono">username</span> 指明归属用户（缺失或不存在 → 400）。</li>
+              <li><b>broker_code 整批必传</b>：请求体<b>顶层</b>传一个 <span class="mono">broker_code</span>（来自「券商管理」tab 自动生成），整批统一归属该券商；逐条传的 <span class="mono">broker</span> 会被忽略，实际券商名由后端解析回填。缺失 / 非法 → 整批进入 failed，不入库。</li>
+              <li><b>source</b>：来源标记（任意字符串），写入上传记录便于追溯，缺省 <span class="mono">"api"</span>。</li>
+              <li><b>响应结构</b>：<span class="mono">{ "code": 0, "message": "ok", "data": {...} }</span></li>
+            </ul>
+
+            <h5>接口地址</h5>
+            <table class="import-field-table">
+              <thead><tr><th>用途</th><th>方法 &amp; 路径</th><th>说明</th></tr></thead>
+              <tbody>
+                <tr><td class="ft-desc">持仓上传（增量合并）</td><td class="ft-field">POST /api/v1/holdings/import/api</td><td class="ft-desc">按 code+type+account 去重；已存在覆盖更新，新增插入；覆盖前旧行入历史表</td></tr>
+                <tr><td class="ft-desc">成交上传（按日覆盖）</td><td class="ft-field">POST /api/v1/trades/import</td><td class="ft-desc">按 (用户, trade_date) 全量覆盖；新 trade_date 直接新增</td></tr>
+                <tr><td class="ft-desc">查询成交</td><td class="ft-field">GET /api/v1/trades</td><td class="ft-desc">按 user_id/username + 可选 trade_date 过滤</td></tr>
+                <tr><td class="ft-desc">成交交易日列表</td><td class="ft-field">GET /api/v1/trades/dates</td><td class="ft-desc">返回该用户所有有成交的交易日（升序）</td></tr>
+                <tr><td class="ft-desc">上传记录留痕（需登录）</td><td class="ft-field">GET /api/v1/import-logs</td><td class="ft-desc">本页「上传记录」tab 展示，可用于对账</td></tr>
+              </tbody>
+            </table>
+
+            <h5>持仓上传报文示例（curl）</h5>
+            <div class="import-example-block">
+              <pre class="import-example-pre">curl -X POST 'http://192.168.3.53:9080/api/v1/holdings/import/api' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "username": "sos",
+    "source": "my_bot",
+    "broker_code": "BRK-1A2B3C",
+    "items": [
+      { "code": "510300", "name": "沪深300ETF", "type": "etf",
+        "account": "普通", "quantity": 10000, "cost_price": 3.85 }
+    ]
+  }'</pre>
+            </div>
+
+            <h5>成交上传报文示例（curl）</h5>
+            <div class="import-example-block">
+              <pre class="import-example-pre">curl -X POST 'http://192.168.3.53:9080/api/v1/trades/import' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "username": "sos",
+    "source": "my_bot",
+    "broker_code": "BRK-1A2B3C",
+    "trade_date": "2026-10-28",
+    "items": [
+      { "code": "510300", "name": "沪深300ETF", "type": "etf",
+        "account": "普通", "direction": "buy",
+        "price": 3.92, "quantity": 5000 }
+    ]
+  }'</pre>
+            </div>
+          </div>
+        </n-collapse-item>
+      </n-collapse>
 
       <template #footer>
         <div class="modal-footer">
@@ -1466,7 +1740,10 @@ watch(activeTab, (tab) => {
 </style>
 
 <style scoped>
-.holdings-page { display: flex; flex-direction: column; gap: 14px; }
+.holdings-page { display: flex; flex-direction: column; gap: 20px; }
+
+/* 当前持仓 tab 内各区域（预警条 / 概览卡 / 图表 / 明细表 / 走势曲线）纵向间距 */
+.current-section { display: flex; flex-direction: column; gap: 24px; }
 
 .warnings-strip { display: flex; flex-wrap: wrap; gap: 8px; }
 .warning-item {
@@ -1503,6 +1780,18 @@ watch(activeTab, (tab) => {
 .import-input-label { display: block; font-size: 12px; font-weight: 700; color: var(--text-muted); margin-bottom: 6px; }
 .import-errors { margin-top: 10px; padding: 10px 12px; background: rgba(147, 0, 10, 0.06); border: 1px solid rgba(147, 0, 10, 0.2); border-radius: 6px; color: #93000a; font-size: 12px; display: flex; flex-direction: column; gap: 4px; max-height: 140px; overflow-y: auto; }
 .import-ok { margin-top: 10px; font-size: 12px; color: var(--color-success); font-weight: 600; }
+
+/* 成交导入：顶部参数行（日期 + 券商账户） */
+.trade-params { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+
+/* 上传接口说明面板 */
+.import-api-docs { margin-top: 8px; }
+.import-api-docs :deep(.n-collapse-item__header) { font-size: 12px; font-weight: 700; color: var(--text-primary); }
+.api-docs { display: flex; flex-direction: column; gap: 10px; padding-top: 4px; }
+.api-docs h5 { font-family: 'Work Sans', sans-serif; font-size: 12px; font-weight: 700; color: var(--text-primary); margin: 4px 0 0; }
+.api-notes { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--text-secondary); line-height: 1.6; }
+.api-notes li { line-height: 1.6; }
+.api-notes b { color: var(--text-primary); }
 
 .edit-form { display: flex; flex-direction: column; gap: 12px; }
 .edit-field { display: flex; flex-direction: column; gap: 4px; }

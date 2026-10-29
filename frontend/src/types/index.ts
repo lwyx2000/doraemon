@@ -769,6 +769,13 @@ export interface HoldingImportResult {
   failed: Array<{ index: number; code: string; reason: string }>
 }
 
+// 成交记录导入结果（对应 POST /api/v1/trades/import）
+export interface TradeImportResult {
+  deleted: number
+  inserted: number
+  failed: Array<{ index: number; code: string; reason: string }>
+}
+
 // 券商账号（个人中心维护，持仓页筛选/导入选用）
 export interface BrokerAccount {
   id: string

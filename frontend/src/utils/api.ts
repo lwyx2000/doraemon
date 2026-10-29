@@ -446,6 +446,19 @@ export const api = {
     })
   },
 
+  // 成交记录导入（无鉴权外部接口：按 (user, trade_date) 覆盖上传）
+  importTrades: (body: {
+    username: string
+    source?: string
+    broker_code: string
+    trade_date: string
+    items: Array<Record<string, unknown>>
+  }) =>
+    request<TradeImportResult>('/api/v1/trades/import', undefined, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
   updateHolding: (id: string, body: Partial<Pick<Holding,
     'quantity' | 'cost_price' | 'manual_price' | 'broker' | 'account' | 'name' | 'open_date' | 'currency'
     | 'stop_loss_pct' | 'take_profit_pct' | 'fair_value'
@@ -974,6 +987,7 @@ import type {
   Holding,
   HoldingsView,
   HoldingImportResult,
+  TradeImportResult,
   HoldingSnapshot,
   HoldingHistory,
   DataSourceStatus,
