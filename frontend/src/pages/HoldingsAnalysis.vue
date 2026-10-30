@@ -9,7 +9,7 @@ import {
   useMessage, useDialog,
 } from 'naive-ui'
 import type { PaginationProps } from 'naive-ui'
-import { CloudUploadOutline, RefreshOutline, CameraOutline, ClipboardOutline, SettingsOutline, FilterOutline } from '@vicons/ionicons5'
+import { CloudUploadOutline, RefreshOutline, CameraOutline, ClipboardOutline, SettingsOutline, FilterOutline, DocumentTextOutline } from '@vicons/ionicons5'
 import { useAsyncData } from '../composables/useApi'
 import { api } from '../utils/api'
 import { useAuth } from '../composables/useAuth'
@@ -1221,6 +1221,10 @@ watch(activeTab, (tab) => {
           <n-button size="small" @click="refreshAll">
             <template #icon><n-icon :component="RefreshOutline" /></template>
             刷新
+          </n-button>
+          <n-button size="small" @click="router.push('/external-api-docs')" title="外部上传接口文档（免登录，可分享给其它项目）">
+            <template #icon><n-icon :component="DocumentTextOutline" /></template>
+            接口文档
           </n-button>
         </template>
       </PageHeader>
