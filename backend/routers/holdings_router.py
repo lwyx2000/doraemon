@@ -23,7 +23,7 @@ from services.holdings_service import (
     take_snapshot,
     update_holding,
 )
-from services.broker_account_service import get_broker_by_code
+from services.terminal_broker_service import resolve_or_create_broker_for_upload
 from services.import_log_service import add_import_log
 from core.deps import get_current_user, resolve_external_user_id
 
@@ -73,30 +73,44 @@ def import_holdings_api(body: HoldingUploadRequest):
     """【无鉴权】机器 / 外部程序批量上传持仓：增量合并（merge）。
 
     - 调用方须在 user_id / username 中指明归属用户（二选一）；
-    - broker_code（券商管理中生成的券商标识）整批必传：缺失或非法时整批条目
-      进入 failed（不整体拒绝），并在上传记录留痕；
+    - 券商归属由 account（客户端自传主标识）决定，broker_code 为其历史别名；
+      两者皆空 → 整批条目进入 failed（不整体拒绝），并在上传记录留痕；
+      该 account 首见时按上传携带的 broker_name / remark 自动建券商（落默认终端或指定 terminal）；
     - 按 code+type+account 去重，已存在=覆盖更新，新增=插入；
     - 覆盖更新前旧行写入 biz_holdings_history（source=传入的来源标记或 "api"），
       满足「旧的数据存到数据表中，记录下」的留痕需求。
     非用户浏览器调用接口，无需 JWT。
     """
     user_id = resolve_external_user_id(body.user_id, body.username)
-    broker_acct = get_broker_by_code(user_id, body.broker_code) if body.broker_code is not None else None
-    if broker_acct is None:
-        # 整批失败：broker_code 缺失或不属于该用户
+    account = (body.account or body.broker_code or "").strip()
+    if not account:
+        # 整批失败：account 缺失
         failed = [
-            {"index": i, "code": str(it.code or ""), "reason": "broker_code 缺失或非法（不属于该用户）"}
+            {"index": i, "code": str(it.code or ""), "reason": "account（券商账号）缺失"}
             for i, it in enumerate(body.items)
         ]
         result = {"added": 0, "updated": 0, "failed": failed}
-        add_import_log(user_id, "holdings", body.source or "api", body.broker_code or "", "", result, total=len(body.items))
+        add_import_log(user_id, "holdings", body.source or "api", "", "", result, total=len(body.items))
         return ApiResponse(data=result)
-    # batch-level 券商 code 决定券商名，覆盖每一条自带的 broker
+    # 解析 / 自动创建券商（account 命中复用，否则按上传携带信息新建）
+    broker = resolve_or_create_broker_for_upload(
+        user_id, account,
+        name=body.broker_name, remark=body.remark, terminal_id=body.terminal,
+    )
+    if broker is None:
+        failed = [
+            {"index": i, "code": str(it.code or ""), "reason": "account（券商账号）缺失"}
+            for i, it in enumerate(body.items)
+        ]
+        result = {"added": 0, "updated": 0, "failed": failed}
+        add_import_log(user_id, "holdings", body.source or "api", account, "", result, total=len(body.items))
+        return ApiResponse(data=result)
+    # batch-level 券商名决定每条记录的 broker，覆盖逐条自带 broker
     items = [it.model_dump() for it in body.items]
     for it in items:
-        it["broker"] = broker_acct["broker"]
+        it["broker"] = broker["name"]
     result = import_holdings(user_id, items, source=body.source or "api")
-    add_import_log(user_id, "holdings", body.source or "api", body.broker_code, broker_acct["broker"], result, total=len(items))
+    add_import_log(user_id, "holdings", body.source or "api", account, broker["name"], result, total=len(items))
     return ApiResponse(data=result)
 
 

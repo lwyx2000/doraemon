@@ -144,6 +144,13 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '登录', public: true },
   },
   {
+    // 无鉴权公开页：外部上传接口文档 + 在线导入（免登录）
+    path: '/external-api-docs',
+    name: 'ExternalApiDocs',
+    component: () => import('../pages/ExternalApiDocs.vue'),
+    meta: { title: '外部上传接口', public: true },
+  },
+  {
     path: '/register',
     name: 'Register',
     component: () => import('../pages/Register.vue'),
@@ -178,8 +185,8 @@ router.beforeEach((to) => {
   if (to.meta.public && isLoggedIn.value && (to.path === '/login' || to.path === '/register')) {
     return { path: isAdmin.value ? '/admin/users' : '/' }
   }
-  // 管理员仅允许访问账号管理页，其余一律重定向
-  if (isLoggedIn.value && isAdmin.value && !(to.meta.admin || to.path === '/admin/users')) {
+  // 管理员仅允许访问账号管理页，其余一律重定向（公开页除外，任何人可访问）
+  if (isLoggedIn.value && isAdmin.value && !to.meta.public && !(to.meta.admin || to.path === '/admin/users')) {
     return { path: '/admin/users' }
   }
   // 非管理员访问管理员页则回看板

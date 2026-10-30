@@ -1,15 +1,16 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { NCard, NButton, NInput, NTabs, NTabPane, NForm, NFormItem, useMessage } from 'naive-ui'
+import { NCard, NButton, NInput, NSelect, NTabs, NTabPane, NForm, NFormItem, useMessage, useDialog } from 'naive-ui'
 import { useAuth } from '../composables/useAuth'
 import { api } from '../utils/api'
-import type { BrokerAccount, AccountName } from '../types'
+import type { Terminal, Broker, AccountName } from '../types'
 import PageHeader from '../components/PageHeader.vue'
 
 defineOptions({ name: 'Profile' })
 const router = useRouter()
 const message = useMessage()
+const dialog = useDialog()
 const { username, isLoggedIn, logout } = useAuth()
 
 function onLogout() {
@@ -50,65 +51,98 @@ async function onChangePassword() {
   }
 }
 
-// ---- 券商列表（独立） ----
-const brokerAccounts = ref<BrokerAccount[]>([])
+// ---- 终端与券商（一个终端可含多个券商） ----
+const terminals = ref<Terminal[]>([])
+const tmSaving = ref(false)
 
-// 券商列表：去重后的券商名称集合（取第一条记录 id 作为操作标识）
-const brokerList = computed(() => {
-  const seen = new Set<string>()
-  const result: { name: string; id: string }[] = []
-  for (const a of brokerAccounts.value) {
-    if (a.broker && !seen.has(a.broker)) {
-      seen.add(a.broker)
-      result.push({ name: a.broker, id: a.id })
-    }
-  }
-  return result
-})
-
-const baSaving = ref(false)
-
-async function loadBrokerAccounts() {
+async function loadTerminals() {
   try {
-    brokerAccounts.value = await api.getBrokerAccounts()
+    terminals.value = await api.getTerminals()
   } catch {
-    brokerAccounts.value = []
+    terminals.value = []
   }
 }
 
-// 添加券商
-const newBroker = ref('')
-async function addBroker() {
-  if (!newBroker.value.trim()) {
-    message.warning('请输入券商名称')
-    return
-  }
-  if (brokerList.value.some(b => b.name === newBroker.value.trim())) {
-    message.warning('该券商已存在')
-    return
-  }
-  baSaving.value = true
+// 添加终端
+const newTerminalName = ref('')
+const newTerminalRemark = ref('')
+async function addTerminal() {
+  const name = newTerminalName.value.trim()
+  if (!name) { message.warning('请输入终端名称'); return }
+  if (terminals.value.some(t => t.name === name)) { message.warning('该终端名称已存在'); return }
+  tmSaving.value = true
   try {
-    await api.createBrokerAccount(newBroker.value.trim(), '')
-    message.success('券商已添加')
-    newBroker.value = ''
-    await loadBrokerAccounts()
+    await api.createTerminal(name, newTerminalRemark.value.trim())
+    message.success('终端已添加')
+    newTerminalName.value = ''
+    newTerminalRemark.value = ''
+    await loadTerminals()
   } catch (e: any) {
     message.error('操作失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
   } finally {
-    baSaving.value = false
+    tmSaving.value = false
   }
 }
 
-// 删除券商
-async function deleteBroker(id: string) {
+// 添加券商（选择所属终端）
+const newBrokerTerminalId = ref('')
+const newBrokerName = ref('')
+const newBrokerAccount = ref('')
+const newBrokerRemark = ref('')
+async function addBroker() {
+  const terminalId = newBrokerTerminalId.value
+  if (!terminalId) { message.warning('请选择所属终端'); return }
+  if (!newBrokerName.value.trim()) { message.warning('请输入券商名称'); return }
+  if (!newBrokerAccount.value.trim()) { message.warning('请输入券商账号（account）'); return }
+  tmSaving.value = true
   try {
-    await api.deleteBrokerAccount(id)
-    message.success('已删除')
-    await loadBrokerAccounts()
+    await api.createBroker(terminalId, newBrokerName.value.trim(), newBrokerAccount.value.trim(), newBrokerRemark.value.trim())
+    message.success('券商已添加')
+    newBrokerName.value = ''
+    newBrokerAccount.value = ''
+    newBrokerRemark.value = ''
+    await loadTerminals()
   } catch (e: any) {
-    message.error('删除失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
+    message.error('操作失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
+  } finally {
+    tmSaving.value = false
   }
+}
+
+async function deleteTerminal(t: Terminal) {
+  dialog.warning({
+    title: '删除终端',
+    content: `确定删除终端「${t.name}」？其下 ${t.brokers?.length ?? 0} 个券商将一并删除，且不可恢复。`,
+    positiveText: '删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        await api.deleteTerminal(t.id)
+        message.success('终端已删除')
+        await loadTerminals()
+      } catch (e: any) {
+        message.error('删除失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
+      }
+    },
+  })
+}
+
+async function deleteBroker(t: Terminal, b: Broker) {
+  dialog.warning({
+    title: '删除券商',
+    content: `确定删除券商「${b.name}（${b.account}）」？`,
+    positiveText: '删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        await api.deleteBroker(t.id, b.id)
+        message.success('券商已删除')
+        await loadTerminals()
+      } catch (e: any) {
+        message.error('删除失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
+      }
+    },
+  })
 }
 
 // ---- 账户名列表（独立表 biz_account_names） ----
@@ -161,7 +195,7 @@ async function deleteAccountName(id: string) {
 
 onMounted(() => {
   if (isLoggedIn.value) {
-    loadBrokerAccounts()
+    loadTerminals()
     loadAccountNames()
   }
 })
@@ -187,23 +221,55 @@ onMounted(() => {
         <n-button v-else type="primary" block @click="router.push('/login')">去登录</n-button>
       </n-card>
 
-      <n-card v-if="isLoggedIn" title="券商与账户名" class="profile-card ba-card">
+      <n-card v-if="isLoggedIn" title="终端、券商与账户名" class="profile-card ba-card">
         <n-tabs type="line" size="small" class="ba-tabs">
-          <!-- 券商 Tab -->
-          <n-tab-pane name="brokers" tab="券商">
+          <!-- 终端与券商 Tab -->
+          <n-tab-pane name="terminals" tab="终端与券商">
+            <!-- 添加终端 -->
             <div class="ba-form">
-              <n-input v-model:value="newBroker" placeholder="券商名称（如 华泰证券）" clearable @keyup.enter="addBroker" />
-              <n-button :loading="baSaving" @click="addBroker">添加</n-button>
+              <n-input v-model:value="newTerminalName" placeholder="终端名称（如 电脑A / 手机B）" clearable @keyup.enter="addTerminal" />
+              <n-input v-model:value="newTerminalRemark" placeholder="备注（可选）" clearable @keyup.enter="addTerminal" />
+              <n-button :loading="tmSaving" @click="addTerminal">添加终端</n-button>
+            </div>
+            <!-- 添加券商（选择所属终端） -->
+            <div class="ba-form">
+              <n-select
+                v-model:value="newBrokerTerminalId"
+                :options="terminals.map(t => ({ label: t.name, value: t.id }))"
+                placeholder="选择所属终端"
+                clearable
+                filterable
+              />
+              <n-input v-model:value="newBrokerName" placeholder="券商名称（如 华泰证券）" clearable @keyup.enter="addBroker" />
+              <n-input v-model:value="newBrokerAccount" placeholder="券商账号 account（必填）" clearable @keyup.enter="addBroker" />
+              <n-input v-model:value="newBrokerRemark" placeholder="备注（可选）" clearable @keyup.enter="addBroker" />
+              <n-button :loading="tmSaving" @click="addBroker">添加券商</n-button>
             </div>
             <div class="ba-list ba-list-scroll">
-              <div v-for="b in brokerList" :key="b.id" class="ba-item">
-                <span class="ba-name">{{ b.name }}</span>
-                <div class="ba-actions">
-                  <n-button text size="small" type="error" @click="deleteBroker(b.id)">删除</n-button>
+              <div v-for="t in terminals" :key="t.id" class="terminal-block">
+                <div class="terminal-head">
+                  <div class="terminal-title">
+                    <span class="terminal-name">{{ t.name }}</span>
+                    <span v-if="t.remark" class="terminal-remark">{{ t.remark }}</span>
+                  </div>
+                  <div class="ba-actions">
+                    <n-button text size="small" type="error" @click="deleteTerminal(t)">删除终端</n-button>
+                  </div>
+                </div>
+                <div class="broker-sublist">
+                  <div v-for="b in (t.brokers || [])" :key="b.id" class="ba-item">
+                    <span class="ba-name">{{ b.name }} <span class="mono ba-account">{{ b.account }}</span><span v-if="b.remark" class="ba-remark">（{{ b.remark }}）</span></span>
+                    <div class="ba-actions">
+                      <n-button text size="small" type="error" @click="deleteBroker(t, b)">删除</n-button>
+                    </div>
+                  </div>
+                  <div v-if="!t.brokers || !t.brokers.length" class="ba-empty">
+                    该终端下暂无券商
+                  </div>
                 </div>
               </div>
-              <div v-if="!brokerList.length" class="ba-empty">
-                尚未配置券商，添加后可在持仓页编辑时选用
+              <div v-if="!terminals.length" class="ba-empty">
+                尚未配置终端，添加终端后即可在其下添加券商
               </div>
             </div>
           </n-tab-pane>
@@ -328,6 +394,17 @@ onMounted(() => {
 .ba-name { font-weight: 600; font-size: 13px; color: var(--text-primary); flex: 1; }
 .ba-actions { margin-left: auto; display: flex; gap: 4px; flex-shrink: 0; }
 .ba-empty { padding: 12px; text-align: center; font-size: 12px; color: var(--text-muted); background: var(--bg-subtle); border-radius: 6px; }
+.ba-account { font-size: 11px; color: var(--color-primary); margin-left: 4px; }
+.ba-remark { font-size: 12px; color: var(--text-muted); }
+
+/* 终端二级结构 */
+.terminal-block { border: 1px solid var(--border-default); border-radius: 8px; padding: 8px 10px; background: var(--bg-subtle); display: flex; flex-direction: column; gap: 6px; }
+.terminal-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.terminal-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.terminal-name { font-weight: 700; font-size: 14px; color: var(--text-primary); }
+.terminal-remark { font-size: 12px; color: var(--text-muted); }
+.broker-sublist { display: flex; flex-direction: column; gap: 6px; padding-left: 10px; border-left: 2px solid var(--border-default); }
+
 
 /* 滚动条样式 */
 .ba-list-scroll::-webkit-scrollbar { width: 5px; }

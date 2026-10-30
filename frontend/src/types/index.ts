@@ -776,14 +776,25 @@ export interface TradeImportResult {
   failed: Array<{ index: number; code: string; reason: string }>
 }
 
-// 券商账号（个人中心维护，持仓页筛选/导入选用）
-export interface BrokerAccount {
+// 券商（隶属于某终端，account 为客户端自传的券商账号主标识）
+export interface Broker {
   id: string
-  broker: string
+  fk_terminal: string
+  name: string
   account: string
-  code: string
+  remark: string
   created_at: string
   updated_at: string
+}
+
+// 终端（一个终端可含多个券商；券商管理重构后由「终端管理」取代「券商管理」）
+export interface Terminal {
+  id: string
+  name: string
+  remark: string
+  created_at: string
+  updated_at: string
+  brokers: Broker[]
 }
 
 // 上传留痕日志（每次外部 API 导入调用的记录，持仓页「上传记录」tab 展示）

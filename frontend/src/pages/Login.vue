@@ -59,6 +59,9 @@ async function onSubmit() {
       <div class="auth-foot">
         还没有账号？<router-link to="/register">立即注册</router-link>
       </div>
+      <div class="auth-foot">
+        <router-link to="/external-api-docs">外部上传接口文档（免登录）</router-link>
+      </div>
     </n-card>
   </div>
 </template>

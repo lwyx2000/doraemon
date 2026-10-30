@@ -102,11 +102,22 @@ BIZ_TABLES = [
     )
     """,
     """
-    CREATE TABLE IF NOT EXISTS biz_broker_accounts (
+    CREATE TABLE IF NOT EXISTS biz_terminals (
         id               TEXT PRIMARY KEY,
         fk_user          INTEGER NOT NULL,
-        broker           TEXT NOT NULL,
-        account          TEXT DEFAULT '',
+        name             TEXT NOT NULL,
+        remark           TEXT DEFAULT '',
+        created_at       TEXT,
+        updated_at       TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS biz_brokers (
+        id               TEXT PRIMARY KEY,
+        fk_terminal      TEXT NOT NULL,
+        name             TEXT NOT NULL,
+        account          TEXT NOT NULL,
+        remark           TEXT DEFAULT '',
         created_at       TEXT,
         updated_at       TEXT
     )
@@ -298,7 +309,8 @@ BIZ_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_biz_pi_portfolios ON biz_portfolio_items(fk_portfolios)",
     "CREATE INDEX IF NOT EXISTS idx_biz_strat_users ON biz_strategies(fk_user)",
     "CREATE INDEX IF NOT EXISTS idx_biz_holdings_users ON biz_holdings(fk_user)",
-    "CREATE INDEX IF NOT EXISTS idx_biz_broker_users ON biz_broker_accounts(fk_user)",
+    "CREATE INDEX IF NOT EXISTS idx_biz_terminal_users ON biz_terminals(fk_user)",
+    "CREATE INDEX IF NOT EXISTS idx_biz_brokers_terminal ON biz_brokers(fk_terminal)",
     "CREATE INDEX IF NOT EXISTS idx_biz_acctname_users ON biz_account_names(fk_user)",
     "CREATE INDEX IF NOT EXISTS idx_biz_snap_users ON biz_holding_snapshots(fk_user)",
     "CREATE INDEX IF NOT EXISTS idx_biz_ar_users ON biz_alert_rules(fk_user)",
@@ -357,7 +369,12 @@ def _migrate_biz_data(duck, biz: BizDatabase) -> None:
         print(f"  [biz-sqlite] skip DuckDB reflection ({e})")
         return
 
+    # 旧 biz_broker_accounts 已迁移为 biz_terminals + biz_brokers，
+    # 不再从 DuckDB 反射回写（避免旧表被重新建出）。
+    SKIP_TABLES = {"biz_broker_accounts", "biz_broker_accounts_legacy"}
     for t in tables:
+        if t in SKIP_TABLES:
+            continue
         cols = duck.fetchall(
             "SELECT column_name, data_type FROM information_schema.columns "
             "WHERE table_name = ? ORDER BY ordinal_position",
@@ -401,11 +418,69 @@ def _migrate_biz_data(duck, biz: BizDatabase) -> None:
             print(f"  [biz-sqlite] {t}: already populated, skip copy")
 
 
+def _migrate_broker_accounts_to_terminals(biz: BizDatabase) -> None:
+    """幂等：把旧 biz_broker_accounts（broker/account/code）迁移为 biz_terminals + biz_brokers。
+
+    - 旧 broker（券商名）→ biz_brokers.name；
+    - 旧 code（BRK-xxxx，外部上传接口历史用的券商标识）→ biz_brokers.account（现由客户端自传）；
+    - 旧 account（子账户）→ biz_brokers.remark（旧模型没有终端概念，每用户建一个默认终端）；
+    - 迁移完成后把旧表改名 biz_broker_accounts_legacy 留档（不再被任何代码读取）。
+    仅在「旧表存在 且 biz_terminals 为空」时执行，保证重启幂等。
+    """
+    if not biz.table_exists("biz_broker_accounts"):
+        return
+    if biz.table_row_count("biz_terminals") > 0:
+        # 已迁移过（或新部署已有终端），仅做兜底改名，避免旧表残留被误读
+        if biz.table_exists("biz_broker_accounts"):
+            biz.execute("ALTER TABLE biz_broker_accounts RENAME TO biz_broker_accounts_legacy")
+        return
+
+    print("[biz-sqlite] migrating biz_broker_accounts -> biz_terminals + biz_brokers")
+    rows = biz.fetchall(
+        "SELECT id, fk_user, broker, account, code, created_at, updated_at "
+        "FROM biz_broker_accounts ORDER BY fk_user, created_at",
+        [],
+    )
+    default_terminal_by_user: dict[str, str] = {}
+    now = datetime.now().isoformat()
+
+    def _ensure_default_terminal(fk_user: str) -> str:
+        tid = default_terminal_by_user.get(fk_user)
+        if tid:
+            return tid
+        tid = str(_uuid.uuid4())
+        biz.execute(
+            "INSERT INTO biz_terminals (id, fk_user, name, remark, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [tid, fk_user, "默认终端", "", now, now],
+        )
+        default_terminal_by_user[fk_user] = tid
+        return tid
+
+    for r in rows:
+        (old_id, fk_user, broker, old_account, code, created_at, updated_at) = r
+        fk_user = str(fk_user)
+        terminal_id = _ensure_default_terminal(fk_user)
+        # account = 旧 code（历史外部上传标识）；无 code 时用旧 account；再无则兜底用 broker
+        new_account = (code or "").strip() or (old_account or "").strip() or (broker or "").strip()
+        remark = (old_account or "").strip() if (code or "").strip() else ""
+        biz.execute(
+            "INSERT INTO biz_brokers (id, fk_terminal, name, account, remark, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [str(_uuid.uuid4()), terminal_id, broker or "", new_account, remark, created_at or now, updated_at or now],
+        )
+
+    # 旧表改名留档
+    biz.execute("ALTER TABLE biz_broker_accounts RENAME TO biz_broker_accounts_legacy")
+    print(f"[biz-sqlite] broker migration done: {len(rows)} brokers under {len(default_terminal_by_user)} terminals")
+
+
 def init_biz_database() -> None:
-    """幂等初始化业务 SQLite 库：建表 + 从 DuckDB 拷贝现有业务数据。"""
+    """幂等初始化业务 SQLite 库：建表 + 券商迁移 + 从 DuckDB 拷贝现有业务数据。"""
     biz = get_biz_db()
     print(f"[biz-sqlite] initializing at {biz.db_path}")
     _ensure_biz_tables(biz)
+    _migrate_broker_accounts_to_terminals(biz)
     # 从已持锁的 DuckDB 连接读（与 base_* 同一连接，绝不产生第二把锁）
     try:
         from database.connection import get_db

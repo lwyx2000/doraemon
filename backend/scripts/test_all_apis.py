@@ -123,8 +123,9 @@ def main():
     test("alert_rules", "GET", "/alerts/rules")
     test("alert_events", "GET", "/alerts/events")
 
-    # 11. Broker Accounts
-    test("broker_accounts", "GET", "/broker-accounts")
+    # 11. Terminals / Brokers (2026-11 重构：终端管理)
+    test("terminals", "GET", "/terminals")
+    test("brokers_all", "GET", "/terminals/brokers")
     test("account_names", "GET", "/account-names")
 
     # 12. Holdings

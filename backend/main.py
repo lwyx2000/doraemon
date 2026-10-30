@@ -231,7 +231,7 @@ from routers.alert_router import router as alert_router
 from routers.ai_router import router as ai_router
 from routers.monitor_router import router as monitor_router
 from routers.notification_router import router as notification_router
-from routers.broker_account_router import router as broker_account_router
+from routers.terminals_router import router as terminals_router
 from routers.account_name_router import router as account_name_router
 from routers.signal_router import router as signal_router
 from routers.strategy_library_router import router as strategy_library_router
@@ -244,7 +244,7 @@ from routers.longterm_router import router as longterm_router
 from routers.import_log_router import router as import_log_router
 
 app.include_router(auth_router, prefix=f"{API_PREFIX}/auth")
-app.include_router(broker_account_router, prefix=API_PREFIX)
+app.include_router(terminals_router, prefix=API_PREFIX)
 app.include_router(account_name_router, prefix=API_PREFIX)
 app.include_router(market_router, prefix=f"{API_PREFIX}/market")
 app.include_router(fund_router, prefix=API_PREFIX)

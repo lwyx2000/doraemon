@@ -446,11 +446,29 @@ export const api = {
     })
   },
 
+  // 持仓上传（无鉴权外部接口：增量合并，按 code+type+account 去重）
+  importHoldingsApi: (body: {
+    username: string
+    source?: string
+    account: string
+    broker_name?: string
+    remark?: string
+    terminal?: string
+    items: Array<Record<string, unknown>>
+  }) =>
+    request<HoldingImportResult>('/api/v1/holdings/import/api', undefined, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
   // 成交记录导入（无鉴权外部接口：按 (user, trade_date) 覆盖上传）
   importTrades: (body: {
     username: string
     source?: string
-    broker_code: string
+    account: string
+    broker_name?: string
+    remark?: string
+    terminal?: string
     trade_date: string
     items: Array<Record<string, unknown>>
   }) =>
@@ -631,25 +649,50 @@ export const api = {
     streamAi('/api/v1/ai/chat', { message, context_type: contextType, history }, handlers, signal),
 
   // ============================================================
-  // 券商账号（个人中心维护，持仓页筛选/导入选用）
+  // 终端 / 券商（终端管理：一个终端可含多个券商，持仓页/个人中心维护）
   // ============================================================
-  getBrokerAccounts: () =>
-    request<BrokerAccount[]>('/api/v1/broker-accounts'),
+  getTerminals: () =>
+    request<Terminal[]>('/api/v1/terminals'),
 
-  createBrokerAccount: (broker: string, account: string) =>
-    request<BrokerAccount>('/api/v1/broker-accounts', undefined, {
+  createTerminal: (name: string, remark = '') =>
+    request<Terminal>('/api/v1/terminals', undefined, {
       method: 'POST',
-      body: JSON.stringify({ broker, account }),
+      body: JSON.stringify({ name, remark }),
     }),
 
-  updateBrokerAccount: (id: string, broker: string, account: string) =>
-    request<BrokerAccount>(`/api/v1/broker-accounts/${id}`, undefined, {
+  updateTerminal: (id: string, name: string, remark = '') =>
+    request<Terminal>(`/api/v1/terminals/${id}`, undefined, {
       method: 'PUT',
-      body: JSON.stringify({ broker, account }),
+      body: JSON.stringify({ name, remark }),
     }),
 
-  deleteBrokerAccount: (id: string) =>
-    request<{ deleted: boolean }>(`/api/v1/broker-accounts/${id}`, undefined, {
+  deleteTerminal: (id: string) =>
+    request<{ deleted: boolean }>(`/api/v1/terminals/${id}`, undefined, {
+      method: 'DELETE',
+    }),
+
+  // 券商：terminalId 缺省时拉取全部券商（导入下拉用）
+  getBrokers: (terminalId?: string) =>
+    request<Broker[]>(`/api/v1/terminals${terminalId ? `/${terminalId}/brokers` : '/brokers'}`),
+
+  createBroker: (terminalId: string, name: string, account: string, remark = '') =>
+    request<Broker>(`/api/v1/terminals/${terminalId}/brokers`, undefined, {
+      method: 'POST',
+      body: JSON.stringify({ name, account, remark }),
+    }),
+
+  updateBroker: (
+    terminalId: string,
+    brokerId: string,
+    body: Partial<Pick<Broker, 'name' | 'account' | 'remark' | 'fk_terminal'>>,
+  ) =>
+    request<Broker>(`/api/v1/terminals/${terminalId}/brokers/${brokerId}`, undefined, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+
+  deleteBroker: (terminalId: string, brokerId: string) =>
+    request<{ deleted: boolean }>(`/api/v1/terminals/${terminalId}/brokers/${brokerId}`, undefined, {
       method: 'DELETE',
     }),
 
@@ -1007,7 +1050,8 @@ import type {
   IndustryValuation,
   SpreadHistoryPoint,
   ProjectInfo,
-  BrokerAccount,
+  Terminal,
+  Broker,
   AccountName,
   StrategyDef,
   SignalResult,

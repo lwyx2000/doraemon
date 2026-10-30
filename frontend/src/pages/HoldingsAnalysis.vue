@@ -13,7 +13,7 @@ import { CloudUploadOutline, RefreshOutline, CameraOutline, ClipboardOutline, Se
 import { useAsyncData } from '../composables/useApi'
 import { api } from '../utils/api'
 import { useAuth } from '../composables/useAuth'
-import type { Holding, HoldingsView, HoldingSnapshot, HoldingSummary, BrokerAccount, AccountName, HoldingHistory, ImportLog } from '../types'
+import type { Holding, HoldingsView, HoldingSnapshot, HoldingSummary, Terminal, Broker, AccountName, HoldingHistory, ImportLog } from '../types'
 import PageHeader from '../components/PageHeader.vue'
 import StatCard from '../components/StatCard.vue'
 import DataPanel from '../components/DataPanel.vue'
@@ -65,8 +65,8 @@ const pagination = ref<PaginationProps>({
     pagination.value.page = 1
   },
 })
-// 个人中心配置的券商列表（筛选/导入选用；加载与维护见下方「券商管理」区块）
-const brokerAccounts = ref<BrokerAccount[]>([])
+// 个人中心配置的终端列表（每个终端含多个券商；加载与维护见下方「终端管理」区块）
+const terminals = ref<Terminal[]>([])
 // 个人中心配置的账户名列表（独立表，筛选/导入选用）
 const accountNames = ref<AccountName[]>([])
 async function loadAccountNames() {
@@ -76,11 +76,15 @@ async function loadAccountNames() {
     accountNames.value = []
   }
 }
-onMounted(() => { refresh(); refreshSnapshots(); refreshHistory(); loadBrokerAccounts(); loadAccountNames() })
+onMounted(() => { refresh(); refreshSnapshots(); refreshHistory(); loadTerminals(); loadAccountNames() })
 
-// 编辑弹窗：券商下拉选项（来自 Profile 配置 + 持仓数据中已有的，去重）
+// 展平所有券商（跨终端），用于编辑弹窗 / 导入下拉
+const allBrokers = computed<Broker[]>(() =>
+  terminals.value.flatMap(t => t.brokers ?? []),
+)
+// 编辑弹窗：券商下拉选项（value=券商 name，用于填写持仓的 broker 字段；来自终端管理配置 + 持仓数据中已有的，去重）
 const editBrokerOptions = computed(() => {
-  const brokers = new Set<string>(brokerAccounts.value.map(a => a.broker).filter(Boolean))
+  const brokers = new Set<string>(allBrokers.value.map(b => b.name).filter(Boolean))
   view.value?.items.forEach(i => { if (i.broker) brokers.add(i.broker) })
   return [...brokers].map(b => ({ label: b, value: b }))
 })
@@ -139,9 +143,9 @@ function resetFilter() {
 const typeFilterOptions = [
   ...Object.entries(TYPE_LABELS).map(([value, label]) => ({ label, value })),
 ]
-// 筛选选项 = 个人中心配置的券商 ∪ 持仓数据中已有的券商
+// 筛选选项 = 终端管理配置的券商名 ∪ 持仓数据中已有的券商
 const brokerFilterOptions = computed(() => {
-  const brokers = new Set<string>(brokerAccounts.value.map(a => a.broker).filter(Boolean))
+  const brokers = new Set<string>(allBrokers.value.map(b => b.name).filter(Boolean))
   view.value?.items.forEach(i => brokers.add(i.broker || '未分组'))
   return [...brokers].map(b => ({ label: b, value: b }))
 })
@@ -476,13 +480,13 @@ const TRADE_TEMPLATE = `{
 }`
 const tradeDate = ref('')
 const tradeDateTs = ref<number | null>(null)
-const tradeBrokerCode = ref('')
+const tradeAccount = ref('')
 const tradeText = ref('')
 const tradeErrors = ref<string[]>([])
 const tradeValidCount = ref(0)
-// 券商账户下拉（value=账户 code，作为成交上传的 broker_code）
+// 券商下拉（value=券商 account，作为成交上传的 account 主标识）
 const tradeBrokerOptions = computed(() =>
-  brokerAccounts.value.map(a => ({ label: `${a.broker} · ${a.account}`, value: a.code })),
+  allBrokers.value.map(b => ({ label: `${b.name} · ${b.account}`, value: b.account })),
 )
 function fmtTradeDate(v: number | null): string {
   if (!v) return ''
@@ -528,7 +532,7 @@ function previewImport() {
 function parseTradeText(): { items: Array<Record<string, unknown>>; errors: string[] } {
   const errors: string[] = []
   if (!tradeDate.value) errors.push('请先填写「交易日期」（YYYY-MM-DD）')
-  if (!tradeBrokerCode.value) errors.push('请先选择「券商」（决定 broker_code，整批必传）')
+  if (!tradeAccount.value) errors.push('请先选择「券商」（决定 account，整批必传）')
   if (errors.length) return { items: [], errors }
   let parsed: unknown
   try {
@@ -582,7 +586,7 @@ async function submitImport() {
       const result = await api.importTrades({
         username: authUsername.value || '',
         source: 'web',
-        broker_code: tradeBrokerCode.value,
+        account: tradeAccount.value,
         trade_date: tradeDate.value,
         items,
       })
@@ -959,70 +963,167 @@ const historySummary = computed(() => {
   return { count: items.length, totalRealized }
 })
 
-// ============ 券商管理（持仓页 tab：券商管理） ============
-// 复用个人中心的券商账号维护能力，并额外展示自动生成的 code（外部上传接口必传）
-const newBrokerName = ref('')
-const newBrokerAccount = ref('')
-const baLoading = ref(false)
-const baSaving = ref(false)
-const brokersLoaded = ref(false)
+// ============ 终端管理（持仓页 tab：终端管理） ============
+// 一个终端可含多个券商；券商 account 由客户端自传作为主标识
+const terminalsLoading = ref(false)
+const terminalsLoaded = ref(false)
+const tmSaving = ref(false)
 
-async function loadBrokerAccounts() {
-  if (baLoading.value) return
-  baLoading.value = true
+async function loadTerminals() {
+  if (terminalsLoading.value) return
+  terminalsLoading.value = true
   try {
-    brokerAccounts.value = await api.getBrokerAccounts()
-    brokersLoaded.value = true
+    terminals.value = await api.getTerminals()
+    terminalsLoaded.value = true
   } catch (e: any) {
-    message.error('加载券商失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
+    message.error('加载终端失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
   } finally {
-    baLoading.value = false
+    terminalsLoading.value = false
   }
 }
 
-async function addBrokerAccount() {
-  const broker = newBrokerName.value.trim()
-  if (!broker) {
-    message.warning('请输入券商名称')
-    return
-  }
-  const account = newBrokerAccount.value.trim()
-  if (brokerAccounts.value.some(a => a.broker === broker && (a.account || '') === account)) {
-    message.warning(account ? '该券商账户已存在' : '该券商已存在（无账户名）')
-    return
-  }
-  baSaving.value = true
+// ---- 终端 CRUD ----
+const newTerminalName = ref('')
+const newTerminalRemark = ref('')
+
+async function addTerminal() {
+  const name = newTerminalName.value.trim()
+  if (!name) { message.warning('请输入终端名称'); return }
+  if (terminals.value.some(t => t.name === name)) { message.warning('该终端名称已存在'); return }
+  tmSaving.value = true
   try {
-    await api.createBrokerAccount(broker, account)
-    message.success('券商已添加')
-    newBrokerName.value = ''
-    newBrokerAccount.value = ''
-    await loadBrokerAccounts()
+    await api.createTerminal(name, newTerminalRemark.value.trim())
+    message.success('终端已添加')
+    newTerminalName.value = ''
+    newTerminalRemark.value = ''
+    await loadTerminals()
   } catch (e: any) {
     message.error('添加失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
   } finally {
-    baSaving.value = false
+    tmSaving.value = false
   }
 }
 
-async function deleteBrokerAccount(id: string) {
+const showTerminalModal = ref(false)
+const terminalForm = reactive({ id: '', name: '', remark: '' })
+
+function openEditTerminal(t: Terminal) {
+  terminalForm.id = t.id
+  terminalForm.name = t.name
+  terminalForm.remark = t.remark
+  showTerminalModal.value = true
+}
+
+async function saveTerminal() {
+  const name = terminalForm.name.trim()
+  if (!name) { message.warning('请输入终端名称'); return }
+  tmSaving.value = true
   try {
-    await api.deleteBrokerAccount(id)
-    message.success('已删除')
-    await loadBrokerAccounts()
+    await api.updateTerminal(terminalForm.id, name, terminalForm.remark.trim())
+    message.success('终端已更新')
+    showTerminalModal.value = false
+    await loadTerminals()
   } catch (e: any) {
-    message.error('删除失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
+    message.error('保存失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
+  } finally {
+    tmSaving.value = false
   }
 }
 
-function copyBrokerCode(code: string) {
-  if (!code) return
-  const done = () => message.success(`已复制 code：${code}`)
-  if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(code).then(done, () => message.warning('复制失败，请手动复制'))
-  } else {
-    message.warning('当前环境不支持自动复制，请手动复制')
+async function deleteTerminal(t: Terminal) {
+  dialog.warning({
+    title: '删除终端',
+    content: `确定删除终端「${t.name}」？其下 ${t.brokers?.length ?? 0} 个券商将一并删除，且不可恢复。`,
+    positiveText: '删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        await api.deleteTerminal(t.id)
+        message.success('终端已删除')
+        await loadTerminals()
+      } catch (e: any) {
+        message.error('删除失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
+      }
+    },
+  })
+}
+
+// ---- 券商 CRUD（隶属于某终端） ----
+const newBrokerTerminalId = ref('')
+const newBrokerName = ref('')
+const newBrokerAccount = ref('')
+const newBrokerRemark = ref('')
+
+async function addBroker() {
+  const terminalId = newBrokerTerminalId.value
+  const name = newBrokerName.value.trim()
+  const account = newBrokerAccount.value.trim()
+  if (!terminalId) { message.warning('请选择所属终端'); return }
+  if (!name) { message.warning('请输入券商名称'); return }
+  if (!account) { message.warning('请输入券商账号（account）'); return }
+  tmSaving.value = true
+  try {
+    await api.createBroker(terminalId, name, account, newBrokerRemark.value.trim())
+    message.success('券商已添加')
+    newBrokerName.value = ''
+    newBrokerAccount.value = ''
+    newBrokerRemark.value = ''
+    await loadTerminals()
+  } catch (e: any) {
+    message.error('添加失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
+  } finally {
+    tmSaving.value = false
   }
+}
+
+const showBrokerModal = ref(false)
+const brokerForm = reactive({ terminalId: '', id: '', name: '', account: '', remark: '' })
+
+function openEditBroker(t: Terminal, b: Broker) {
+  brokerForm.terminalId = t.id
+  brokerForm.id = b.id
+  brokerForm.name = b.name
+  brokerForm.account = b.account
+  brokerForm.remark = b.remark
+  showBrokerModal.value = true
+}
+
+async function saveBroker() {
+  const name = brokerForm.name.trim()
+  const account = brokerForm.account.trim()
+  if (!name) { message.warning('请输入券商名称'); return }
+  if (!account) { message.warning('请输入券商账号（account）'); return }
+  tmSaving.value = true
+  try {
+    await api.updateBroker(brokerForm.terminalId, brokerForm.id, {
+      name, account, remark: brokerForm.remark.trim(),
+    })
+    message.success('券商已更新')
+    showBrokerModal.value = false
+    await loadTerminals()
+  } catch (e: any) {
+    message.error('保存失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
+  } finally {
+    tmSaving.value = false
+  }
+}
+
+async function deleteBroker(t: Terminal, b: Broker) {
+  dialog.warning({
+    title: '删除券商',
+    content: `确定删除券商「${b.name}（${b.account}）」？`,
+    positiveText: '删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        await api.deleteBroker(t.id, b.id)
+        message.success('券商已删除')
+        await loadTerminals()
+      } catch (e: any) {
+        message.error('删除失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
+      }
+    },
+  })
 }
 
 // ============ 上传记录（持仓页 tab：上传记录） ============
@@ -1091,7 +1192,7 @@ const importLogColumns = [
 
 // 切换 tab 时按需加载（券商管理 / 上传记录）
 watch(activeTab, (tab) => {
-  if (tab === 'brokers') loadBrokerAccounts()
+  if (tab === 'brokers') loadTerminals()
   if (tab === 'imports') loadImportLogs()
 })
 </script>
@@ -1284,37 +1385,115 @@ watch(activeTab, (tab) => {
         </DataPanel>
         </n-tab-pane>
 
-        <n-tab-pane name="brokers" tab="券商管理">
+        <n-tab-pane name="brokers" tab="终端管理">
           <n-card :bordered="false" class="broker-mgmt-card">
-            <template #header>券商与账户</template>
+            <template #header>终端与券商</template>
             <template #header-extra>
-              <n-button size="small" :loading="baLoading" @click="loadBrokerAccounts">刷新</n-button>
+              <n-button size="small" :loading="terminalsLoading" @click="loadTerminals">刷新</n-button>
             </template>
+
+            <!-- 添加终端 -->
             <div class="broker-form">
-              <n-input v-model:value="newBrokerName" placeholder="券商名称（如 华泰证券）" clearable @keyup.enter="addBrokerAccount" />
-              <n-input v-model:value="newBrokerAccount" placeholder="账户名（可选，如 普通 / 两融）" clearable @keyup.enter="addBrokerAccount" />
-              <n-button type="primary" :loading="baSaving" @click="addBrokerAccount">添加</n-button>
+              <n-input v-model:value="newTerminalName" placeholder="终端名称（如 电脑A / 手机B）" clearable @keyup.enter="addTerminal" />
+              <n-input v-model:value="newTerminalRemark" placeholder="备注（可选）" clearable @keyup.enter="addTerminal" />
+              <n-button type="primary" :loading="tmSaving" @click="addTerminal">添加终端</n-button>
             </div>
+
+            <!-- 添加券商（选择所属终端） -->
+            <div class="broker-form">
+              <n-select
+                v-model:value="newBrokerTerminalId"
+                :options="terminals.map(t => ({ label: t.name, value: t.id }))"
+                placeholder="选择所属终端"
+                clearable
+                filterable
+                style="min-width: 160px;"
+              />
+              <n-input v-model:value="newBrokerName" placeholder="券商名称（如 华泰证券）" clearable @keyup.enter="addBroker" />
+              <n-input v-model:value="newBrokerAccount" placeholder="券商账号 account（必填）" clearable @keyup.enter="addBroker" />
+              <n-input v-model:value="newBrokerRemark" placeholder="备注（可选）" clearable @keyup.enter="addBroker" />
+              <n-button type="primary" :loading="tmSaving" @click="addBroker">添加券商</n-button>
+            </div>
+
             <n-alert type="info" :show-icon="false" class="broker-hint">
-              每个券商账户自动生成唯一 <b>code</b>；外部上传接口（持仓 / 成交导入）报文中需整批传入对应 <span class="mono">broker_code</span>。点击「复制」即可复制 code 用于接口调用。
+              一个终端可包含多个券商。券商 <b>account</b> 由客户端自传作为主标识（不再自动生成 code）；外部上传接口（持仓 / 成交导入）报文中需传入对应 <span class="mono">account</span>。
             </n-alert>
+
+            <!-- 终端列表 + 各自券商 -->
             <div class="broker-list broker-list-scroll">
-              <div v-for="a in brokerAccounts" :key="a.id" class="broker-item">
-                <div class="broker-item-main">
-                  <span class="broker-item-name">{{ a.broker }}</span>
-                  <span v-if="a.account" class="broker-item-account">{{ a.account }}</span>
+              <div v-for="t in terminals" :key="t.id" class="terminal-block">
+                <div class="terminal-head">
+                  <div class="terminal-title">
+                    <span class="terminal-name">{{ t.name }}</span>
+                    <span v-if="t.remark" class="terminal-remark">{{ t.remark }}</span>
+                  </div>
+                  <div class="terminal-actions">
+                    <n-button text size="small" type="primary" @click="openEditTerminal(t)">编辑</n-button>
+                    <n-button text size="small" type="error" @click="deleteTerminal(t)">删除</n-button>
+                  </div>
                 </div>
-                <div class="broker-item-code">
-                  <span class="mono broker-code-text">{{ a.code || '—' }}</span>
-                  <n-button v-if="a.code" text size="small" type="primary" @click="copyBrokerCode(a.code)">复制</n-button>
+                <div class="broker-sublist">
+                  <div v-for="b in (t.brokers || [])" :key="b.id" class="broker-item">
+                    <div class="broker-item-main">
+                      <span class="broker-item-name">{{ b.name }}</span>
+                      <span class="broker-item-account mono">{{ b.account }}</span>
+                      <span v-if="b.remark" class="broker-item-remark">{{ b.remark }}</span>
+                    </div>
+                    <div class="broker-actions">
+                      <n-button text size="small" type="primary" @click="openEditBroker(t, b)">编辑</n-button>
+                      <n-button text size="small" type="error" @click="deleteBroker(t, b)">删除</n-button>
+                    </div>
+                  </div>
+                  <div v-if="!t.brokers || !t.brokers.length" class="broker-empty">
+                    该终端下暂无券商
+                  </div>
                 </div>
-                <n-button text size="small" type="error" @click="deleteBrokerAccount(a.id)">删除</n-button>
               </div>
-              <div v-if="brokersLoaded && !brokerAccounts.length" class="broker-empty">
-                尚未配置券商账户，添加后可在上传接口中引用其 code
+              <div v-if="terminalsLoaded && !terminals.length" class="broker-empty">
+                尚未配置终端，添加终端后即可在其下添加券商
               </div>
             </div>
           </n-card>
+
+          <!-- 终端编辑弹窗 -->
+          <n-modal v-model:show="showTerminalModal" preset="card" title="编辑终端" style="width: 480px; max-width: 94vw;" :bordered="false">
+            <div class="edit-field">
+              <label>终端名称</label>
+              <n-input v-model:value="terminalForm.name" placeholder="终端名称" clearable />
+            </div>
+            <div class="edit-field">
+              <label>备注</label>
+              <n-input v-model:value="terminalForm.remark" placeholder="备注（可选）" clearable />
+            </div>
+            <template #footer>
+              <div class="modal-footer">
+                <n-button @click="showTerminalModal = false">取消</n-button>
+                <n-button type="primary" :loading="tmSaving" @click="saveTerminal">保存</n-button>
+              </div>
+            </template>
+          </n-modal>
+
+          <!-- 券商编辑弹窗 -->
+          <n-modal v-model:show="showBrokerModal" preset="card" title="编辑券商" style="width: 520px; max-width: 94vw;" :bordered="false">
+            <div class="edit-field">
+              <label>券商名称</label>
+              <n-input v-model:value="brokerForm.name" placeholder="券商名称（如 华泰证券）" clearable />
+            </div>
+            <div class="edit-field">
+              <label>券商账号 account（主标识）</label>
+              <n-input v-model:value="brokerForm.account" placeholder="券商账号（客户端自传，唯一）" clearable />
+            </div>
+            <div class="edit-field">
+              <label>备注</label>
+              <n-input v-model:value="brokerForm.remark" placeholder="备注（可选）" clearable />
+            </div>
+            <template #footer>
+              <div class="modal-footer">
+                <n-button @click="showBrokerModal = false">取消</n-button>
+                <n-button type="primary" :loading="tmSaving" @click="saveBroker">保存</n-button>
+              </div>
+            </template>
+          </n-modal>
         </n-tab-pane>
 
         <n-tab-pane name="imports" tab="上传记录">
@@ -1364,11 +1543,11 @@ watch(activeTab, (tab) => {
             />
           </div>
           <div class="edit-field" style="flex: 1; min-width: 160px;">
-            <label>券商账户（决定 broker_code，整批必传）</label>
+            <label>券商（决定 account，整批必传）</label>
             <n-select
-              v-model:value="tradeBrokerCode"
+              v-model:value="tradeAccount"
               :options="tradeBrokerOptions"
-              placeholder="选择券商账户"
+              placeholder="选择券商"
               clearable
               filterable
               @update:value="previewTrade"
@@ -1376,7 +1555,7 @@ watch(activeTab, (tab) => {
           </div>
         </div>
         <div v-if="!tradeBrokerOptions.length" class="import-errors" style="margin-bottom: 14px;">
-          尚未配置券商账户，请先到「券商管理」或「个人中心」添加券商账户（每项自动生成唯一 code）后再上传成交。
+          尚未配置券商，请先到「终端管理」或「个人中心」添加终端与券商（券商 account 为上传主标识）后再上传成交。
         </div>
 
         <!-- 字段说明表 -->
@@ -1537,7 +1716,7 @@ watch(activeTab, (tab) => {
             <ul class="api-notes">
               <li><b>接口前缀</b>：<span class="mono">/api/v1</span>（前端经 nginx <span class="mono">:9080</span> 反代；机器直连后端 <span class="mono">:8001</span>）</li>
               <li><b>无鉴权</b>：机器 / 程序直接调用，无需 JWT。请求体用 <span class="mono">user_id</span> 或 <span class="mono">username</span> 指明归属用户（缺失或不存在 → 400）。</li>
-              <li><b>broker_code 整批必传</b>：请求体<b>顶层</b>传一个 <span class="mono">broker_code</span>（来自「券商管理」tab 自动生成），整批统一归属该券商；逐条传的 <span class="mono">broker</span> 会被忽略，实际券商名由后端解析回填。缺失 / 非法 → 整批进入 failed，不入库。</li>
+              <li><b>account 整批必传</b>：请求体<b>顶层</b>传一个 <span class="mono">account</span>（券商账号，由客户端自传作为主标识，如 <span class="mono">huatai-12345678</span>），整批统一归属该券商；逐条传的 <span class="mono">broker</span> 会被忽略，实际券商名由后端解析回填。首见该 account 时按 <span class="mono">broker_name</span> / <span class="mono">remark</span> 自动建券商（落默认终端或指定 <span class="mono">terminal</span>）。缺失 → 整批进入 failed，不入库。兼容旧字段 <span class="mono">broker_code</span>（等同于 account）。</li>
               <li><b>source</b>：来源标记（任意字符串），写入上传记录便于追溯，缺省 <span class="mono">"api"</span>。</li>
               <li><b>响应结构</b>：<span class="mono">{ "code": 0, "message": "ok", "data": {...} }</span></li>
             </ul>
@@ -1561,7 +1740,8 @@ watch(activeTab, (tab) => {
   -d '{
     "username": "sos",
     "source": "my_bot",
-    "broker_code": "BRK-1A2B3C",
+    "account": "huatai-12345678",
+    "broker_name": "华泰证券",
     "items": [
       { "code": "510300", "name": "沪深300ETF", "type": "etf",
         "account": "普通", "quantity": 10000, "cost_price": 3.85 }
@@ -1576,7 +1756,8 @@ watch(activeTab, (tab) => {
   -d '{
     "username": "sos",
     "source": "my_bot",
-    "broker_code": "BRK-1A2B3C",
+    "account": "huatai-12345678",
+    "broker_name": "华泰证券",
     "trade_date": "2026-10-28",
     "items": [
       { "code": "510300", "name": "沪深300ETF", "type": "etf",
@@ -1872,6 +2053,27 @@ watch(activeTab, (tab) => {
 .broker-item-code { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .broker-code-text { font-size: 13px; color: var(--color-primary); font-weight: 600; }
 .broker-empty { padding: 16px; text-align: center; font-size: 12px; color: var(--text-muted); background: var(--bg-subtle); border-radius: 6px; }
+
+/* 终端管理：二级结构 */
+.terminal-block {
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--bg-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.terminal-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.terminal-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.terminal-name { font-weight: 700; font-size: 15px; color: var(--text-primary); }
+.terminal-remark { font-size: 12px; color: var(--text-muted); }
+.terminal-actions { display: flex; gap: 10px; flex-shrink: 0; }
+.broker-sublist { display: flex; flex-direction: column; gap: 6px; padding-left: 12px; border-left: 2px solid var(--border-default); }
+.broker-item-remark { font-size: 12px; color: var(--text-muted); }
+.broker-actions { display: flex; gap: 10px; flex-shrink: 0; }
+.modal-footer { display: flex; justify-content: flex-end; gap: 10px; }
+
 
 /* 上传记录 Tab */
 .import-empty { padding: 24px; text-align: center; font-size: 12px; color: var(--text-muted); background: var(--bg-subtle); border-radius: 6px; margin-top: 10px; }

@@ -395,16 +395,29 @@ TABLES = [
         )
         """,
 
-    # 19.2 券商列表（持仓页筛选/导入选用）—— 实际由 broker_account_service 首次使用时懒创建，此处仅作文档化
-    # 2026-08 重构：此表仅存券商名称，账户名拆到 biz_account_names 独立表
-    # 2026-10 新增 code 列：券商唯一标识，外部上传接口需传此 code 关联券商
+    # 19.2 终端 + 券商（持仓页筛选/导入选用）—— 实际由 init_sqlite 静态 DDL + terminal_broker_service 维护，此处仅作文档化
+    # 2026-11 重构：券商管理改为「终端管理」（一个终端可挂多个券商）。
+    #   - biz_terminals：终端（如 主终端 / 模拟盘 / 某台机器），归用户所有；
+    #   - biz_brokers：券商，挂在某个终端下；account 由客户端自传（替代原自动生成的 BRK-xxxx code），
+    #     并新增 name（券商名）/ remark（备注）字段。
+    # 旧 biz_broker_accounts（broker/account/code）已迁移为以上两表，并改名 biz_broker_accounts_legacy 留档。
     """
-    CREATE TABLE IF NOT EXISTS biz_broker_accounts (
+    CREATE TABLE IF NOT EXISTS biz_terminals (
         id               VARCHAR PRIMARY KEY,
         fk_user BIGINT NOT NULL,
-        broker           VARCHAR(50) NOT NULL,
-        account          VARCHAR(50) DEFAULT '',
-        code             VARCHAR(20) DEFAULT '',
+        name             VARCHAR(50) NOT NULL,
+        remark           VARCHAR(200) DEFAULT '',
+        created_at       VARCHAR,
+        updated_at       VARCHAR
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS biz_brokers (
+        id               VARCHAR PRIMARY KEY,
+        fk_terminal      VARCHAR NOT NULL,
+        name             VARCHAR(50) NOT NULL,
+        account          VARCHAR(50) NOT NULL,
+        remark           VARCHAR(200) DEFAULT '',
         created_at       VARCHAR,
         updated_at       VARCHAR
     )
@@ -579,7 +592,8 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_pi_portfolios ON biz_portfolio_items(fk_portfolios)",
     "CREATE INDEX IF NOT EXISTS idx_strat_users ON biz_strategies(fk_user)",
     "CREATE INDEX IF NOT EXISTS idx_holdings_users ON biz_holdings(fk_user)",
-    "CREATE INDEX IF NOT EXISTS idx_broker_users ON biz_broker_accounts(fk_user)",
+    "CREATE INDEX IF NOT EXISTS idx_terminal_users ON biz_terminals(fk_user)",
+    "CREATE INDEX IF NOT EXISTS idx_brokers_terminal ON biz_brokers(fk_terminal)",
     "CREATE INDEX IF NOT EXISTS idx_acctname_users ON biz_account_names(fk_user)",
     "CREATE INDEX IF NOT EXISTS idx_snap_users ON biz_holding_snapshots(fk_user)",
 

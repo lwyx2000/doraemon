@@ -8,7 +8,11 @@
 
 - 用户定位：请求体里用 `user_id`（整数，对应用户表 `pk_user`）**或** `username`（字符串）二选一指明归属用户。两者都缺 / 不存在 → `400`。
 - 留痕：`source` 字段标记来源程序（任意字符串，如 `"my_bot"`），写入历史表便于追溯；缺省为 `"api"`。
-- **券商标识 `broker_code`（整批必传）**：请求体**顶层**传一个 `broker_code`（形如 `BRK-1A2B3C`，来自前端「持仓分析 → 券商管理」tab 自动生成），**整批统一归属该券商**。不要再给每个 item 传 `broker`（即便传了也会被忽略，实际券商名由 `broker_code` 解析得到并逐条回填）。`broker_code` 缺失或不属于该用户 → **整批条目进入 `failed`、不写入任何数据**（详见各接口响应说明）。
+- **券商与终端模型（`account` 客户端自传）**：
+  - 一个**终端（terminal）**可挂多个**券商（broker）**；券商以 `account`（券商资金账号，由调用方自传，作为主标识）唯一确定。
+  - 请求体**顶层**传 `account`（必填，整批统一归属该券商）。可选 `broker_name`（券商展示名，首次出现且需新建券商时写入）、`terminal`（所属终端名，缺省自动建「默认终端」）、`remark`（备注）。
+  - 解析规则（`resolve_or_create_broker_for_upload`）：按 `(user, account)` 命中已有券商 → 复用；未命中 → 若 `broker_name` 提供则自动新建券商（挂到指定 / 默认终端），否则整批进入 `failed`、不写入任何数据。
+  - `account` 缺失或解析失败 → **整批条目进入 `failed`、不写入任何数据**（详见各接口响应说明）。
 - 响应统一结构：`{ "code": 0, "message": "ok", "data": {...} }`（`ApiResponse`）。
 
 ---
@@ -24,7 +28,7 @@
 
 ### 字段（每个 item）
 
-> 顶层必传 `broker_code`（见上方通用约定），整批统一券商；下方 `broker` 列由后端按 `broker_code` 解析逐条回填，**无需逐条传**。
+> 顶层必传 `account`（见上方通用约定），整批统一券商；下方 `broker` 列由后端按 `account` 解析逐条回填，**无需逐条传**。
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -33,8 +37,8 @@
 | `type` | string | ✅ | `stock` / `etf` / `fund_otc` / `option` / `future` / `hk_stock` |
 | `quantity` | number | ✅ | 持仓数量 |
 | `cost_price` | number | ✅ | 成本价 |
-| `broker` | string | 否 | 券商（**由顶层 `broker_code` 解析填充、逐条覆盖，不传或传了均忽略**） |
-| `account` | string | 否 | 子账户（普通 / 两融等） |
+| `broker` | string | 否 | 券商（**由顶层 `account` 解析填充、逐条覆盖，不传或传了均忽略**） |
+| `account` | string | 否 | 子账户（普通 / 两融等；**注意与顶层券商 `account` 区分**：顶层为券商资金账号，此处为子账户名） |
 | `open_date` | string | 否 | 建仓日期 |
 | `currency` | string | 否 | 币种，默认 `CNY` |
 | `stop_loss_pct` / `take_profit_pct` | number | 否 | 止损 / 止盈比例 |
@@ -47,7 +51,9 @@ curl -X POST 'http://192.168.3.53:9080/api/v1/holdings/import/api' \
   -d '{
     "user_id": 1,
     "source": "my_bot",
-    "broker_code": "BRK-1A2B3C",
+    "account": "HUAXIA-12345678",
+    "broker_name": "华泰证券",
+    "terminal": "主终端",
     "items": [
       {
         "code": "510300",
@@ -71,8 +77,8 @@ curl -X POST 'http://192.168.3.53:9080/api/v1/holdings/import/api' \
   }'
 ```
 
-> 也可用 `username` 定位：`{ "username": "sos", "broker_code": "BRK-1A2B3C", "source": "my_bot", "items": [...] }`
-> `broker_code` 缺失或非法时响应为 `{ "added": 0, "updated": 0, "failed": [ { "index": 0, "code": "", "reason": "broker_code 缺失或非法（不属于该用户）" }, ... ] }`，整批不入库。
+> 也可用 `username` 定位：`{ "username": "sos", "account": "HUAXIA-12345678", "broker_name": "华泰证券", "source": "my_bot", "items": [...] }`
+> `account` 缺失或解析失败（如未提供 `broker_name` 且券商不存在）时响应为 `{ "added": 0, "updated": 0, "failed": [ { "index": 0, "code": "", "reason": "account 缺失或券商解析失败" }, ... ] }`，整批不入库。
 
 ### 响应（data 部分）
 
@@ -94,7 +100,7 @@ curl -X POST 'http://192.168.3.53:9080/api/v1/holdings/import/api' \
 
 ### 字段（每个 item）
 
-> 顶层必传 `broker_code`（见上方通用约定），整批统一券商；下方 `broker` 由后端按 `broker_code` 解析逐条回填，**无需逐条传**。
+> 顶层必传 `account`（见上方通用约定），整批统一券商；下方 `broker` 由后端按 `account` 解析逐条回填，**无需逐条传**。
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -104,7 +110,7 @@ curl -X POST 'http://192.168.3.53:9080/api/v1/holdings/import/api' \
 | `quantity` | number | ✅ | 成交数量（>0） |
 | `name` | string | 否 | 证券名称 |
 | `type` | string | 否 | 默认 `stock` |
-| `broker` / `account` | string | 否 | 券商由顶层 `broker_code` 解析填充（逐条覆盖）；`account` 仍为逐条子账户 |
+| `broker` / `account` | string | 否 | 券商由顶层 `account` 解析填充（逐条覆盖）；`account` 仍为逐条子账户 |
 | `amount` | number | 否 | 成交额；缺省自动 `price*quantity` 四舍五入 2 位 |
 | `fee` | number | 否 | 手续费 |
 | `trade_time` | string | 否 | 成交时间 `YYYY-MM-DD HH:MM:SS` |
@@ -117,7 +123,8 @@ curl -X POST 'http://192.168.3.53:9080/api/v1/trades/import' \
   -d '{
     "username": "sos",
     "source": "my_bot",
-    "broker_code": "BRK-1A2B3C",
+    "account": "HUAXIA-12345678",
+    "broker_name": "华泰证券",
     "trade_date": "2026-10-28",
     "items": [
       {
@@ -170,6 +177,7 @@ curl -X POST 'http://192.168.3.53:9080/api/v1/trades/import' \
 
 ## 部署注意
 
-- 代码尚未提交 / 部署（本次为本地实现）。上线需走标准流程：
+- 上线标准流程：
   `commit → git bundle → scp 53 → 53 git fetch+ff → 代推 GitHub → 宿主 npm run build → docker compose build frontend && up -d --force-recreate frontend`（后端镜像一并重建以纳入新路由）。
 - `biz_trades` 与 `biz_holdings_history` 表均为 `CREATE TABLE IF NOT EXISTS` 幂等建表，首次请求自动落库，无需手动迁移。
+- 终端 / 券商表（`biz_terminals` / `biz_brokers`）为幂等建表；首个上传请求会自动建「默认终端」与对应券商。
