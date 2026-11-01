@@ -1,0 +1,25 @@
+{
+  "_note": "麦蕊 fund_rank 未覆盖、但仍在正常交易的场内基金，需逐个列白名单：(1) LOF 口径 —— 实测 2026-10-28，fund_rank(lof) 仅 308 只，subtype=all 也不是超集（交集 207）；(2) 跨境 ETF 口径 —— 实测 2026-10-30，fund_rank(etf) 3724 只、all 5088 只均不含日经 3 只。写法 \"164705\" 等价于 {\"code\":\"164705\",\"type\":\"lof\"}；ETF 必须显式 type=etf，否则会错落到 LOF tab。取数顺序：ETF 走网关 fund_etf_fund_daily_em（零直连），LOF 才回退新浪直连报价 + 网关净值。",
+  "codes": [
+    "164705",
+    "161831",
+    "160717",
+    "160322",
+    "161124",
+    {
+      "code": "513000",
+      "type": "etf",
+      "_note": "易方达日经225ETF，method=index/feed=jp"
+    },
+    {
+      "code": "159866",
+      "type": "etf",
+      "_note": "华安日经225ETF"
+    },
+    {
+      "code": "513880",
+      "type": "etf",
+      "_note": "华安日经225ETF(另)，拟合最干净"
+    }
+  ]
+}

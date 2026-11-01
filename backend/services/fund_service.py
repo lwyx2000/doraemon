@@ -29,6 +29,8 @@ import requests
 from core.config import AKSHARE_API_BASE, USE_MOCK_DATA
 from services.meta_utils import gateway_no_data_meta, real_meta_base, mock_meta
 from services.akshare_client import get_session
+from services.cross_border_valuation import attach_estimated_valuations
+from services.est_nav_history_service import attach_valuation_errors
 from utils.arbitrage import analyze_arbitrage
 from utils.closed_fund import analyze_closed_fund
 import mock_data
@@ -100,10 +102,13 @@ def _safe_int(value, default: int = 0) -> int:
 def _classify(name: str, code: str) -> tuple[str, str]:
     """基于名称/代码轻量分类（非虚构数据）。
 
+    注意："香港" 必须与 "港股" 并列——161124「香港小盘」、501025「香港银行」等
+    名字里只有"香港"，漏了会掉进 industry，连带 holding_days 按境内 T+1 算。
+
     供 ETF / LOF 共用（etf_service 亦复用）。
     """
     n = name
-    if any(k in n for k in ("纳指", "纳斯达克", "标普", "道琼斯", "德国", "法国", "日经", "恒生", "港股", "美国", "海外", "中概", "原油", "黄金")):
+    if any(k in n for k in ("纳指", "纳斯达克", "标普", "道琼斯", "德国", "法国", "日经", "恒生", "港股", "香港", "美国", "海外", "中概", "原油", "黄金")):
         return "cross_border", "跨境"
     if any(k in n for k in ("沪深300", "中证500", "中证1000", "上证50", "创业板", "科创50", "科创", "中证A500", "深证", "上证")):
         return "broad", "宽基"
@@ -326,6 +331,50 @@ def _attach_index_valuation(funds: list[dict]) -> None:
                 break
 
 
+def _merge_supplement_funds(funds: list[dict], fund_subtype: str) -> None:
+    """并入补充池（麦蕊 fund_rank 口径外的、仍在正常交易的场内基金）。
+
+    为什么需要：subtype=lof 只有 308 只，缺 164705/161831/160717 等；换 subtype=all
+    也不是超集（与 lof 交集仅 207 只）。跨境 ETF 同理：subtype=etf 有 3724 只、
+    all 有 5088 只，却都不含日经 3 只（实测 2026-10-30）。网关层面补不齐，只能
+    本地白名单 + 自取行情。
+
+    按条目自带 type 分流：subtype=lof 只并 lof 条目、=etf 只并 etf 条目、=all 全并。
+    不这么做的话，513000 这类 ETF 会错落到 LOF tab（tab 筛选失真）。
+
+    为什么放在请求路径外：ETF 条目一次批量走网关（2.4s），LOF 条目净值需逐只打
+    网关（0.8~1.6s/只），放请求里会拖慢 /funds。故只读缓存，缺失由后台线程预热，
+    首次访问这些行不出现，预热后自动补齐。
+    """
+    try:
+        from services.lof_supplement import get_supplement_funds
+    except Exception as e:
+        print(f"[Fund Service] 补充池导入失败: {type(e).__name__}: {e}")
+        return
+    rows = get_supplement_funds()
+    if not rows:
+        return
+    have = {f.get("code") for f in funds}
+    added = 0
+    for row in rows:
+        code = row.get("code")
+        if not code or code in have:
+            continue
+        row_type = str(row.get("type") or "lof")
+        if fund_subtype in ("lof", "etf") and row_type != fund_subtype:
+            continue
+        # 与主链路同口径的分类/持有天数，避免 tab 筛选与 T+N 计算失真
+        category, sub_category = _classify(row.get("name", ""), code)
+        row["category"] = category
+        row["sub_category"] = sub_category
+        row["holding_days"] = 2 if category == "cross_border" else 1
+        funds.append(row)
+        have.add(code)
+        added += 1
+    if added:
+        print(f"[Fund Service] 补充池并入 {added} 只（subtype={fund_subtype}）")
+
+
 def get_funds_from_api(fund_subtype: str = "etf") -> list[dict]:
     """从真实 API 获取基金排行数据。
 
@@ -392,13 +441,26 @@ def get_funds_from_api(fund_subtype: str = "etf") -> list[dict]:
             # 估值需 ETF 级 PE 历史（index_valuation 仅覆盖 8 个宽基指数），无源 → None
             "val_category": None,
             "change_pct": _safe_float(_pick(item, "涨跌幅", "增长率")),
+            # 净值日期：跨境篮子自算估值的基准日（53 fund_rank 提供）
+            "nav_date": _pick(item, "净值日期"),
         })
 
+    # 补充池：网关麦蕊口径漏掉的仍在交易的场内基金 —— LOF（164705/161831/160717 等）
+    # 与跨境 ETF（日经 3 只）。只读缓存不阻塞；必须在 attach_estimated_valuations
+    # 之前并入，否则这几只算不出 est_nav（它们原本连行都不在列表里）。
+    if fund_subtype in ("lof", "etf", "all"):
+        _merge_supplement_funds(funds, fund_subtype)
     # ETF 增强指标：估值（宽基→指数PE百分位，etf/lof/all 均适用）+ K线（动量/网格/波动率，仅 etf）
     if fund_subtype in ("etf", "lof", "all"):
         _attach_index_valuation(funds)
     if fund_subtype == "etf":
         _attach_kline_metrics(funds)
+    # 跨境 LOF/QDII 篮子自算估值（est_nav/est_premium_pct，参考 lofarb；缺数据不写）
+    if fund_subtype in ("etf", "lof", "all"):
+        attach_estimated_valuations(funds)
+        # 估值误差自检（T3）：挂最近一次 est_nav 与真实净值的偏差 + 近 20 日 mae/max。
+        # 只读 DuckDB 汇总缓存（TTL 120s），不发网络请求，放在返回前最后一步。
+        attach_valuation_errors(funds)
 
     print(f"[Fund Service] 成功获取 {len(funds)} 个 {fund_subtype}")
     return funds

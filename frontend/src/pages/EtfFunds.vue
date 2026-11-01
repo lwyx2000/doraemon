@@ -27,6 +27,7 @@ import {
 } from '../utils/signalDisplay'
 import type { EtfFund } from '../types'
 import { exportToCSV } from '../utils/export'
+import { estIndexLabel, estIndexNote } from '../utils/estDisplay'
 import { analyzeArbitrageBatch, FEASIBILITY_ORDER } from '../utils/arbitrage'
 import type { ArbitrageAnalysis } from '../utils/arbitrage'
 import PageHeader from '../components/PageHeader.vue'
@@ -253,6 +254,41 @@ const arbitrageColumns = [
     render: (row: EtfFund) => {
       const color = row.premium_pct >= 5 ? 'var(--color-danger)' : row.premium_pct >= 1 ? 'var(--color-warning)' : 'var(--text-secondary)'
       return h('span', { style: { color, fontWeight: 700 } }, `${row.premium_pct >= 0 ? '+' : ''}${row.premium_pct}%`)
+    },
+  },
+  {
+    title: titleWithHelp('篮子自算净值', 'est_nav'), key: 'est_nav', align: 'right' as const,
+    render: (row: EtfFund) => {
+      // 跨境 ETF/LOF 按底层篮子行情自算；position/篮子/行情缺一 → 后端不写 → '-'
+      if (row.est_nav == null) return h('span', { class: 'mono' }, '-')
+      // 口径必须跟着数值走：期货口径与篮子口径的可信度不是一回事
+      let tip: string | undefined
+      if (row.est_method === 'futures') {
+        const parts = [
+          `期货结算价口径：跟踪 ${row.est_futures_symbol ?? '期货合约'}，仓位 ${row.est_position ?? '-'}%`,
+        ]
+        if (row.est_futures_price_kind === 'settle') parts.push('现价用最新交易日结算价（已定盘）')
+        else if (row.est_futures_price_kind === 'live') parts.push('现价用盘中最新价（当日结算价未出）')
+        if (row.est_futures_resid_pct != null) parts.push(`实测残差 ${row.est_futures_resid_pct}%/日`)
+        if (row.est_base_date) parts.push(`基准日 ${row.est_base_date}`)
+        tip = parts.join('；')
+      } else if (row.est_method === 'index') {
+        const parts = [`指数跟踪法：按仓位跟踪 ${estIndexLabel(row.est_index_symbol)} 涨跌推算`]
+        const idxNote = estIndexNote(row.est_index_symbol)
+        if (idxNote) parts.push(idxNote)
+        if (row.est_index_resid_pct != null) parts.push(`该指数实测残差 ${row.est_index_resid_pct}%/日`)
+        if (row.est_index_proxy) parts.push('该指数只是代理，未精确复制持仓')
+        tip = parts.join('；')
+      }
+      return h('span', { class: 'mono', title: tip }, row.est_nav.toFixed(3))
+    },
+  },
+  {
+    title: titleWithHelp('自算溢价', 'est_premium_pct'), key: 'est_premium_pct', align: 'right' as const,
+    render: (row: EtfFund) => {
+      if (row.est_premium_pct == null) return h('span', { class: 'mono' }, '-')
+      const color = row.est_premium_pct >= 0 ? 'var(--color-danger)' : 'var(--color-success)'
+      return h('span', { style: { color, fontWeight: 700 } }, `${row.est_premium_pct >= 0 ? '+' : ''}${row.est_premium_pct.toFixed(2)}%`)
     },
   },
   {

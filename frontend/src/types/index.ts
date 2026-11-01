@@ -421,6 +421,27 @@ export interface FundItem {
   nav_date?: string              // 净值披露日期
   credit_rating?: string         // 底层持仓信用评级
   is_lof_convertible?: boolean   // 到期是否转LOF (决定折价收敛路径)
+  // 篮子自算估值（跨境 LOF/QDII，参考 lofarb basket_valuation；null=数据不足未估算）
+  est_nav?: number | null        // 篮子自算预估净值
+  est_premium_pct?: number | null // 自算溢价率(%)：(现价-自算净值)/自算净值
+  est_base_date?: string         // 估值基准日(净值日期)
+  est_price_date?: string        // 底层行情取数日
+  est_position?: number          // 篮子仓位(%)
+  // 估值方法（basket=篮子加权 / index=单指数跟踪）：决定上面数值的可信度口径
+  est_method?: 'basket' | 'index' | 'futures'
+  est_index_symbol?: string      // 指数跟踪法的基准指数代号（如 hkHSI / jpN225cny，展示前需映射）
+  est_index_resid_pct?: number   // 该指数实测残差(%/日)，越小越可信
+  est_index_proxy?: boolean      // true=指数只是代理（未精确复制持仓），前端须标注
+  // 期货结算价口径（method=futures）：商品 LOF/ETF 按结算价估净值
+  est_futures_symbol?: string            // 合约，如 AG0
+  est_futures_price_kind?: 'settle' | 'live'  // settle=最新交易日结算价（已定盘）/ live=盘中最新价
+  est_futures_resid_pct?: number         // 实测残差(%/日)
+  // 估值误差自检（T3）：est_nav 与基金公司公布真实净值的偏差。null=还没有回填样本
+  valuation_error?: number | null        // 最近一次误差(%)：(est_nav/nav_actual-1)*100
+  valuation_error_date?: string | null   // 该误差对应的净值日
+  valuation_error_n?: number | null      // 近 20 日有效样本数
+  valuation_error_mae?: number | null    // 近 20 日平均绝对误差(%)
+  valuation_error_max?: number | null    // 近 20 日最大绝对误差(%)
   underlying_type?: string       // 底层资产类型
 }
 
@@ -457,6 +478,27 @@ export interface EtfFund {
   change_pct?: number
   // 申赎 / 费率（后端新列：麦蕊日度快照 + 本地费率库）
   nav_date?: string | null              // 净值披露日期
+  // 篮子自算估值（跨境 ETF/LOF，参考 lofarb basket_valuation；null=数据不足未估算）
+  est_nav?: number | null               // 篮子自算预估净值
+  est_premium_pct?: number | null       // 自算溢价率(%)：(现价-自算净值)/自算净值
+  est_base_date?: string                // 估值基准日(净值日期)
+  est_price_date?: string               // 底层行情取数日
+  est_position?: number                 // 篮子仓位(%)
+  // 估值方法（basket=篮子加权 / index=单指数跟踪）
+  est_method?: 'basket' | 'index' | 'futures'
+  est_index_symbol?: string             // 指数跟踪法的基准指数代号（如 hkHSI / jpN225cny）
+  est_index_resid_pct?: number          // 该指数实测残差(%/日)，越小越可信
+  est_index_proxy?: boolean             // true=指数只是代理（未精确复制持仓），前端须标注
+  // 期货结算价口径（method=futures）
+  est_futures_symbol?: string           // 合约，如 AG0
+  est_futures_price_kind?: 'settle' | 'live'
+  est_futures_resid_pct?: number        // 实测残差(%/日)
+  // 估值误差自检（T3），口径同 FundItem
+  valuation_error?: number | null
+  valuation_error_date?: string | null
+  valuation_error_n?: number | null
+  valuation_error_mae?: number | null
+  valuation_error_max?: number | null
   share?: number | null                 // 最新份额(亿份)
   scale?: number | null                 // 最新规模(亿元)
   mgmt_fee?: number | null              // 管理费率(%)

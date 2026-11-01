@@ -51,6 +51,8 @@ def _map_etf(item: dict[str, Any]) -> dict[str, Any] | None:
         # 折溢价套利毛收益 = 溢价率（折价为负即反向套利空间）
         "net_arbitrage_yield": premium_pct,
         "change_pct": change_pct,
+        "nav": nav,
+        "nav_date": _pick(item, "净值日期"),
         "subscribe_limit": subscribe_limit,
         "is_suspended": is_suspended,
         "holding_days": holding_days,
@@ -135,6 +137,10 @@ def get_etfs(
 
     attach_subscription(result)
     _attach_fee_info(result)
+    # 跨境 ETF 篮子自算估值（513100/513300 等，参考 lofarb；缺数据不写）
+    from services.cross_border_valuation import attach_estimated_valuations
+
+    attach_estimated_valuations(result)
     return result
 
 
@@ -166,4 +172,8 @@ def get_etf_arbitrage_opportunities() -> list[dict]:
 
     attach_subscription(result)
     _attach_fee_info(result)
+    # 跨境 ETF 篮子自算估值（513100/513300 等，参考 lofarb；缺数据不写）
+    from services.cross_border_valuation import attach_estimated_valuations
+
+    attach_estimated_valuations(result)
     return result

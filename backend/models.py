@@ -269,6 +269,29 @@ class FundItem(BaseModel):
     credit_rating: Optional[str] = None
     is_lof_convertible: Optional[bool] = None
     underlying_type: Optional[str] = None
+    # 篮子自算估值（跨境 LOF/QDII，参考 lofarb；数据不足时后端不写→前端显示 -）
+    nav_date: Optional[str] = None
+    est_nav: Optional[float] = None
+    est_premium_pct: Optional[float] = None
+    est_base_date: Optional[str] = None
+    est_price_date: Optional[str] = None
+    est_position: Optional[float] = None
+    # 估值方法口径：basket=篮子加权，index=单指数跟踪（代理，前端加「~」标注）
+    est_method: Optional[str] = None
+    est_index_symbol: Optional[str] = None
+    est_index_resid_pct: Optional[float] = None
+    est_index_proxy: Optional[bool] = None
+    # 期货结算价口径（method=futures）
+    est_futures_symbol: Optional[str] = None
+    est_futures_price_kind: Optional[str] = None      # settle / live
+    est_futures_resid_pct: Optional[float] = None
+    # 估值误差自检（T3）：用历史 est_nav 与基金公司公布的真实净值比对。
+    # 没有回填样本时后端**不写**这些字段（前端显示 '-'），不能写 0 —— 0 会被读成「零误差」。
+    valuation_error: Optional[float] = None        # 最近一次：est_nav/nav_actual - 1，单位 %
+    valuation_error_date: Optional[str] = None     # 该误差对应的净值日
+    valuation_error_n: Optional[int] = None        # 近 20 日有效样本数
+    valuation_error_mae: Optional[float] = None    # 近 20 日平均绝对误差（%）
+    valuation_error_max: Optional[float] = None    # 近 20 日最大绝对误差（%）
     arbitrage_analysis: Optional[ArbitrageAnalysis] = None
 
 

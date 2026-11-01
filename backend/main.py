@@ -99,6 +99,15 @@ async def lifespan(app: FastAPI):
         from jobs.etf_fee_job import start_etf_fee_scheduler
 
         start_etf_fee_scheduler()
+        # 估值误差自检（T3）：每天 15:30 把当时算出的 est_nav 连同口径落库，
+        # 次日 03:00 等基金公司公布真实净值后回填 valuation_error。
+        # ensure_table 放在这里同步执行 —— 若留给首个请求或后台线程惰性建表，
+        # /funds 与 job 会并发 CREATE TABLE 抢锁。
+        from services import est_nav_history_service as _est_nav_hist
+        from jobs.est_nav_snapshot_job import start_est_nav_scheduler
+
+        _est_nav_hist.ensure_table()
+        start_est_nav_scheduler()
         # 监控缓存配置：从 biz_config 恢复（重启保留用户改过的配置）
         from services.monitor_service import load_cache_config
 
@@ -166,6 +175,9 @@ async def lifespan(app: FastAPI):
         from jobs.etf_fee_job import stop_etf_fee_scheduler
 
         stop_etf_fee_scheduler()
+        from jobs.est_nav_snapshot_job import stop_est_nav_scheduler
+
+        stop_est_nav_scheduler()
     close_db()
     close_biz_db()
     print("[Shutdown] Database connection closed")

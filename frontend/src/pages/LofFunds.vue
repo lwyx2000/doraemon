@@ -14,6 +14,7 @@ import {
 } from '@vicons/ionicons5'
 import { api, useAsyncData, isGatewayNoData } from '../composables/useApi'
 import { pctColor } from '../utils/percentile'
+import { estIndexLabel, estIndexNote, valuationErrorTip } from '../utils/estDisplay'
 import { useSignalScan } from '../composables/useSignalScan'
 import {
   buildTacticalSignalColumns,
@@ -240,6 +241,41 @@ function onRowClick(fund: FundItem) {
   message.info(`${fund.name}: ${fund.premium_pct}%`)
 }
 
+/**
+ * 自算净值的口径说明（铁律：可以近似，不可以假装精确）。
+ *
+ * 指数跟踪法用的是代理指数，残差就是「这只指数解释不了的净值波动」，会和真实溢价混在一起，
+ * 所以必须让用户能看到 基准指数 / 残差 / 仓位 / 基准日，而不是只给一个漂亮的三位小数。
+ */
+function estNavTip(row: FundItem): string {
+  if (row.est_method === 'futures') {
+    // 商品基金净值按**结算价**估值（实测 161226 用结算价残差 0.06%，用收盘价 1.29%）
+    const parts = [
+      `期货结算价口径：跟踪 ${row.est_futures_symbol ?? '期货合约'}，仓位 ${row.est_position ?? '-'}%`,
+    ]
+    if (row.est_futures_price_kind === 'settle') parts.push('现价用最新交易日结算价（已定盘）')
+    else if (row.est_futures_price_kind === 'live') parts.push('现价用盘中最新价（当日结算价未出）')
+    if (row.est_futures_resid_pct != null) parts.push(`实测残差 ${row.est_futures_resid_pct}%/日`)
+    if (row.est_base_date) parts.push(`基准日 ${row.est_base_date}`)
+    return parts.join('；')
+  }
+  if (row.est_method === 'index') {
+    const parts = [`指数跟踪法：按仓位跟踪 ${estIndexLabel(row.est_index_symbol)} 涨跌推算`]
+    const idxNote = estIndexNote(row.est_index_symbol)
+    if (idxNote) parts.push(idxNote)
+    if (row.est_index_resid_pct != null) parts.push(`该指数实测残差 ${row.est_index_resid_pct}%/日`)
+    if (row.est_index_proxy) parts.push('该指数只是代理，未精确复制持仓')
+    if (row.est_position != null) parts.push(`仓位 ${row.est_position}%`)
+    if (row.est_base_date) parts.push(`基准日 ${row.est_base_date}`)
+    return parts.join('；')
+  }
+  const parts = ['篮子法：按持仓权重与成分行情加权']
+  if (row.est_position != null) parts.push(`篮子仓位 ${row.est_position}%`)
+  if (row.est_base_date) parts.push(`基准日 ${row.est_base_date}`)
+  if (row.est_price_date) parts.push(`行情日 ${row.est_price_date}`)
+  return parts.join('；')
+}
+
 const columns = computed(() => {
   const cols: any[] = [
     {
@@ -267,6 +303,53 @@ const columns = computed(() => {
         const color = row.premium_pct >= 0 ? 'var(--color-danger)' : 'var(--color-success)'
         const text = `${row.premium_pct >= 0 ? '+' : ''}${row.premium_pct}%`
         return h('span', { class: 'mono right', style: { color } }, text)
+      },
+    },
+    {
+      title: titleWithHelp('篮子自算净值', 'est_nav'),
+      key: 'est_nav',
+      align: 'right' as const,
+      render: (row: FundItem) => {
+        // 跨境LOF/QDII自算：basket=篮子加权，index=单指数跟踪（代理，加「~」区分）
+        // position/篮子/行情/质量标定缺一 → 后端不写 → '-'
+        if (row.est_nav == null) return h('span', { class: 'mono right' }, '-')
+        const isIndex = row.est_method === 'index'
+        return h(
+          'span',
+          { class: 'mono right', title: estNavTip(row) },
+          isIndex
+            ? [row.est_nav.toFixed(3), h('sup', { style: 'color: var(--text-muted)' }, '~')]
+            : row.est_nav.toFixed(3),
+        )
+      },
+    },
+    {
+      title: titleWithHelp('自算溢价', 'est_premium_pct'),
+      key: 'est_premium_pct',
+      align: 'right' as const,
+      render: (row: FundItem) => {
+        if (row.est_premium_pct == null) return h('span', { class: 'mono right' }, '-')
+        const color = row.est_premium_pct >= 0 ? 'var(--color-danger)' : 'var(--color-success)'
+        const text = `${row.est_premium_pct >= 0 ? '+' : ''}${row.est_premium_pct.toFixed(2)}%`
+        // 指数跟踪法的溢价率带着代理误差，同样要能悬浮看到口径
+        return h('span', { class: 'mono right', style: { color }, title: estNavTip(row) }, text)
+      },
+    },
+    {
+      title: titleWithHelp('估值误差', 'valuation_error'),
+      key: 'valuation_error',
+      align: 'right' as const,
+      render: (row: FundItem) => {
+        // T3 自检：过去算出的 est_nav 与基金公司公布真实净值的偏差。
+        // null = 还没有回填样本（刚上线首日全空），显示 '-' 而不是 0 —— 0 会被读成「零误差」。
+        if (row.valuation_error == null) return h('span', { class: 'mono right' }, '-')
+        const abs = Math.abs(row.valuation_error)
+        const color =
+          abs > 1.5 ? 'var(--color-danger)'
+            : abs > 0.5 ? 'var(--color-warning)'
+            : 'var(--text-muted)'
+        const text = `${row.valuation_error >= 0 ? '+' : ''}${row.valuation_error.toFixed(2)}%`
+        return h('span', { class: 'mono right', style: { color }, title: valuationErrorTip(row) }, text)
       },
     },
     {
