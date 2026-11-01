@@ -125,11 +125,16 @@ async def lifespan(app: FastAPI):
                 from services.market_service import (
                     _fetch_index_valuation_raw,
                     get_market_stats_real,
+                    get_market_overview_with_meta,
                 )
 
                 print("[Startup] 预热市场概况上游(index_valuation / market_stats)...")
                 _fetch_index_valuation_raw(force=True)
                 get_market_stats_real()
+                # overview 整体预热（2026-10-19）：填充 overview 进程内缓存，
+                # 并顺带把指数补录负缓存跑热（北证50 网关固定 15s 后 500，
+                # 不预热则重启后第一个点刷新/首次冷路径的用户要白等 15s+）
+                get_market_overview_with_meta(force=True)
                 print("[Startup] 市场概况上游预热完成")
             except Exception as e:
                 print(f"[Startup] 市场概况上游预热失败(忽略, 不影响启动): {e!r}")
@@ -232,12 +237,13 @@ from routers.reits_router import router as reits_router
 from routers.favorite_router import router as favorite_router
 from routers.portfolio_router import router as portfolio_router
 from routers.holdings_router import router as holdings_router
+from routers.trades_router import router as trades_router
 from routers.strategy_router import router as strategy_router
 from routers.alert_router import router as alert_router
 from routers.ai_router import router as ai_router
 from routers.monitor_router import router as monitor_router
 from routers.notification_router import router as notification_router
-from routers.broker_account_router import router as broker_account_router
+from routers.terminals_router import router as terminals_router
 from routers.account_name_router import router as account_name_router
 from routers.signal_router import router as signal_router
 from routers.strategy_library_router import router as strategy_library_router
@@ -247,9 +253,10 @@ from routers.datasource_router import router as datasource_router
 from routers.jobs_router import router as jobs_router
 from routers.dividend_router import router as dividend_router
 from routers.longterm_router import router as longterm_router
+from routers.import_log_router import router as import_log_router
 
 app.include_router(auth_router, prefix=f"{API_PREFIX}/auth")
-app.include_router(broker_account_router, prefix=API_PREFIX)
+app.include_router(terminals_router, prefix=API_PREFIX)
 app.include_router(account_name_router, prefix=API_PREFIX)
 app.include_router(market_router, prefix=f"{API_PREFIX}/market")
 app.include_router(fund_router, prefix=API_PREFIX)
@@ -259,6 +266,7 @@ app.include_router(reits_router, prefix=f"{API_PREFIX}/reits")
 app.include_router(favorite_router, prefix=API_PREFIX)
 app.include_router(portfolio_router, prefix=API_PREFIX)
 app.include_router(holdings_router, prefix=API_PREFIX)
+app.include_router(trades_router, prefix=API_PREFIX)
 app.include_router(strategy_router, prefix=API_PREFIX)
 app.include_router(alert_router, prefix=API_PREFIX)
 app.include_router(ai_router, prefix=API_PREFIX)
@@ -272,6 +280,7 @@ app.include_router(datasource_router, prefix=f"{API_PREFIX}/datasources")
 app.include_router(jobs_router, prefix=f"{API_PREFIX}/jobs")
 app.include_router(dividend_router, prefix=f"{API_PREFIX}/dividend")
 app.include_router(longterm_router, prefix=f"{API_PREFIX}/longterm")
+app.include_router(import_log_router, prefix=API_PREFIX)
 
 
 # ============================================================

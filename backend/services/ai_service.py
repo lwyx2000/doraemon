@@ -211,6 +211,9 @@ _CONTEXT_KNOWLEDGE: dict[str, list[str]] = {
 # 单条 chat 问题的字数上限（history 侧为 2000 字/条 × 8 条）
 _MAX_CHAT_MESSAGE = 4000
 
+# AI 解读时用户导入知识的挂载预算（总量上限，超出按更新时间倒序截断）
+_IMPORT_KB_BUDGET = 8000
+
 
 def _compact(value: Any, limit: int = 1500) -> str:
     """JSON 序列化并截断，防止 prompt 超长。"""
@@ -303,22 +306,31 @@ def build_interpret(context_type: str) -> dict:
     doc_ids = _CONTEXT_KNOWLEDGE.get(context_type, [])
     docs = knowledge_service.docs_by_ids(doc_ids)
 
+    # 用户导入的知识：启用态全部参与（用户主动导入即期望被解读引用），
+    # 总量预算 8000 字防 prompt 爆炸；meta 帧列出所用文档（含来源标记）。
+    imported = knowledge_service.imported_for_interpret(max_chars=_IMPORT_KB_BUDGET)
+
     user_parts = [
         f"请基于以下「{context_type}」页面的真实数据给出解读：\n{_compact(context)}",
     ]
     if docs:
         kb = "\n\n".join(f"### {d['title']}\n{d['content']}" for d in docs)
         user_parts.append(f"相关口径知识库（解释指标含义时引用）：\n{_compact(kb, 3000)}")
+    if imported:
+        kb_i = "\n\n".join(f"### {d['title']}（用户导入知识）\n{d['content']}" for d in imported)
+        user_parts.append(f"用户导入的知识库（解读时优先参考）：\n{_compact(kb_i, _IMPORT_KB_BUDGET)}")
     user_parts.append("请按：结论先行 → 数据依据（带时间戳）→ 风险提示 → 可执行建议 的结构输出。")
 
     messages = [
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": "\n\n".join(user_parts)},
     ]
+    doc_meta = [{"id": d.get("id"), "title": d.get("title")} for d in docs]
+    doc_meta.extend({"id": d.get("id"), "title": d.get("title"), "source": "import"} for d in imported)
     return {
         "messages": messages,
         "context": context,
-        "docs": [{"id": d.get("id"), "title": d.get("title")} for d in docs],
+        "docs": doc_meta,
     }
 
 

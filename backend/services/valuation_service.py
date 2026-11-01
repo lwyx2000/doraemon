@@ -54,6 +54,8 @@ BROAD_INDEX_LIST: list[dict] = [
     {"name": "科创50",   "code": "000688"},
     # 中证A500(000510)：PB/PE 自 2005-01 起（21 年，全史）
     {"name": "中证A500", "code": "000510"},
+    # 中证2000(932000)：2023-08 上市的次新宽基，历史较短（约3年），分位样本刚过 24 月守卫
+    {"name": "中证2000", "code": "932000"},
 ]
 
 # 基准指数：用「中证全指(000985)」作为万得全A代理。
@@ -160,7 +162,9 @@ def _get_pe_history(index_code: str) -> list[dict]:
     """获取指数 PE 月度历史（网关 /api/index-valuation 接口）。
 
     Returns:
-        [{"date": "2005-04-29", "pe_ttm": 15.2, "pe_static": 14.8, "index_value": 932.40}, ...]
+        [{"date": "2005-04-29", "pe_ttm": 15.2, "pe_ttm_ex": 14.9,
+          "pe_static": 14.8, "index_value": 932.40}, ...]
+        （pe_ttm=纳亏口径展示值；pe_ttm_ex=剔亏口径、分位基准，旧行为 None）
     """
     now = time.time()
     cached = _pe_cache.get(index_code)
@@ -521,8 +525,13 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
 
     Returns:
         (data, meta)
-        data: [{"name", "code", "pb", "pe_ttm", "roe_mean", "spread", "valuation_percentile",
-                 "crowding", "yield_10y", "cpi_yoy", "pb_history", "spread_history"}, ...]
+        data: [{"name", "code", "pb", "pe_ttm", "pb_eq", "pb_med", "pe_ttm_eq",
+                 "pe_ttm_med", "pe_ttm_ex_eq", "pe_ttm_ex_med",
+                 "pb_percentile", "pb_eq_percentile", "pb_med_percentile",
+                 "pe_percentile", "pe_ttm_eq_percentile", "pe_ttm_med_percentile",
+                 "pe_ttm_ex_eq_percentile", "pe_ttm_ex_med_percentile",
+                 "（及各自 _10y 近10年分位）", ...}, ...]
+              —— 2026-10-27 新增等权(eq)/中位(med)口径（与 legulegu 等权/中位对齐）。
         meta: {"isMock", "dataSource", "updateTime"}
     """
     if USE_MOCK_DATA:
@@ -576,6 +585,24 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
 
         current_pb = pb_data[-1].get("pb") if pb_data else None
         current_pe = pe_data[-1].get("pe_ttm") if pe_data else None
+        # 剔亏口径当前值（分位基准，2026-10-24 锚点校准后确立）：
+        # 官方分位序列在剔亏侧（legulegu 剔亏全史 43.4% = 官方截图 43），
+        # 纳亏口径会把小盘 PE 抬高最高约 3 倍、分位虚高 20~35pp。
+        # 旧行/未重导指数 pe_ttm_ex 为 None，回退纳亏值（不炸）。
+        current_pe_ex = None
+        if pe_data:
+            current_pe_ex = pe_data[-1].get("pe_ttm_ex")
+            if current_pe_ex is None:
+                current_pe_ex = pe_data[-1].get("pe_ttm")
+
+        # 等权/中位口径当前值（2026-10-27 新增，与 legulegu 等权/中位对齐）。
+        # 旧行/未重导指数这些键缺失 → None，前端展示「—」。
+        current_pb_eq = pb_data[-1].get("pb_eq") if pb_data else None
+        current_pb_med = pb_data[-1].get("pb_med") if pb_data else None
+        current_pe_ttm_eq = pe_data[-1].get("pe_ttm_eq") if pe_data else None
+        current_pe_ttm_med = pe_data[-1].get("pe_ttm_med") if pe_data else None
+        current_pe_ex_eq = pe_data[-1].get("pe_ttm_ex_eq") if pe_data else None
+        current_pe_ex_med = pe_data[-1].get("pe_ttm_ex_med") if pe_data else None
 
         roe_data = _compute_roe_history(pb_data, pe_data)
         roe_mean = _compute_roe_mean(roe_data)
@@ -591,10 +618,55 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
             valuation_percentile = round(100 - spread_pct, 2)
 
         # PE / PB 历史分位（升序百分位，高=贵），与行业口径一致
+        # PE 分位走**剔亏口径**（pe_ttm_ex，仅聚 PE>0）：与中证官方分位口径对齐；
+        # 绝对值列（pe_ttm）仍为纳亏口径，展示用。逐点回退纳亏值兼容旧行。
         pb_values_all = [x.get("pb") for x in pb_data if x.get("pb") is not None]
-        pe_values_all = [x.get("pe_ttm") for x in pe_data if x.get("pe_ttm") is not None]
+        # 注意（2026-10-28）：过滤条件必须兼容「只有 pe_ttm_ex 有值」的行——
+        # 2005-2009 段由 legulegu 补齐，那段只有剔亏口径（pe_ttm 留空，避免
+        # 与纳亏口径混在同一序列里）。旧写法 `if x.get("pe_ttm") is not None`
+        # 会把整段补齐数据丢掉，PE 全史分位仍退回 2010 起。
+        pe_values_all_ex = [
+            (x.get("pe_ttm_ex") if x.get("pe_ttm_ex") is not None else x.get("pe_ttm"))
+            for x in pe_data
+            if (x.get("pe_ttm_ex") is not None or x.get("pe_ttm") is not None)
+        ]
+        # 等权/中位历史序列（2026-10-27）：六类聚合各自的全史样本。
+        # 三指标：PB / PE(TTM)纳亏 / PE(TTM)剔亏，各含等权(eq)与中位(med)。
+        pb_eq_values_all = [x.get("pb_eq") for x in pb_data if x.get("pb_eq") is not None]
+        pb_med_values_all = [x.get("pb_med") for x in pb_data if x.get("pb_med") is not None]
+        pe_ttm_eq_values_all = [x.get("pe_ttm_eq") for x in pe_data if x.get("pe_ttm_eq") is not None]
+        pe_ttm_med_values_all = [x.get("pe_ttm_med") for x in pe_data if x.get("pe_ttm_med") is not None]
+        pe_ex_eq_values_all = [x.get("pe_ttm_ex_eq") for x in pe_data if x.get("pe_ttm_ex_eq") is not None]
+        pe_ex_med_values_all = [x.get("pe_ttm_ex_med") for x in pe_data if x.get("pe_ttm_ex_med") is not None]
         pb_percentile = round(_percentile(current_pb, pb_values_all), 2) if (current_pb is not None and pb_values_all) else None
-        pe_percentile = round(_percentile(current_pe, pe_values_all), 2) if (current_pe is not None and pe_values_all) else None
+        pe_percentile = round(_percentile(current_pe_ex, pe_values_all_ex), 2) if (current_pe_ex is not None and pe_values_all_ex) else None
+
+        # 近 10Y（120 个月）窗口分位：对齐万得/中证官方常用口径，可直接跨源对比。
+        # 注意：月度序列最后 120 点 ≈ 10 年；若历史不足 120 个月则退化为全史（与全史列相同）。
+        pb_values_10y = pb_values_all[-120:]
+        pe_values_10y = pe_values_all_ex[-120:]
+        pb_percentile_10y = (
+            round(_percentile(current_pb, pb_values_10y), 2) if (current_pb is not None and pb_values_10y) else None
+        )
+        pe_percentile_10y = (
+            round(_percentile(current_pe_ex, pe_values_10y), 2) if (current_pe_ex is not None and pe_values_10y) else None
+        )
+
+        # 等权/中位分位（全史 + 近10Y），与加权口径完全一致（升序百分位，高=贵）。
+        # 供前端「多算法对比」：同一点位下，等权/中位估值的分位往往与加权不同，
+        # 因加权被大市值成分股主导，等权/中位更反映成分股广度的便宜程度。
+        def _pctl_all_10y(cur, vals):
+            v10 = vals[-120:]
+            return (
+                round(_percentile(cur, vals), 2) if (cur is not None and vals) else None,
+                round(_percentile(cur, v10), 2) if (cur is not None and v10) else None,
+            )
+        pb_eq_percentile, pb_eq_percentile_10y = _pctl_all_10y(current_pb_eq, pb_eq_values_all)
+        pb_med_percentile, pb_med_percentile_10y = _pctl_all_10y(current_pb_med, pb_med_values_all)
+        pe_ttm_eq_percentile, pe_ttm_eq_percentile_10y = _pctl_all_10y(current_pe_ttm_eq, pe_ttm_eq_values_all)
+        pe_ttm_med_percentile, pe_ttm_med_percentile_10y = _pctl_all_10y(current_pe_ttm_med, pe_ttm_med_values_all)
+        pe_ex_eq_percentile, pe_ex_eq_percentile_10y = _pctl_all_10y(current_pe_ex_eq, pe_ex_eq_values_all)
+        pe_ex_med_percentile, pe_ex_med_percentile_10y = _pctl_all_10y(current_pe_ex_med, pe_ex_med_values_all)
 
         # 拥挤度 = (指数PB / 基准PB) 的历史分位
         crowding = None
@@ -629,7 +701,15 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
             valuation_percentile = None
             pb_percentile = None
             pe_percentile = None
+            pb_percentile_10y = None
+            pe_percentile_10y = None
             crowding = None
+            pb_eq_percentile = pb_eq_percentile_10y = None
+            pb_med_percentile = pb_med_percentile_10y = None
+            pe_ttm_eq_percentile = pe_ttm_eq_percentile_10y = None
+            pe_ttm_med_percentile = pe_ttm_med_percentile_10y = None
+            pe_ex_eq_percentile = pe_ex_eq_percentile_10y = None
+            pe_ex_med_percentile = pe_ex_med_percentile_10y = None
         else:
             erp_zscore_info = _current_erp_zscore(spread_history)
             if erp_zscore_info:
@@ -643,9 +723,13 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
         pb_history = pb_data
 
         # PE 历史与指数点数历史（完整序列，供详情弹窗画图）
+        # pe_ttm=纳亏口径（展示），pe_ttm_ex=剔亏口径（分位基准，2026-10-24）
         pe_src = pe_data
         pe_history = [
-            {"date": r["date"], "pe_ttm": r.get("pe_ttm"), "pe_static": r.get("pe_static")}
+            {"date": r["date"], "pe_ttm": r.get("pe_ttm"), "pe_ttm_ex": r.get("pe_ttm_ex"),
+             "pe_static": r.get("pe_static"),
+             "pe_ttm_eq": r.get("pe_ttm_eq"), "pe_ttm_med": r.get("pe_ttm_med"),
+             "pe_ttm_ex_eq": r.get("pe_ttm_ex_eq"), "pe_ttm_ex_med": r.get("pe_ttm_ex_med")}
             for r in pe_src if r.get("pe_ttm") is not None or r.get("pe_static") is not None
         ]
         price_src = pb_data
@@ -662,11 +746,33 @@ def get_broad_index_valuation() -> tuple[list[dict], dict]:
             "code": idx_code,
             "pb": round(current_pb, 4) if current_pb else None,
             "pe_ttm": round(current_pe, 2) if current_pe else None,
+            # 等权/中位口径（2026-10-27，与 legulegu 等权/中位对齐）
+            "pb_eq": round(current_pb_eq, 4) if current_pb_eq else None,
+            "pb_med": round(current_pb_med, 4) if current_pb_med else None,
+            "pe_ttm_eq": round(current_pe_ttm_eq, 2) if current_pe_ttm_eq else None,
+            "pe_ttm_med": round(current_pe_ttm_med, 2) if current_pe_ttm_med else None,
+            "pe_ttm_ex_eq": round(current_pe_ex_eq, 2) if current_pe_ex_eq else None,
+            "pe_ttm_ex_med": round(current_pe_ex_med, 2) if current_pe_ex_med else None,
             "roe_mean": round(roe_mean * 100, 2) if roe_mean else None,  # 转为百分比
             "spread": round(current_spread, 2) if current_spread else None,
             "valuation_percentile": valuation_percentile,
             "pe_percentile": pe_percentile,
             "pb_percentile": pb_percentile,
+            "pe_percentile_10y": pe_percentile_10y,
+            "pb_percentile_10y": pb_percentile_10y,
+            # 等权/中位分位（全史 + 近10Y）
+            "pb_eq_percentile": pb_eq_percentile,
+            "pb_eq_percentile_10y": pb_eq_percentile_10y,
+            "pb_med_percentile": pb_med_percentile,
+            "pb_med_percentile_10y": pb_med_percentile_10y,
+            "pe_ttm_eq_percentile": pe_ttm_eq_percentile,
+            "pe_ttm_eq_percentile_10y": pe_ttm_eq_percentile_10y,
+            "pe_ttm_med_percentile": pe_ttm_med_percentile,
+            "pe_ttm_med_percentile_10y": pe_ttm_med_percentile_10y,
+            "pe_ttm_ex_eq_percentile": pe_ex_eq_percentile,
+            "pe_ttm_ex_eq_percentile_10y": pe_ex_eq_percentile_10y,
+            "pe_ttm_ex_med_percentile": pe_ex_med_percentile,
+            "pe_ttm_ex_med_percentile_10y": pe_ex_med_percentile_10y,
             "crowding": crowding,
             "erp_zscore": erp_zscore,
             "erp_zscore_class": erp_zscore_class,

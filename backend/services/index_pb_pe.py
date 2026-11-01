@@ -10,8 +10,13 @@
 接口返回（保持与旧 legulegu 派生序列同构，上层 valuation_service 零改动）：
     {"code","name",
      "pb":[{"date":"YYYY-MM-DD","pb":float,"index_value":float|None}],
-     "pe":[{"date":"YYYY-MM-DD","pe_ttm":float,"pe_static":float,"index_value":float|None}],
+     "pe":[{"date":"YYYY-MM-DD","pe_ttm":float,"pe_ttm_ex":float|None,
+            "pe_static":float,"index_value":float|None}],
      "months":{"pb":n,"pe":n},"source","updated_at","cache":"redis|mysql"}
+
+口径（2026-10-24 起双口径）：pe_ttm=纳亏（亏损股进分母，绝对值展示）；
+pe_ttm_ex=剔亏（仅聚 PE>0，分位计算基准，与中证官方分位口径对齐）。
+pe_ttm_ex 为 None 的旧行由上层回退 pe_ttm。
 
 约定
 ----
@@ -62,7 +67,8 @@ def get_index_pb_pe(csindex_code: str,
     """对外主入口：返回 ``(pb_rows, pe_rows)``。
 
     pb_rows: ``[{"date","pb","index_value"}]``（按日期升序）
-    pe_rows: ``[{"date","pe_ttm","pe_static","index_value"}]``（按日期升序）
+    pe_rows: ``[{"date","pe_ttm","pe_ttm_ex","pe_static","index_value"}]``（按日期升序，
+        pe_ttm_ex 为剔亏口径、分位基准；旧行该键缺失由上层回退 pe_ttm）
 
     接口不可用或指数无数据时返回 ``([], [])``。
     """

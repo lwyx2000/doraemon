@@ -5,14 +5,15 @@ import { useRouter } from 'vue-router'
 import {
   NButton, NIcon, NDataTable, NModal, NInput, NInputNumber, NSelect, NTag,
   NRadioGroup, NRadioButton, NPopover, NCheckbox, NSwitch, NTooltip,
-  NTabs, NTabPane,
+  NTabs, NTabPane, NCard, NAlert, NCollapse, NCollapseItem,
   useMessage, useDialog,
 } from 'naive-ui'
 import type { PaginationProps } from 'naive-ui'
-import { CloudUploadOutline, RefreshOutline, CameraOutline, ClipboardOutline, SettingsOutline, FilterOutline } from '@vicons/ionicons5'
+import { CloudUploadOutline, RefreshOutline, CameraOutline, ClipboardOutline, SettingsOutline, FilterOutline, DocumentTextOutline } from '@vicons/ionicons5'
 import { useAsyncData } from '../composables/useApi'
 import { api } from '../utils/api'
-import type { Holding, HoldingsView, HoldingSnapshot, HoldingSummary, BrokerAccount, AccountName, HoldingHistory } from '../types'
+import { useAuth } from '../composables/useAuth'
+import type { Holding, HoldingsView, HoldingSnapshot, HoldingSummary, Terminal, Broker, AccountName, HoldingHistory, ImportLog } from '../types'
 import PageHeader from '../components/PageHeader.vue'
 import StatCard from '../components/StatCard.vue'
 import DataPanel from '../components/DataPanel.vue'
@@ -23,6 +24,7 @@ import GlossaryPanel from '../components/GlossaryPanel.vue'
 const message = useMessage()
 const dialog = useDialog()
 const router = useRouter()
+const { username: authUsername } = useAuth()
 
 const TYPE_LABELS: Record<string, string> = {
   stock: '股票',
@@ -49,7 +51,7 @@ function typeColor(type: string) {
 const { data: view, loading, error, refresh } = useAsyncData<HoldingsView>(() => api.getHoldings())
 const { data: snapshots, refresh: refreshSnapshots } = useAsyncData<HoldingSnapshot[]>(() => api.getHoldingSnapshots())
 const { data: history, loading: historyLoading, refresh: refreshHistory } = useAsyncData<HoldingHistory[]>(() => api.getHoldingHistory())
-const activeTab = ref<'current' | 'history'>('current')
+const activeTab = ref<'current' | 'history' | 'brokers' | 'imports'>('current')
 
 // 表格分页：每页默认 20 行，客户端分页
 const pagination = ref<PaginationProps>({
@@ -63,15 +65,8 @@ const pagination = ref<PaginationProps>({
     pagination.value.page = 1
   },
 })
-// 个人中心配置的券商列表（筛选/导入选用）
-const brokerAccounts = ref<BrokerAccount[]>([])
-async function loadBrokerAccounts() {
-  try {
-    brokerAccounts.value = await api.getBrokerAccounts()
-  } catch {
-    brokerAccounts.value = []
-  }
-}
+// 个人中心配置的终端列表（每个终端含多个券商；加载与维护见下方「终端管理」区块）
+const terminals = ref<Terminal[]>([])
 // 个人中心配置的账户名列表（独立表，筛选/导入选用）
 const accountNames = ref<AccountName[]>([])
 async function loadAccountNames() {
@@ -81,11 +76,15 @@ async function loadAccountNames() {
     accountNames.value = []
   }
 }
-onMounted(() => { refresh(); refreshSnapshots(); refreshHistory(); loadBrokerAccounts(); loadAccountNames() })
+onMounted(() => { refresh(); refreshSnapshots(); refreshHistory(); loadTerminals(); loadAccountNames() })
 
-// 编辑弹窗：券商下拉选项（来自 Profile 配置 + 持仓数据中已有的，去重）
+// 展平所有券商（跨终端），用于编辑弹窗 / 导入下拉
+const allBrokers = computed<Broker[]>(() =>
+  terminals.value.flatMap(t => t.brokers ?? []),
+)
+// 编辑弹窗：券商下拉选项（value=券商 name，用于填写持仓的 broker 字段；来自终端管理配置 + 持仓数据中已有的，去重）
 const editBrokerOptions = computed(() => {
-  const brokers = new Set<string>(brokerAccounts.value.map(a => a.broker).filter(Boolean))
+  const brokers = new Set<string>(allBrokers.value.map(b => b.name).filter(Boolean))
   view.value?.items.forEach(i => { if (i.broker) brokers.add(i.broker) })
   return [...brokers].map(b => ({ label: b, value: b }))
 })
@@ -144,9 +143,9 @@ function resetFilter() {
 const typeFilterOptions = [
   ...Object.entries(TYPE_LABELS).map(([value, label]) => ({ label, value })),
 ]
-// 筛选选项 = 个人中心配置的券商 ∪ 持仓数据中已有的券商
+// 筛选选项 = 终端管理配置的券商名 ∪ 持仓数据中已有的券商
 const brokerFilterOptions = computed(() => {
-  const brokers = new Set<string>(brokerAccounts.value.map(a => a.broker).filter(Boolean))
+  const brokers = new Set<string>(allBrokers.value.map(b => b.name).filter(Boolean))
   view.value?.items.forEach(i => brokers.add(i.broker || '未分组'))
   return [...brokers].map(b => ({ label: b, value: b }))
 })
@@ -461,7 +460,7 @@ const IMPORT_TEMPLATE = `[
 ]`
 
 const showImportModal = ref(false)
-const importMode = ref<'json' | 'csv'>('json')
+const importMode = ref<'json' | 'csv' | 'trades'>('json')
 const importText = ref('')
 const importErrors = ref<string[]>([])
 const importValidCount = ref(0)
@@ -469,6 +468,33 @@ const importing = ref(false)
 const csvFile = ref<File | null>(null)
 const csvBroker = ref('')
 const csvAccount = ref('')
+
+// 成交记录导入（复用无鉴权 POST /api/v1/trades/import，body 带当前 username）
+const TRADE_TEMPLATE = `{
+  "trade_date": "2026-10-22",
+  "items": [
+    { "code": "600519", "name": "贵州茅台", "type": "stock", "account": "普通", "direction": "buy", "price": 1700.5, "quantity": 100, "fee": 5.5 },
+    { "code": "510300", "name": "沪深300ETF", "type": "etf", "account": "普通", "direction": "sell", "price": 3.95, "quantity": 1000, "fee": 1.2 },
+    { "code": "00700", "name": "腾讯控股", "type": "hk_stock", "account": "普通", "direction": "buy", "price": 420, "quantity": 200, "currency": "HKD", "fee": 18 }
+  ]
+}`
+const tradeDate = ref('')
+const tradeDateTs = ref<number | null>(null)
+const tradeAccount = ref('')
+const tradeText = ref('')
+const tradeErrors = ref<string[]>([])
+const tradeValidCount = ref(0)
+// 券商下拉（value=券商 account，作为成交上传的 account 主标识）
+const tradeBrokerOptions = computed(() =>
+  allBrokers.value.map(b => ({ label: `${b.name} · ${b.account}`, value: b.account })),
+)
+function fmtTradeDate(v: number | null): string {
+  if (!v) return ''
+  const d = new Date(v)
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${d.getFullYear()}-${m}-${day}`
+}
 
 function parseImportText(): { items: Array<Record<string, unknown>>; errors: string[] } {
   const errors: string[] = []
@@ -502,7 +528,83 @@ function previewImport() {
   importValidCount.value = items.length
 }
 
+// 成交记录 JSON 解析（顶层 { trade_date, items }）
+function parseTradeText(): { items: Array<Record<string, unknown>>; errors: string[] } {
+  const errors: string[] = []
+  if (!tradeDate.value) errors.push('请先填写「交易日期」（YYYY-MM-DD）')
+  if (!tradeAccount.value) errors.push('请先选择「券商」（决定 account，整批必传）')
+  if (errors.length) return { items: [], errors }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(tradeText.value)
+  } catch (e) {
+    return { items: [], errors: [`JSON 解析失败：${String(e)}`] }
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { items: [], errors: ['顶层必须是一个 JSON 对象 { "trade_date": "...", "items": [ ... ] }'] }
+  }
+  const obj = parsed as Record<string, unknown>
+  const arr = obj.items
+  if (!Array.isArray(arr)) return { items: [], errors: ['缺少 items 数组字段'] }
+  const items: Array<Record<string, unknown>> = []
+  arr.forEach((raw, i) => {
+    const line = `第 ${i + 1} 条`
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { errors.push(`${line}：必须是对象`); return }
+    const r = raw as Record<string, unknown>
+    if (!r.code || !r.name) { errors.push(`${line}：缺少 code 或 name`); return }
+    if (!TYPE_LABELS[r.type as string]) {
+      errors.push(`${line}：未知 type "${String(r.type)}"（可选：${Object.keys(TYPE_LABELS).join(' / ')}）`)
+      return
+    }
+    if (r.direction !== 'buy' && r.direction !== 'sell') {
+      errors.push(`${line}：direction 必须为 "buy" 或 "sell"`); return
+    }
+    if (typeof r.quantity !== 'number' || r.quantity === 0) { errors.push(`${line}：quantity 必须为非零数字`); return }
+    if (typeof r.price !== 'number') { errors.push(`${line}：price 必须为数字`); return }
+    items.push(r)
+  })
+  return { items, errors }
+}
+
+function previewTrade() {
+  const { items, errors } = parseTradeText()
+  tradeErrors.value = errors
+  tradeValidCount.value = items.length
+}
+
 async function submitImport() {
+  if (importMode.value === 'trades') {
+    const { items, errors } = parseTradeText()
+    tradeErrors.value = errors
+    tradeValidCount.value = items.length
+    if (items.length === 0) {
+      message.warning('没有可导入的有效成交条目，请检查格式')
+      return
+    }
+    importing.value = true
+    try {
+      const result = await api.importTrades({
+        username: authUsername.value || '',
+        source: 'web',
+        account: tradeAccount.value,
+        trade_date: tradeDate.value,
+        items,
+      })
+      let msg = `导入完成：新增 ${result.inserted}`
+      if (result.deleted) msg += `（覆盖删除 ${result.deleted}）`
+      if (result.failed.length) msg += `，失败 ${result.failed.length}（${result.failed[0].reason}…）`
+      message.success(msg)
+      showImportModal.value = false
+      tradeText.value = ''
+      tradeErrors.value = []
+      refreshAll()
+    } catch (e: any) {
+      message.error(e.message || '成交导入失败')
+    } finally {
+      importing.value = false
+    }
+    return
+  }
   if (importMode.value === 'json') {
     const { items, errors } = parseImportText()
     importErrors.value = errors
@@ -549,6 +651,15 @@ async function submitImport() {
 }
 
 function copyTemplate() {
+  if (importMode.value === 'trades') {
+    tradeText.value = TRADE_TEMPLATE
+    previewTrade()
+    navigator.clipboard.writeText(TRADE_TEMPLATE).then(
+      () => message.success('示例已填入输入框并复制到剪贴板'),
+      () => message.success('示例已填入输入框'),
+    )
+    return
+  }
   importText.value = IMPORT_TEMPLATE
   previewImport()
   navigator.clipboard.writeText(IMPORT_TEMPLATE).then(
@@ -851,6 +962,239 @@ const historySummary = computed(() => {
   const totalRealized = items.reduce((s, i) => s + (i.realized_pnl ?? 0), 0)
   return { count: items.length, totalRealized }
 })
+
+// ============ 终端管理（持仓页 tab：终端管理） ============
+// 一个终端可含多个券商；券商 account 由客户端自传作为主标识
+const terminalsLoading = ref(false)
+const terminalsLoaded = ref(false)
+const tmSaving = ref(false)
+
+async function loadTerminals() {
+  if (terminalsLoading.value) return
+  terminalsLoading.value = true
+  try {
+    terminals.value = await api.getTerminals()
+    terminalsLoaded.value = true
+  } catch (e: any) {
+    message.error('加载终端失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
+  } finally {
+    terminalsLoading.value = false
+  }
+}
+
+// ---- 终端 CRUD ----
+const newTerminalName = ref('')
+const newTerminalRemark = ref('')
+
+async function addTerminal() {
+  const name = newTerminalName.value.trim()
+  if (!name) { message.warning('请输入终端名称'); return }
+  if (terminals.value.some(t => t.name === name)) { message.warning('该终端名称已存在'); return }
+  tmSaving.value = true
+  try {
+    await api.createTerminal(name, newTerminalRemark.value.trim())
+    message.success('终端已添加')
+    newTerminalName.value = ''
+    newTerminalRemark.value = ''
+    await loadTerminals()
+  } catch (e: any) {
+    message.error('添加失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
+  } finally {
+    tmSaving.value = false
+  }
+}
+
+const showTerminalModal = ref(false)
+const terminalForm = reactive({ id: '', name: '', remark: '' })
+
+function openEditTerminal(t: Terminal) {
+  terminalForm.id = t.id
+  terminalForm.name = t.name
+  terminalForm.remark = t.remark
+  showTerminalModal.value = true
+}
+
+async function saveTerminal() {
+  const name = terminalForm.name.trim()
+  if (!name) { message.warning('请输入终端名称'); return }
+  tmSaving.value = true
+  try {
+    await api.updateTerminal(terminalForm.id, name, terminalForm.remark.trim())
+    message.success('终端已更新')
+    showTerminalModal.value = false
+    await loadTerminals()
+  } catch (e: any) {
+    message.error('保存失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
+  } finally {
+    tmSaving.value = false
+  }
+}
+
+async function deleteTerminal(t: Terminal) {
+  dialog.warning({
+    title: '删除终端',
+    content: `确定删除终端「${t.name}」？其下 ${t.brokers?.length ?? 0} 个券商将一并删除，且不可恢复。`,
+    positiveText: '删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        await api.deleteTerminal(t.id)
+        message.success('终端已删除')
+        await loadTerminals()
+      } catch (e: any) {
+        message.error('删除失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
+      }
+    },
+  })
+}
+
+// ---- 券商 CRUD（隶属于某终端） ----
+const newBrokerTerminalId = ref('')
+const newBrokerName = ref('')
+const newBrokerAccount = ref('')
+const newBrokerRemark = ref('')
+
+async function addBroker() {
+  const terminalId = newBrokerTerminalId.value
+  const name = newBrokerName.value.trim()
+  const account = newBrokerAccount.value.trim()
+  if (!terminalId) { message.warning('请选择所属终端'); return }
+  if (!name) { message.warning('请输入券商名称'); return }
+  if (!account) { message.warning('请输入券商账号（account）'); return }
+  tmSaving.value = true
+  try {
+    await api.createBroker(terminalId, name, account, newBrokerRemark.value.trim())
+    message.success('券商已添加')
+    newBrokerName.value = ''
+    newBrokerAccount.value = ''
+    newBrokerRemark.value = ''
+    await loadTerminals()
+  } catch (e: any) {
+    message.error('添加失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
+  } finally {
+    tmSaving.value = false
+  }
+}
+
+const showBrokerModal = ref(false)
+const brokerForm = reactive({ terminalId: '', id: '', name: '', account: '', remark: '' })
+
+function openEditBroker(t: Terminal, b: Broker) {
+  brokerForm.terminalId = t.id
+  brokerForm.id = b.id
+  brokerForm.name = b.name
+  brokerForm.account = b.account
+  brokerForm.remark = b.remark
+  showBrokerModal.value = true
+}
+
+async function saveBroker() {
+  const name = brokerForm.name.trim()
+  const account = brokerForm.account.trim()
+  if (!name) { message.warning('请输入券商名称'); return }
+  if (!account) { message.warning('请输入券商账号（account）'); return }
+  tmSaving.value = true
+  try {
+    await api.updateBroker(brokerForm.terminalId, brokerForm.id, {
+      name, account, remark: brokerForm.remark.trim(),
+    })
+    message.success('券商已更新')
+    showBrokerModal.value = false
+    await loadTerminals()
+  } catch (e: any) {
+    message.error('保存失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
+  } finally {
+    tmSaving.value = false
+  }
+}
+
+async function deleteBroker(t: Terminal, b: Broker) {
+  dialog.warning({
+    title: '删除券商',
+    content: `确定删除券商「${b.name}（${b.account}）」？`,
+    positiveText: '删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        await api.deleteBroker(t.id, b.id)
+        message.success('券商已删除')
+        await loadTerminals()
+      } catch (e: any) {
+        message.error('删除失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
+      }
+    },
+  })
+}
+
+// ============ 上传记录（持仓页 tab：上传记录） ============
+// 展示外部上传接口（持仓/成交导入）每次调用的留痕日志，便于核对导入结果
+const importLogs = ref<ImportLog[]>([])
+const importLogsLoading = ref(false)
+const importLogsLoaded = ref(false)
+
+async function loadImportLogs() {
+  if (importLogsLoading.value) return
+  importLogsLoading.value = true
+  try {
+    importLogs.value = await api.getImportLogs(100)
+    importLogsLoaded.value = true
+  } catch (e: any) {
+    message.error('加载上传记录失败：' + (e?.data?.detail || e?.message || '请稍后重试'))
+  } finally {
+    importLogsLoading.value = false
+  }
+}
+
+function parseFailDetail(row: ImportLog): Array<{ index: number; code: string; reason: string }> {
+  try {
+    const arr = JSON.parse(row.fail_detail || '[]')
+    return Array.isArray(arr) ? arr : []
+  } catch {
+    return []
+  }
+}
+
+const importLogColumns = [
+  {
+    type: 'expand' as const,
+    renderExpand: (row: ImportLog) => {
+      const fails = parseFailDetail(row)
+      if (!fails.length) return h('div', { class: 'import-fail-empty' }, '本次导入无失败条目')
+      return h(
+        'div',
+        { class: 'import-fail-list' },
+        fails.map((f) =>
+          h(
+            'div',
+            { class: 'import-fail-item' },
+            [
+              h('span', { class: 'mono import-fail-idx' }, `#${f.index}`),
+              h('span', { class: 'mono import-fail-code' }, f.code || '—'),
+              h('span', { class: 'import-fail-reason' }, f.reason),
+            ],
+          ),
+        ),
+      )
+    },
+  },
+  { title: '时间', key: 'created_at', width: 165, render: (row: ImportLog) => row.created_at ? new Date(row.created_at).toLocaleString('zh-CN') : '—' },
+  { title: '接口', key: 'endpoint', width: 90, render: (row: ImportLog) => row.endpoint === 'holdings' ? '持仓' : row.endpoint === 'trades' ? '成交' : row.endpoint },
+  { title: '来源', key: 'source', width: 110, render: (row: ImportLog) => row.source || '—' },
+  { title: '券商code', key: 'broker_code', width: 130, render: (row: ImportLog) => h('span', { class: 'mono' }, row.broker_code || '—') },
+  { title: '券商', key: 'broker', width: 100, render: (row: ImportLog) => row.broker || '—' },
+  { title: '总条数', key: 'total', width: 80, align: 'right' as const },
+  { title: '新增', key: 'added', width: 70, align: 'right' as const, render: (row: ImportLog) => h('span', { style: row.added ? { color: 'var(--color-success)' } : {} }, String(row.added)) },
+  { title: '更新', key: 'updated', width: 70, align: 'right' as const },
+  { title: '插入', key: 'inserted', width: 70, align: 'right' as const },
+  { title: '删除', key: 'deleted', width: 70, align: 'right' as const },
+  { title: '失败', key: 'failed', width: 70, align: 'right' as const, render: (row: ImportLog) => h('span', { style: row.failed ? { color: 'var(--color-danger)', fontWeight: 600 } : {} }, String(row.failed)) },
+]
+
+// 切换 tab 时按需加载（券商管理 / 上传记录）
+watch(activeTab, (tab) => {
+  if (tab === 'brokers') loadTerminals()
+  if (tab === 'imports') loadImportLogs()
+})
 </script>
 
 <template>
@@ -878,6 +1222,10 @@ const historySummary = computed(() => {
             <template #icon><n-icon :component="RefreshOutline" /></template>
             刷新
           </n-button>
+          <n-button size="small" @click="router.push('/external-api-docs')" title="外部上传接口文档（免登录，可分享给其它项目）">
+            <template #icon><n-icon :component="DocumentTextOutline" /></template>
+            接口文档
+          </n-button>
         </template>
       </PageHeader>
 
@@ -885,6 +1233,7 @@ const historySummary = computed(() => {
 
       <n-tabs type="line" v-model:value="activeTab" class="holdings-tabs">
         <n-tab-pane name="current" tab="当前持仓">
+      <div class="current-section">
       <!-- 风险预警条 -->
       <div v-if="summary && summary.warnings.length" class="warnings-strip">
         <div v-for="(w, i) in summary.warnings" :key="i" :class="['warning-item', w.level]">
@@ -1016,6 +1365,7 @@ const historySummary = computed(() => {
           max-height="260"
         />
       </DataPanel>
+      </div>
         </n-tab-pane>
 
         <n-tab-pane name="history" tab="历史持仓">
@@ -1033,8 +1383,140 @@ const historySummary = computed(() => {
               size="small"
               max-height="520"
             />
-            <div v-if="!historyLoading && (!history || !history.length)" class="history-empty">
-              暂无历史持仓。在「当前持仓」中平仓某标的即会归档到此。
+          <div v-if="!historyLoading && (!history || !history.length)" class="history-empty">
+            暂无历史持仓。在「当前持仓」中平仓某标的即会归档到此。
+          </div>
+        </DataPanel>
+        </n-tab-pane>
+
+        <n-tab-pane name="brokers" tab="终端管理">
+          <n-card :bordered="false" class="broker-mgmt-card">
+            <template #header>终端与券商</template>
+            <template #header-extra>
+              <n-button size="small" :loading="terminalsLoading" @click="loadTerminals">刷新</n-button>
+            </template>
+
+            <!-- 添加终端 -->
+            <div class="broker-form">
+              <n-input v-model:value="newTerminalName" placeholder="终端名称（如 电脑A / 手机B）" clearable @keyup.enter="addTerminal" />
+              <n-input v-model:value="newTerminalRemark" placeholder="备注（可选）" clearable @keyup.enter="addTerminal" />
+              <n-button type="primary" :loading="tmSaving" @click="addTerminal">添加终端</n-button>
+            </div>
+
+            <!-- 添加券商（选择所属终端） -->
+            <div class="broker-form">
+              <n-select
+                v-model:value="newBrokerTerminalId"
+                :options="terminals.map(t => ({ label: t.name, value: t.id }))"
+                placeholder="选择所属终端"
+                clearable
+                filterable
+                style="min-width: 160px;"
+              />
+              <n-input v-model:value="newBrokerName" placeholder="券商名称（如 华泰证券）" clearable @keyup.enter="addBroker" />
+              <n-input v-model:value="newBrokerAccount" placeholder="券商账号 account（必填）" clearable @keyup.enter="addBroker" />
+              <n-input v-model:value="newBrokerRemark" placeholder="备注（可选）" clearable @keyup.enter="addBroker" />
+              <n-button type="primary" :loading="tmSaving" @click="addBroker">添加券商</n-button>
+            </div>
+
+            <n-alert type="info" :show-icon="false" class="broker-hint">
+              一个终端可包含多个券商。券商 <b>account</b> 由客户端自传作为主标识（不再自动生成 code）；外部上传接口（持仓 / 成交导入）报文中需传入对应 <span class="mono">account</span>。
+            </n-alert>
+
+            <!-- 终端列表 + 各自券商 -->
+            <div class="broker-list broker-list-scroll">
+              <div v-for="t in terminals" :key="t.id" class="terminal-block">
+                <div class="terminal-head">
+                  <div class="terminal-title">
+                    <span class="terminal-name">{{ t.name }}</span>
+                    <span v-if="t.remark" class="terminal-remark">{{ t.remark }}</span>
+                  </div>
+                  <div class="terminal-actions">
+                    <n-button text size="small" type="primary" @click="openEditTerminal(t)">编辑</n-button>
+                    <n-button text size="small" type="error" @click="deleteTerminal(t)">删除</n-button>
+                  </div>
+                </div>
+                <div class="broker-sublist">
+                  <div v-for="b in (t.brokers || [])" :key="b.id" class="broker-item">
+                    <div class="broker-item-main">
+                      <span class="broker-item-name">{{ b.name }}</span>
+                      <span class="broker-item-account mono">{{ b.account }}</span>
+                      <span v-if="b.remark" class="broker-item-remark">{{ b.remark }}</span>
+                    </div>
+                    <div class="broker-actions">
+                      <n-button text size="small" type="primary" @click="openEditBroker(t, b)">编辑</n-button>
+                      <n-button text size="small" type="error" @click="deleteBroker(t, b)">删除</n-button>
+                    </div>
+                  </div>
+                  <div v-if="!t.brokers || !t.brokers.length" class="broker-empty">
+                    该终端下暂无券商
+                  </div>
+                </div>
+              </div>
+              <div v-if="terminalsLoaded && !terminals.length" class="broker-empty">
+                尚未配置终端，添加终端后即可在其下添加券商
+              </div>
+            </div>
+          </n-card>
+
+          <!-- 终端编辑弹窗 -->
+          <n-modal v-model:show="showTerminalModal" preset="card" title="编辑终端" style="width: 480px; max-width: 94vw;" :bordered="false">
+            <div class="edit-field">
+              <label>终端名称</label>
+              <n-input v-model:value="terminalForm.name" placeholder="终端名称" clearable />
+            </div>
+            <div class="edit-field">
+              <label>备注</label>
+              <n-input v-model:value="terminalForm.remark" placeholder="备注（可选）" clearable />
+            </div>
+            <template #footer>
+              <div class="modal-footer">
+                <n-button @click="showTerminalModal = false">取消</n-button>
+                <n-button type="primary" :loading="tmSaving" @click="saveTerminal">保存</n-button>
+              </div>
+            </template>
+          </n-modal>
+
+          <!-- 券商编辑弹窗 -->
+          <n-modal v-model:show="showBrokerModal" preset="card" title="编辑券商" style="width: 520px; max-width: 94vw;" :bordered="false">
+            <div class="edit-field">
+              <label>券商名称</label>
+              <n-input v-model:value="brokerForm.name" placeholder="券商名称（如 华泰证券）" clearable />
+            </div>
+            <div class="edit-field">
+              <label>券商账号 account（主标识）</label>
+              <n-input v-model:value="brokerForm.account" placeholder="券商账号（客户端自传，唯一）" clearable />
+            </div>
+            <div class="edit-field">
+              <label>备注</label>
+              <n-input v-model:value="brokerForm.remark" placeholder="备注（可选）" clearable />
+            </div>
+            <template #footer>
+              <div class="modal-footer">
+                <n-button @click="showBrokerModal = false">取消</n-button>
+                <n-button type="primary" :loading="tmSaving" @click="saveBroker">保存</n-button>
+              </div>
+            </template>
+          </n-modal>
+        </n-tab-pane>
+
+        <n-tab-pane name="imports" tab="上传记录">
+          <DataPanel title="上传留痕记录">
+            <template #actions>
+              <n-button size="small" :loading="importLogsLoading" @click="loadImportLogs">刷新</n-button>
+            </template>
+            <n-data-table
+              :columns="importLogColumns"
+              :data="importLogs"
+              :row-key="(row: ImportLog) => row.id"
+              :bordered="false"
+              :single-line="false"
+              size="small"
+              :scroll-x="1100"
+              max-height="520"
+            />
+            <div v-if="importLogsLoaded && !importLogs.length" class="import-empty">
+              暂无上传记录。通过外部上传接口（持仓 / 成交导入）导入数据后即会出现在此。
             </div>
           </DataPanel>
         </n-tab-pane>
@@ -1043,42 +1525,74 @@ const historySummary = computed(() => {
     </div>
 
     <!-- 导入弹窗 -->
-    <n-modal v-model:show="showImportModal" preset="card" title="批量导入持仓" style="width: 720px; max-width: 94vw;" :bordered="false">
+    <n-modal v-model:show="showImportModal" preset="card" title="批量导入数据" style="width: 760px; max-width: 94vw;" :bordered="false">
       <n-radio-group v-model:value="importMode" size="small" style="margin-bottom: 12px;">
-        <n-radio-button value="json">JSON 粘贴</n-radio-button>
-        <n-radio-button value="csv">CSV/Excel 文件</n-radio-button>
+        <n-radio-button value="json">持仓 · JSON</n-radio-button>
+        <n-radio-button value="csv">持仓 · CSV</n-radio-button>
+        <n-radio-button value="trades">成交记录</n-radio-button>
       </n-radio-group>
 
-      <!-- 字段说明表 -->
-      <div class="import-field-docs">
-        <div class="import-docs-header">
-          <h4>字段说明</h4>
-          <n-button size="tiny" quaternary @click="copyTemplate">
-            <template #icon><n-icon :component="ClipboardOutline" /></template>
-            复制示例
-          </n-button>
+      <!-- ================= 成交记录导入 ================= -->
+      <template v-if="importMode === 'trades'">
+        <!-- 顶部参数：交易日期 + 券商账户 -->
+        <div class="trade-params">
+          <div class="edit-field" style="flex: 1; min-width: 160px;">
+            <label>交易日期（必填，YYYY-MM-DD）</label>
+            <n-date-picker
+              v-model:value="tradeDateTs"
+              type="date"
+              clearable
+              style="width: 100%;"
+              @update:value="(v: number | null) => { tradeDate = fmtTradeDate(v); previewTrade() }"
+            />
+          </div>
+          <div class="edit-field" style="flex: 1; min-width: 160px;">
+            <label>券商（决定 account，整批必传）</label>
+            <n-select
+              v-model:value="tradeAccount"
+              :options="tradeBrokerOptions"
+              placeholder="选择券商"
+              clearable
+              filterable
+              @update:value="previewTrade"
+            />
+          </div>
         </div>
-        <table class="import-field-table">
-          <thead>
-            <tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr>
-          </thead>
-          <tbody>
-            <tr><td class="ft-field">code</td><td class="ft-type">string</td><td class="ft-req">是</td><td class="ft-desc">证券代码（如 600519 / 510300 / 00700）</td></tr>
-            <tr><td class="ft-field">name</td><td class="ft-type">string</td><td class="ft-req">是</td><td class="ft-desc">证券名称（如 贵州茅台）</td></tr>
-            <tr><td class="ft-field">type</td><td class="ft-type">enum</td><td class="ft-req">是</td><td class="ft-desc">持仓类型：stock(股票) / etf(场内基金) / fund_otc(场外基金) / option(期权) / future(期货) / hk_stock(港股)</td></tr>
-            <tr><td class="ft-field">quantity</td><td class="ft-type">number</td><td class="ft-req">是</td><td class="ft-desc">持仓数量（股数/份数/张数，不能为0）</td></tr>
-            <tr><td class="ft-field">cost_price</td><td class="ft-type">number</td><td class="ft-req">是</td><td class="ft-desc">成本价（买入均价），单位与 currency 一致</td></tr>
-            <tr><td class="ft-field">broker</td><td class="ft-type">string</td><td class="ft-opt">否</td><td class="ft-desc">券商/渠道名称（如 华泰证券、天天基金）</td></tr>
-            <tr><td class="ft-field">account</td><td class="ft-type">string</td><td class="ft-opt">否</td><td class="ft-desc">子账户（如 普通 / 两融），用于分账户统计与筛选</td></tr>
-            <tr><td class="ft-field">open_date</td><td class="ft-type">string</td><td class="ft-opt">否</td><td class="ft-desc">建仓日期（YYYY-MM-DD）</td></tr>
-            <tr><td class="ft-field">currency</td><td class="ft-type">string</td><td class="ft-opt">否</td><td class="ft-desc">币种，默认 CNY（人民币）。港股可填 HKD</td></tr>
-            <tr><td class="ft-field">stop_loss_pct</td><td class="ft-type">number</td><td class="ft-opt">否</td><td class="ft-desc">止损线（收益率 %，负值如 -8），触发后顶部预警条与表格高亮提示</td></tr>
-            <tr><td class="ft-field">take_profit_pct</td><td class="ft-type">number</td><td class="ft-opt">否</td><td class="ft-desc">止盈线（收益率 %，正值如 20），触发后顶部预警条与表格高亮提示</td></tr>
-          </tbody>
-        </table>
-      </div>
+        <div v-if="!tradeBrokerOptions.length" class="import-errors" style="margin-bottom: 14px;">
+          尚未配置券商，请先到「终端管理」或「个人中心」添加终端与券商（券商 account 为上传主标识）后再上传成交。
+        </div>
 
-      <template v-if="importMode === 'json'">
+        <!-- 字段说明表 -->
+        <div class="import-field-docs">
+          <div class="import-docs-header">
+            <h4>字段说明</h4>
+            <n-button size="tiny" quaternary @click="copyTemplate">
+              <template #icon><n-icon :component="ClipboardOutline" /></template>
+              复制示例
+            </n-button>
+          </div>
+          <table class="import-field-table">
+            <thead>
+              <tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="ft-field">trade_date</td><td class="ft-type">string</td><td class="ft-req">是*</td><td class="ft-desc">交易日期（YYYY-MM-DD），也可在上方日期选择器填写；按 (用户, 交易日) 覆盖上传</td></tr>
+              <tr><td class="ft-field">items</td><td class="ft-type">array</td><td class="ft-req">是</td><td class="ft-desc">成交明细数组，每条为一个成交对象（见下）</td></tr>
+              <tr><td class="ft-field">items[].code</td><td class="ft-type">string</td><td class="ft-req">是</td><td class="ft-desc">证券代码（如 600519 / 510300 / 00700）</td></tr>
+              <tr><td class="ft-field">items[].name</td><td class="ft-type">string</td><td class="ft-req">是</td><td class="ft-desc">证券名称（如 贵州茅台）</td></tr>
+              <tr><td class="ft-field">items[].type</td><td class="ft-type">enum</td><td class="ft-req">是</td><td class="ft-desc">持仓类型：stock / etf / fund_otc / option / future / hk_stock</td></tr>
+              <tr><td class="ft-field">items[].direction</td><td class="ft-type">enum</td><td class="ft-req">是</td><td class="ft-desc">买卖方向：buy（买入） / sell（卖出）</td></tr>
+              <tr><td class="ft-field">items[].price</td><td class="ft-type">number</td><td class="ft-req">是</td><td class="ft-desc">成交价格，单位与 currency 一致</td></tr>
+              <tr><td class="ft-field">items[].quantity</td><td class="ft-type">number</td><td class="ft-req">是</td><td class="ft-desc">成交数量（股数/份数/张数，不能为0）</td></tr>
+              <tr><td class="ft-field">items[].account</td><td class="ft-type">string</td><td class="ft-opt">否</td><td class="ft-desc">子账户（如 普通 / 两融）</td></tr>
+              <tr><td class="ft-field">items[].amount</td><td class="ft-type">number</td><td class="ft-opt">否</td><td class="ft-desc">成交金额，缺省自动 = price × quantity</td></tr>
+              <tr><td class="ft-field">items[].fee</td><td class="ft-type">number</td><td class="ft-opt">否</td><td class="ft-desc">手续费 / 佣金，单位与 currency 一致</td></tr>
+              <tr><td class="ft-field">items[].currency</td><td class="ft-type">string</td><td class="ft-opt">否</td><td class="ft-desc">币种，默认 CNY；港股可填 HKD</td></tr>
+              <tr><td class="ft-field">items[].trade_time</td><td class="ft-type">string</td><td class="ft-opt">否</td><td class="ft-desc">成交时间（HH:MM:SS，可选）</td></tr>
+            </tbody>
+          </table>
+        </div>
+
         <!-- JSON 示例 -->
         <div class="import-example">
           <div class="import-example-header">
@@ -1086,41 +1600,106 @@ const historySummary = computed(() => {
             <span class="import-example-hint">点击「复制示例」按钮可将示例填入输入框</span>
           </div>
           <div class="import-example-block">
-            <pre class="import-example-pre">{{ IMPORT_TEMPLATE }}</pre>
+            <pre class="import-example-pre">{{ TRADE_TEMPLATE }}</pre>
           </div>
         </div>
 
         <!-- 输入区 -->
         <div class="import-input-section">
-          <label class="import-input-label">粘贴您的持仓 JSON</label>
+          <label class="import-input-label">粘贴您的成交记录 JSON（含 trade_date 与 items 数组）</label>
           <n-input
-            v-model:value="importText"
+            v-model:value="tradeText"
             type="textarea"
-            placeholder='[{ "code": "600519", "name": "贵州茅台", "type": "stock", "broker": "华泰证券", "quantity": 100, "cost_price": 1700.5 }]'
+            placeholder='{ "trade_date": "2026-10-22", "items": [ { "code": "600519", "name": "贵州茅台", "type": "stock", "direction": "buy", "price": 1700.5, "quantity": 100 } ] }'
             :autosize="{ minRows: 6, maxRows: 14 }"
             class="mono"
-            @input="previewImport"
+            @input="previewTrade"
           />
         </div>
 
         <!-- 校验结果 -->
-        <div v-if="importErrors.length" class="import-errors">
-          <div v-for="(e, i) in importErrors" :key="i">{{ e }}</div>
+        <div v-if="tradeErrors.length" class="import-errors">
+          <div v-for="(e, i) in tradeErrors" :key="i">{{ e }}</div>
         </div>
-        <div v-else-if="importValidCount > 0" class="import-ok">
-          解析成功：{{ importValidCount }} 条有效持仓
+        <div v-else-if="tradeValidCount > 0" class="import-ok">
+          解析成功：{{ tradeValidCount }} 条有效成交
         </div>
       </template>
 
+      <!-- ================= 持仓导入（JSON / CSV） ================= -->
       <template v-else>
-        <div class="import-input-section">
-          <label class="import-input-label">上传 CSV 文件（支持华泰 PC 客户端导出的持仓表，或 Excel 另存为 CSV）</label>
-          <input type="file" accept=".csv,.txt" @change="e => csvFile = (e.target as HTMLInputElement).files?.[0] ?? null" />
-          <div style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">
-            列头可包含：证券代码、证券名称、持仓数量、成本价、账户 等；未识别的代码将按 6 位代码推断为股票或场内基金。
+        <!-- 字段说明表 -->
+        <div class="import-field-docs">
+          <div class="import-docs-header">
+            <h4>字段说明</h4>
+            <n-button size="tiny" quaternary @click="copyTemplate">
+              <template #icon><n-icon :component="ClipboardOutline" /></template>
+              复制示例
+            </n-button>
           </div>
+          <table class="import-field-table">
+            <thead>
+              <tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="ft-field">code</td><td class="ft-type">string</td><td class="ft-req">是</td><td class="ft-desc">证券代码（如 600519 / 510300 / 00700）</td></tr>
+              <tr><td class="ft-field">name</td><td class="ft-type">string</td><td class="ft-req">是</td><td class="ft-desc">证券名称（如 贵州茅台）</td></tr>
+              <tr><td class="ft-field">type</td><td class="ft-type">enum</td><td class="ft-req">是</td><td class="ft-desc">持仓类型：stock(股票) / etf(场内基金) / fund_otc(场外基金) / option(期权) / future(期货) / hk_stock(港股)</td></tr>
+              <tr><td class="ft-field">quantity</td><td class="ft-type">number</td><td class="ft-req">是</td><td class="ft-desc">持仓数量（股数/份数/张数，不能为0）</td></tr>
+              <tr><td class="ft-field">cost_price</td><td class="ft-type">number</td><td class="ft-req">是</td><td class="ft-desc">成本价（买入均价），单位与 currency 一致</td></tr>
+              <tr><td class="ft-field">broker</td><td class="ft-type">string</td><td class="ft-opt">否</td><td class="ft-desc">券商/渠道名称（如 华泰证券、天天基金）</td></tr>
+              <tr><td class="ft-field">account</td><td class="ft-type">string</td><td class="ft-opt">否</td><td class="ft-desc">子账户（如 普通 / 两融），用于分账户统计与筛选</td></tr>
+              <tr><td class="ft-field">open_date</td><td class="ft-type">string</td><td class="ft-opt">否</td><td class="ft-desc">建仓日期（YYYY-MM-DD）</td></tr>
+              <tr><td class="ft-field">currency</td><td class="ft-type">string</td><td class="ft-opt">否</td><td class="ft-desc">币种，默认 CNY（人民币）。港股可填 HKD</td></tr>
+              <tr><td class="ft-field">stop_loss_pct</td><td class="ft-type">number</td><td class="ft-opt">否</td><td class="ft-desc">止损线（收益率 %，负值如 -8），触发后顶部预警条与表格高亮提示</td></tr>
+              <tr><td class="ft-field">take_profit_pct</td><td class="ft-type">number</td><td class="ft-opt">否</td><td class="ft-desc">止盈线（收益率 %，正值如 20），触发后顶部预警条与表格高亮提示</td></tr>
+            </tbody>
+          </table>
         </div>
-        <div class="edit-form" style="margin-top: 12px;">
+
+        <template v-if="importMode === 'json'">
+          <!-- JSON 示例 -->
+          <div class="import-example">
+            <div class="import-example-header">
+              <h4>JSON 示例</h4>
+              <span class="import-example-hint">点击「复制示例」按钮可将示例填入输入框</span>
+            </div>
+            <div class="import-example-block">
+              <pre class="import-example-pre">{{ IMPORT_TEMPLATE }}</pre>
+            </div>
+          </div>
+
+          <!-- 输入区 -->
+          <div class="import-input-section">
+            <label class="import-input-label">粘贴您的持仓 JSON</label>
+            <n-input
+              v-model:value="importText"
+              type="textarea"
+              placeholder='[{ "code": "600519", "name": "贵州茅台", "type": "stock", "broker": "华泰证券", "quantity": 100, "cost_price": 1700.5 }]'
+              :autosize="{ minRows: 6, maxRows: 14 }"
+              class="mono"
+              @input="previewImport"
+            />
+          </div>
+
+          <!-- 校验结果 -->
+          <div v-if="importErrors.length" class="import-errors">
+            <div v-for="(e, i) in importErrors" :key="i">{{ e }}</div>
+          </div>
+          <div v-else-if="importValidCount > 0" class="import-ok">
+            解析成功：{{ importValidCount }} 条有效持仓
+          </div>
+        </template>
+
+        <template v-else>
+          <div class="import-input-section">
+            <label class="import-input-label">上传 CSV 文件（支持华泰 PC 客户端导出的持仓表，或 Excel 另存为 CSV）</label>
+            <input type="file" accept=".csv,.txt" @change="e => csvFile = (e.target as HTMLInputElement).files?.[0] ?? null" />
+            <div style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">
+              列头可包含：证券代码、证券名称、持仓数量、成本价、账户 等；未识别的代码将按 6 位代码推断为股票或场内基金。
+            </div>
+          </div>
+          <div class="edit-form" style="margin-top: 12px;">
 <div class="edit-field">
 <label>默认券商</label>
 <n-select v-model:value="csvBroker" :options="editBrokerOptions" placeholder="选择券商" clearable filterable />
@@ -1129,8 +1708,71 @@ const historySummary = computed(() => {
 <label>默认账户</label>
 <n-select v-model:value="csvAccount" :options="editAccountOptions" placeholder="选择账户" clearable filterable />
 </div>
-        </div>
+          </div>
+        </template>
       </template>
+
+      <!-- 上传接口说明面板：报文格式 / 接口地址 / curl 示例 -->
+      <n-collapse class="import-api-docs" :default-expanded-names="[]">
+        <n-collapse-item title="上传接口说明（报文格式 · 接口地址 · curl 示例）" name="api">
+          <div class="api-docs">
+            <h5>通用约定</h5>
+            <ul class="api-notes">
+              <li><b>接口前缀</b>：<span class="mono">/api/v1</span>（前端经 nginx <span class="mono">:9080</span> 反代；机器直连后端 <span class="mono">:8001</span>）</li>
+              <li><b>无鉴权</b>：机器 / 程序直接调用，无需 JWT。请求体用 <span class="mono">user_id</span> 或 <span class="mono">username</span> 指明归属用户（缺失或不存在 → 400）。</li>
+              <li><b>account 整批必传</b>：请求体<b>顶层</b>传一个 <span class="mono">account</span>（券商账号，由客户端自传作为主标识，如 <span class="mono">huatai-12345678</span>），整批统一归属该券商；逐条传的 <span class="mono">broker</span> 会被忽略，实际券商名由后端解析回填。首见该 account 时按 <span class="mono">broker_name</span> / <span class="mono">remark</span> 自动建券商（落默认终端或指定 <span class="mono">terminal</span>）。缺失 → 整批进入 failed，不入库。兼容旧字段 <span class="mono">broker_code</span>（等同于 account）。</li>
+              <li><b>source</b>：来源标记（任意字符串），写入上传记录便于追溯，缺省 <span class="mono">"api"</span>。</li>
+              <li><b>响应结构</b>：<span class="mono">{ "code": 0, "message": "ok", "data": {...} }</span></li>
+            </ul>
+
+            <h5>接口地址</h5>
+            <table class="import-field-table">
+              <thead><tr><th>用途</th><th>方法 &amp; 路径</th><th>说明</th></tr></thead>
+              <tbody>
+                <tr><td class="ft-desc">持仓上传（增量合并）</td><td class="ft-field">POST /api/v1/holdings/import/api</td><td class="ft-desc">按 code+type+account 去重；已存在覆盖更新，新增插入；覆盖前旧行入历史表</td></tr>
+                <tr><td class="ft-desc">成交上传（按日覆盖）</td><td class="ft-field">POST /api/v1/trades/import</td><td class="ft-desc">按 (用户, trade_date) 全量覆盖；新 trade_date 直接新增</td></tr>
+                <tr><td class="ft-desc">查询成交</td><td class="ft-field">GET /api/v1/trades</td><td class="ft-desc">按 user_id/username + 可选 trade_date 过滤</td></tr>
+                <tr><td class="ft-desc">成交交易日列表</td><td class="ft-field">GET /api/v1/trades/dates</td><td class="ft-desc">返回该用户所有有成交的交易日（升序）</td></tr>
+                <tr><td class="ft-desc">上传记录留痕（需登录）</td><td class="ft-field">GET /api/v1/import-logs</td><td class="ft-desc">本页「上传记录」tab 展示，可用于对账</td></tr>
+              </tbody>
+            </table>
+
+            <h5>持仓上传报文示例（curl）</h5>
+            <div class="import-example-block">
+              <pre class="import-example-pre">curl -X POST 'http://192.168.3.53:9080/api/v1/holdings/import/api' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "username": "sos",
+    "source": "my_bot",
+    "account": "huatai-12345678",
+    "broker_name": "华泰证券",
+    "items": [
+      { "code": "510300", "name": "沪深300ETF", "type": "etf",
+        "account": "普通", "quantity": 10000, "cost_price": 3.85 }
+    ]
+  }'</pre>
+            </div>
+
+            <h5>成交上传报文示例（curl）</h5>
+            <div class="import-example-block">
+              <pre class="import-example-pre">curl -X POST 'http://192.168.3.53:9080/api/v1/trades/import' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "username": "sos",
+    "source": "my_bot",
+    "account": "huatai-12345678",
+    "broker_name": "华泰证券",
+    "trade_date": "2026-10-28",
+    "items": [
+      { "code": "510300", "name": "沪深300ETF", "type": "etf",
+        "account": "普通", "direction": "buy",
+        "price": 3.92, "quantity": 5000 }
+    ]
+  }'</pre>
+            </div>
+          </div>
+        </n-collapse-item>
+      </n-collapse>
 
       <template #footer>
         <div class="modal-footer">
@@ -1283,7 +1925,10 @@ const historySummary = computed(() => {
 </style>
 
 <style scoped>
-.holdings-page { display: flex; flex-direction: column; gap: 14px; }
+.holdings-page { display: flex; flex-direction: column; gap: 20px; }
+
+/* 当前持仓 tab 内各区域（预警条 / 概览卡 / 图表 / 明细表 / 走势曲线）纵向间距 */
+.current-section { display: flex; flex-direction: column; gap: 24px; }
 
 .warnings-strip { display: flex; flex-wrap: wrap; gap: 8px; }
 .warning-item {
@@ -1320,6 +1965,18 @@ const historySummary = computed(() => {
 .import-input-label { display: block; font-size: 12px; font-weight: 700; color: var(--text-muted); margin-bottom: 6px; }
 .import-errors { margin-top: 10px; padding: 10px 12px; background: rgba(147, 0, 10, 0.06); border: 1px solid rgba(147, 0, 10, 0.2); border-radius: 6px; color: #93000a; font-size: 12px; display: flex; flex-direction: column; gap: 4px; max-height: 140px; overflow-y: auto; }
 .import-ok { margin-top: 10px; font-size: 12px; color: var(--color-success); font-weight: 600; }
+
+/* 成交导入：顶部参数行（日期 + 券商账户） */
+.trade-params { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+
+/* 上传接口说明面板 */
+.import-api-docs { margin-top: 8px; }
+.import-api-docs :deep(.n-collapse-item__header) { font-size: 12px; font-weight: 700; color: var(--text-primary); }
+.api-docs { display: flex; flex-direction: column; gap: 10px; padding-top: 4px; }
+.api-docs h5 { font-family: 'Work Sans', sans-serif; font-size: 12px; font-weight: 700; color: var(--text-primary); margin: 4px 0 0; }
+.api-notes { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--text-secondary); line-height: 1.6; }
+.api-notes li { line-height: 1.6; }
+.api-notes b { color: var(--text-primary); }
 
 .edit-form { display: flex; flex-direction: column; gap: 12px; }
 .edit-field { display: flex; flex-direction: column; gap: 4px; }
@@ -1376,6 +2033,62 @@ const historySummary = computed(() => {
 .history-summary { font-size: 13px; color: var(--text-secondary); margin: 4px 0 10px; padding: 8px 12px; background: var(--bg-subtle); border: 1px solid var(--border-default); border-radius: 6px; }
 .history-summary b { color: var(--text-primary); font-family: 'JetBrains Mono', monospace; }
 .history-empty { padding: 24px; text-align: center; font-size: 12px; color: var(--text-muted); background: var(--bg-subtle); border-radius: 6px; }
+
+/* 券商管理 Tab */
+.broker-mgmt-card { border-radius: 10px; }
+.broker-form { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.broker-form .n-input { flex: 1; min-width: 160px; }
+.broker-hint { margin-bottom: 12px; font-size: 12px; line-height: 1.6; }
+.broker-hint .mono { font-family: 'JetBrains Mono', monospace; color: var(--color-primary); }
+.broker-list { display: flex; flex-direction: column; gap: 6px; }
+.broker-list-scroll { max-height: 360px; overflow-y: auto; }
+.broker-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-default);
+}
+.broker-item-main { display: flex; align-items: baseline; gap: 8px; flex: 1; min-width: 0; }
+.broker-item-name { font-weight: 600; font-size: 14px; color: var(--text-primary); }
+.broker-item-account { font-size: 12px; color: var(--text-muted); }
+.broker-item-code { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.broker-code-text { font-size: 13px; color: var(--color-primary); font-weight: 600; }
+.broker-empty { padding: 16px; text-align: center; font-size: 12px; color: var(--text-muted); background: var(--bg-subtle); border-radius: 6px; }
+
+/* 终端管理：二级结构 */
+.terminal-block {
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--bg-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.terminal-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.terminal-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.terminal-name { font-weight: 700; font-size: 15px; color: var(--text-primary); }
+.terminal-remark { font-size: 12px; color: var(--text-muted); }
+.terminal-actions { display: flex; gap: 10px; flex-shrink: 0; }
+.broker-sublist { display: flex; flex-direction: column; gap: 6px; padding-left: 12px; border-left: 2px solid var(--border-default); }
+.broker-item-remark { font-size: 12px; color: var(--text-muted); }
+.broker-actions { display: flex; gap: 10px; flex-shrink: 0; }
+.modal-footer { display: flex; justify-content: flex-end; gap: 10px; }
+
+
+/* 上传记录 Tab */
+.import-empty { padding: 24px; text-align: center; font-size: 12px; color: var(--text-muted); background: var(--bg-subtle); border-radius: 6px; margin-top: 10px; }
+.import-fail-empty { padding: 8px 12px; font-size: 12px; color: var(--text-muted); }
+.import-fail-list { display: flex; flex-direction: column; gap: 4px; padding: 4px 8px; }
+.import-fail-item { display: flex; align-items: center; gap: 10px; font-size: 12px; padding: 4px 8px; background: var(--bg-subtle); border-radius: 4px; }
+.import-fail-idx { color: var(--text-muted); }
+.import-fail-code { color: var(--color-primary); }
+.import-fail-reason { color: var(--color-danger); flex: 1; }
+.broker-list-scroll::-webkit-scrollbar { width: 6px; }
+.broker-list-scroll::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 3px; }
 
 /* 价格闪烁（绿涨红跌） */
 .holdings-page .flash-up { animation: flashUp 0.9s ease-out; }

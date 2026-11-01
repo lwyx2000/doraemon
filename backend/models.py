@@ -55,8 +55,22 @@ class ChangePasswordRequest(BaseModel):
 
 
 class BrokerAccountRequest(BaseModel):
+    """已废弃：券商管理重构为终端/券商模型，保留仅供兼容旧引用（不应再使用）。"""
     broker: str
     account: str = ""
+
+
+class TerminalRequest(BaseModel):
+    """终端管理：一个终端（设备/渠道）可挂多个券商。"""
+    name: str
+    remark: str = ""
+
+
+class BrokerRequest(BaseModel):
+    """券商：account 由客户端自传作为主标识；name 券商名；remark 备注。"""
+    name: str
+    account: str
+    remark: str = ""
 
 
 class AccountNameRequest(BaseModel):
@@ -531,6 +545,95 @@ class HoldingUpdate(BaseModel):
     grid_lower: Optional[float] = None
     grid_upper: Optional[float] = None
     grid_step: Optional[float] = None
+
+
+# ============================================================
+# 机器/外部程序上传（无鉴权）
+# ============================================================
+
+class HoldingUploadItem(BaseModel):
+    """持仓机器上传条目（无鉴权接口 /holdings/import/api 使用）。
+
+    字段与 HoldingImportItem 对齐；code/name/quantity/cost_price 必填。
+    """
+    code: str
+    name: str
+    type: str  # stock / etf / fund_otc / option / future / hk_stock
+    broker: Optional[str] = ""
+    account: Optional[str] = ""  # 子账户，如 普通 / 两融
+    quantity: float
+    cost_price: float
+    open_date: Optional[str] = None
+    currency: Optional[str] = "CNY"
+    stop_loss_pct: Optional[float] = None
+    take_profit_pct: Optional[float] = None
+
+
+class HoldingUploadRequest(BaseModel):
+    """无鉴权持仓上传：调用方须以 user_id 或 username 指明归属用户。
+
+    增量合并（merge）：按 code+type+account 去重，重复导入=覆盖更新；
+    覆盖前旧数据写入 biz_holdings_history 表留痕。
+
+    券商归属（2026-11 重构：终端管理）：
+    - account：券商账号，由**客户端自传**作为主标识（不再由后端生成 BRK-xxxx code）；
+    - broker_code：历史字段别名，等同于 account（旧外部程序可继续传，便于兼容）；
+    - broker_name / remark：可选，随上传一并登记券商名 / 备注（首见该 account 时自动建券商，落默认终端）；
+    - terminal：可选，指定归属终端 id（留空自动落到该用户默认终端）。
+    account 与 broker_code 皆为空 → 整批进入 failed（不整体拒绝）。
+    """
+    user_id: Optional[int] = None
+    username: Optional[str] = None
+    source: Optional[str] = ""       # 来源程序标记，写入历史表便于追溯
+    account: Optional[str] = None          # 券商账号，客户端自传主标识
+    broker_code: Optional[str] = None      # 历史别名，等同于 account
+    broker_name: Optional[str] = None      # 可选：券商名
+    remark: Optional[str] = None           # 可选：券商备注
+    terminal: Optional[str] = None         # 可选：归属终端 id
+    items: list[HoldingUploadItem]
+
+
+class TradeImportItem(BaseModel):
+    """成交记录条目（无鉴权接口 /trades/import 使用）。
+
+    按交易日全量覆盖：同 (user, trade_date) 旧记录会被删除后重插。
+    """
+    code: str
+    name: Optional[str] = ""
+    type: Optional[str] = "stock"    # stock / etf / fund_otc / option / future / hk_stock
+    broker: Optional[str] = ""
+    account: Optional[str] = ""
+    direction: str                   # buy / sell（买入 / 卖出）
+    price: float                     # 成交价
+    quantity: float                  # 成交数量
+    amount: Optional[float] = None   # 成交额（价×量，可选，缺失后端按 price*quantity 计算）
+    fee: Optional[float] = None      # 手续费（可选）
+    trade_time: Optional[str] = None # 成交时间 YYYY-MM-DD HH:MM:SS（可选）
+
+
+class TradeUploadRequest(BaseModel):
+    """无鉴权成交上传：trade_date 为该批归属交易日（必填，YYYY-MM-DD）。
+
+    已存在同 (user, trade_date) 的旧记录会被全量覆盖（删除后重插）；
+    新 trade_date 直接全量新增。
+
+    券商归属（2026-11 重构：终端管理）：
+    - account：券商账号，由**客户端自传**作为主标识；
+    - broker_code：历史字段别名，等同于 account；
+    - broker_name / remark：可选，随上传一并登记券商名 / 备注（首见该 account 时自动建券商）；
+    - terminal：可选，指定归属终端 id（留空自动落到默认终端）。
+    account 与 broker_code 皆为空 → 整批进入 failed（不整体拒绝）。
+    """
+    user_id: Optional[int] = None
+    username: Optional[str] = None
+    source: Optional[str] = ""
+    account: Optional[str] = None          # 券商账号，客户端自传主标识
+    broker_code: Optional[str] = None      # 历史别名，等同于 account
+    broker_name: Optional[str] = None      # 可选：券商名
+    remark: Optional[str] = None           # 可选：券商备注
+    terminal: Optional[str] = None         # 可选：归属终端 id
+    trade_date: str                  # YYYY-MM-DD，必填，归属交易日
+    items: list[TradeImportItem]
 
 
 # ============================================================

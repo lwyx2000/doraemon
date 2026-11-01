@@ -243,11 +243,34 @@ export interface BroadIndexValuation {
   code: string
   pb: number | null
   pe_ttm: number | null
+  // 等权(eq)/中位(med)口径（2026-10-27，与 legulegu 等权/中位对齐）
+  pb_eq: number | null
+  pb_med: number | null
+  pe_ttm_eq: number | null        // PE(TTM)纳亏 等权
+  pe_ttm_med: number | null       // PE(TTM)纳亏 中位
+  pe_ttm_ex_eq: number | null     // PE(TTM)剔亏 等权
+  pe_ttm_ex_med: number | null    // PE(TTM)剔亏 中位
   roe_mean: number | null       // ROE近5年均值 (%)
   spread: number | null          // 股债利差 (%)
   valuation_percentile: number | null  // 估值分位 0-100, 越小越便宜
   pe_percentile: number | null    // PE 历史分位 0-100, 高=贵
   pb_percentile: number | null    // PB 历史分位 0-100, 高=贵
+  // 近 10Y（120 个月）窗口分位：对齐万得/中证官方常用口径，可直接跨源对比
+  pe_percentile_10y?: number | null
+  pb_percentile_10y?: number | null
+  // 等权/中位分位（全史 + 近10Y），与加权口径一致
+  pb_eq_percentile?: number | null
+  pb_eq_percentile_10y?: number | null
+  pb_med_percentile?: number | null
+  pb_med_percentile_10y?: number | null
+  pe_ttm_eq_percentile?: number | null
+  pe_ttm_eq_percentile_10y?: number | null
+  pe_ttm_med_percentile?: number | null
+  pe_ttm_med_percentile_10y?: number | null
+  pe_ttm_ex_eq_percentile?: number | null
+  pe_ttm_ex_eq_percentile_10y?: number | null
+  pe_ttm_ex_med_percentile?: number | null
+  pe_ttm_ex_med_percentile_10y?: number | null
   crowding: number | null        // 拥挤度 0-100, 越小相对越便宜
   // ERP 稳健 Z-score（MAD，最近10年滚动窗口）：>1.5 低估 / <-1.5 高估 / 之间 中性
   erp_zscore: number | null
@@ -270,12 +293,23 @@ export interface ValuationHistPoint {
   date: string
   pb: number | null
   index_value: number | null
+  // 等权/中位口径（2026-10-27），供详情抽屉画对比线
+  pb_eq?: number | null
+  pb_med?: number | null
 }
 
 export interface PeHistPoint {
   date: string
+  /** 纳亏口径（亏损股进分母）：绝对值展示 */
   pe_ttm: number | null
+  /** 剔亏口径（仅聚 PE>0）：分位计算基准；旧行为 null，消费方回退 pe_ttm */
+  pe_ttm_ex?: number | null
   pe_static: number | null
+  // 等权/中位口径（2026-10-27）
+  pe_ttm_eq?: number | null
+  pe_ttm_med?: number | null
+  pe_ttm_ex_eq?: number | null
+  pe_ttm_ex_med?: number | null
 }
 
 export interface PriceHistPoint {
@@ -609,8 +643,13 @@ export interface KnowledgeDocMeta {
   id: string
   category: string
   title: string
-  file: string
+  file?: string
   tags: string[]
+  /** import=用户导入（SQLite 持久化，可启停/删除）；缺省=内置（随镜像分发，只读） */
+  source?: 'builtin' | 'import'
+  enabled?: boolean
+  char_count?: number
+  updated_at?: string
 }
 
 export interface KnowledgeDoc extends KnowledgeDocMeta {
@@ -629,7 +668,7 @@ export interface AiStreamMeta {
   type: 'meta'
   context_type?: string
   context?: Record<string, unknown> | null
-  docs?: Array<{ id?: string; title?: string; snippet?: string }>
+  docs?: Array<{ id?: string; title?: string; snippet?: string; source?: 'builtin' | 'import' }>
 }
 
 export interface AiStreamError {
@@ -772,13 +811,50 @@ export interface HoldingImportResult {
   failed: Array<{ index: number; code: string; reason: string }>
 }
 
-// 券商账号（个人中心维护，持仓页筛选/导入选用）
-export interface BrokerAccount {
+// 成交记录导入结果（对应 POST /api/v1/trades/import）
+export interface TradeImportResult {
+  deleted: number
+  inserted: number
+  failed: Array<{ index: number; code: string; reason: string }>
+}
+
+// 券商（隶属于某终端，account 为客户端自传的券商账号主标识）
+export interface Broker {
   id: string
-  broker: string
+  fk_terminal: string
+  name: string
   account: string
+  remark: string
   created_at: string
   updated_at: string
+}
+
+// 终端（一个终端可含多个券商；券商管理重构后由「终端管理」取代「券商管理」）
+export interface Terminal {
+  id: string
+  name: string
+  remark: string
+  created_at: string
+  updated_at: string
+  brokers: Broker[]
+}
+
+// 上传留痕日志（每次外部 API 导入调用的记录，持仓页「上传记录」tab 展示）
+export interface ImportLog {
+  id: string
+  fk_user: string
+  endpoint: string
+  source: string
+  broker_code: string
+  broker: string
+  total: number
+  added: number
+  updated: number
+  deleted: number
+  inserted: number
+  failed: number
+  fail_detail: string
+  created_at: string
 }
 
 // 账户名（独立列表，持仓页编辑时选用）

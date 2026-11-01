@@ -13,10 +13,9 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '大类资产配置看板', icon: 'dashboard' },
   },
   {
+    // 指数分析页已合并进宽基估值分位（2026-10-20）：旧书签/外链 301 到新页，避免 404
     path: '/index-analysis',
-    name: 'IndexAnalysis',
-    component: () => import('../pages/IndexAnalysis.vue'),
-    meta: { title: '指数估值分析', icon: 'analytics' },
+    redirect: '/index-valuation',
   },
   {
     path: '/index-valuation',
@@ -145,6 +144,13 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '登录', public: true },
   },
   {
+    // 无鉴权公开页：外部上传接口文档 + 在线导入（免登录）
+    path: '/external-api-docs',
+    name: 'ExternalApiDocs',
+    component: () => import('../pages/ExternalApiDocs.vue'),
+    meta: { title: '外部上传接口', public: true },
+  },
+  {
     path: '/register',
     name: 'Register',
     component: () => import('../pages/Register.vue'),
@@ -179,8 +185,8 @@ router.beforeEach((to) => {
   if (to.meta.public && isLoggedIn.value && (to.path === '/login' || to.path === '/register')) {
     return { path: isAdmin.value ? '/admin/users' : '/' }
   }
-  // 管理员仅允许访问账号管理页，其余一律重定向
-  if (isLoggedIn.value && isAdmin.value && !(to.meta.admin || to.path === '/admin/users')) {
+  // 管理员仅允许访问账号管理页，其余一律重定向（公开页除外，任何人可访问）
+  if (isLoggedIn.value && isAdmin.value && !to.meta.public && !(to.meta.admin || to.path === '/admin/users')) {
     return { path: '/admin/users' }
   }
   // 非管理员访问管理员页则回看板

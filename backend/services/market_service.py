@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import os
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any
 import requests
@@ -454,6 +454,16 @@ _A_SHARE_OVERVIEW_INDICES = [
     ("北证50", "899050"),
 ]
 
+# 指数实时行情补录负缓存（2026-10-19）
+# ⚠️ 为什么加：实测网关 `quote/realtime?code=899050`（北证50）**固定 15.0s 后
+#   返回 500**（bj 市场行情源在 53 上不可用），而 overview 每次冷路径都会补录
+#   它 → 白等 15s，且拿到失败后照样跳过不显示（展示行为零收益）。
+#   负缓存：某 code 补录失败后 10 分钟内不再重试；显示语义不变（失败本来就会
+#   被跳过），网关恢复后最长 10 分钟自动重新尝试。
+_INDEX_QUOTE_FAIL_TTL = 600
+_index_quote_fail: dict[str, float] = {}
+_index_quote_fail_lock = threading.Lock()
+
 
 def _fetch_index_quote(code: str) -> dict | None:
     """从行情直连接口获取单个指数实时快照
@@ -479,13 +489,54 @@ def _fetch_index_quote(code: str) -> dict | None:
 
 
 def _ensure_overview_indices(indices: list[dict]) -> list[dict]:
-    """补齐/替换大盘看板指数：剔除无数据的上证380，确保科创综指/科创50/中证A500等存在"""
+    """补齐/替换大盘看板指数：剔除无数据的上证380，确保科创综指/科创50/中证A500等存在
+
+    ⚠️ 两处性能修复（2026-10-19，实测 overview force=true 18s 的构成：
+       raw 命中 0s + ensure_overview 15.6s + market_stats ~2s）：
+       1) 缺失指数补录**并行化**：上游 index_valuation 通常只返回 8-9 个指数，
+          其余需打 quote/realtime 补录；原先串行，缺 N 个就要 N×3-4s。
+       2) 补录**负缓存**（主因）：北证50(899050) 网关固定 15.0s 后返回 500
+          （bj 市场源在 53 不可用），失败后照样跳过不显示——每次冷路径白等
+          15s、显示零收益。失败 code 进 10 分钟负缓存，期间跳过。
+       两处均不改变显示语义：补录失败的指数本来就不会展示。
+    """
     by_code: dict[str, dict] = {}
     for idx in indices:
         c = idx.get("code", "")
         if c and c not in by_code:
             by_code[c] = idx
 
+    # 1) 汇总缺失指数，一次性并行补录（保序由第 2 步按期望清单组装保证）
+    #    负缓存期内的失败 code 直接跳过（如北证50 网关固定 15s 后 500）
+    now = time.time()
+    with _index_quote_fail_lock:
+        _fail_snapshot = dict(_index_quote_fail)
+    missing: list[tuple[str, str]] = []
+    for name, code in _A_SHARE_OVERVIEW_INDICES:
+        if code in by_code:
+            continue
+        failed_at = _fail_snapshot.get(code)
+        if failed_at is not None and now - failed_at < _INDEX_QUOTE_FAIL_TTL:
+            continue
+        missing.append((name, code))
+    quotes: dict[str, dict | None] = {}
+    if missing:
+        with ThreadPoolExecutor(max_workers=min(len(missing), 8)) as pool:
+            fut_map = {pool.submit(_fetch_index_quote, code): code for _, code in missing}
+            for fut in as_completed(fut_map):
+                code = fut_map[fut]
+                try:
+                    quotes[code] = fut.result()
+                except Exception as e:  # noqa: BLE001
+                    print(f"[Index Quote] 并行补录 {code} 异常: {e!r}")
+                    quotes[code] = None
+        # 补录失败的 code 记负缓存（拿不到 = 本次也不会展示，缓存不影响显示语义）
+        with _index_quote_fail_lock:
+            for code, quote in quotes.items():
+                if not quote or not quote.get("name") or quote.get("price") in (None, 0):
+                    _index_quote_fail[code] = time.time()
+
+    # 2) 按期望顺序组装：已有数据用规范名，缺失的用并行补录结果
     result = []
     for name, code in _A_SHARE_OVERVIEW_INDICES:
         if code in by_code:
@@ -494,9 +545,8 @@ def _ensure_overview_indices(indices: list[dict]) -> list[dict]:
             item["name"] = name
             result.append(item)
         else:
-            # 缺失时尝试实时行情补录
-            quote = _fetch_index_quote(code)
             # 跳过无实时行情的指数（如北证50 上游未返回名称/价格）
+            quote = quotes.get(code)
             if not quote or not quote.get("name") or quote.get("price") in (None, 0):
                 continue
             quote["name"] = name
@@ -813,7 +863,9 @@ def get_market_stats_real() -> dict | None:
     #   原先 10s 主动断开 → 与 index_valuation 一起失败时 overview 显示「网关无数据」。
     #   retries=2 保留：第一次等满 35s 拿到网关 504 时，网关线程已把缓存写热，
     #   第二次几乎秒回，冷启动总耗时 ~36s 而非永久失败。
+    _t0 = time.time()
     data = _processed_data_request("market_stats", {"subtype": "overview"}, retries=2, timeout=35)
+    print(f"[Market Stats] 上游耗时 {time.time() - _t0:.2f}s")
     
     if not data or not isinstance(data, dict):
         print("[Market Stats] 获取失败")
@@ -898,10 +950,13 @@ _SW_SECTORS_CACHE: dict = {"data": None, "ts": 0.0, "lock": threading.Lock(), "f
 _SW_SECTORS_TTL = 180
 #: 上游拿不到时的短缓存（秒）—— 失败不该被缓存 10 分钟，但也不该让首页每次白等
 _SW_SECTORS_TTL_FAIL = 30
+#: P0 止血（2026-10-19）：base_sw_sector_daily 损坏致 duckdb 段错误，
+#: _save_sw_sector_snapshot 默认拒绝落库，只打印一次提示
+_SW_SNAPSHOT_WRITE_DISABLED_LOGGED = False
 
 
 # ---------------------------------------------------------------------------
-# market/overview 进程内缓存（2026-10-17 P2-3 骨架，2026-10-19 TTL 重定）
+# market/overview 进程内缓存（2026-10-17 P2-3 骨架，2026-10-19 TTL 重定+SWR）
 # ---------------------------------------------------------------------------
 # ⚠️ 为什么加：`get_market_overview_with_meta` 每次串行打 2 个**无缓存**上游
 #   （index_valuation timeout=15s + market_stats timeout=10s×2 retries），
@@ -915,10 +970,20 @@ _SW_SECTORS_TTL_FAIL = 30
 #   （akshareProject 1126061），overview 属于实时数据，外层再压 10 分钟会把
 #   刚刷新的数据藏旧。15s 仅用于吸收同刻并发与前端重复请求；上游慢而能成
 #   的调用由 130s 超时兜底（不会因 TTL 短而丢数据）。
-_MARKET_OVERVIEW_CACHE: dict = {"data": None, "meta": None, "ts": 0.0, "lock": threading.Lock(), "fail": False}
+#
+# ⚠️ SWR 2026-10-19 当日新增（配合缺失指数并行补录，见 _ensure_overview_indices）：
+#   实测 overview force=true 18s 的构成 = raw 命中 0s + ensure_overview 15.6s
+#   （串行补录缺失指数）+ market_stats ~2s；且网关 index_valuation 冷算最坏
+#   118s+（网关 120s 执行上限）。同步等待=打开看板干等。SWR：TTL 过期但有
+#   旧值时立即返回旧数据（meta.updateTime 供前端展示新鲜度），后台限流
+#   （10s 一次）刷新；无旧值（冷启首次）与 force=true（刷新按钮）仍同步。
+_MARKET_OVERVIEW_CACHE: dict = {"data": None, "meta": None, "ts": 0.0, "lock": threading.Lock(), "fail": False, "refreshing": False, "last_refresh_ts": 0.0}
 _MARKET_OVERVIEW_TTL = 15
 #: 上游拿不到时的短缓存（秒）—— 失败不该被缓存 10 分钟，但也不该让首页每次白等
 _MARKET_OVERVIEW_TTL_FAIL = 30
+#: SWR 后台刷新最小间隔（秒）：TTL 过期后页面打开仍秒回旧值，后台限流刷新，
+#: 防止前端连续刷新/多标签把上游打爆
+_MARKET_OVERVIEW_REFRESH_MIN_INTERVAL = 10
 
 
 def _compute_erp() -> tuple[float | None, float | None, float | None, float | None]:
@@ -1148,12 +1213,40 @@ def get_macro_indicators_with_meta() -> tuple[dict, dict]:
     return result, _build_meta(False, f"AkShare WebAPI ({AKSHARE_HOST})")
 
 
+def _refresh_market_overview_bg() -> None:
+    """SWR 后台刷新 overview 缓存（2026-10-19）。
+
+    与同步路径共用 ``_get_market_overview_uncached``；成功/失败都写缓存，
+    异常时仅打印并释放 refreshing 标志，旧缓存原样保留（下次请求继续 SWR）。
+    """
+    try:
+        data, meta = _get_market_overview_uncached()
+        ok = bool(data.get("indices"))
+        with _MARKET_OVERVIEW_CACHE["lock"]:
+            c = _MARKET_OVERVIEW_CACHE
+            c["data"] = data
+            c["meta"] = meta
+            c["ts"] = time.time()
+            c["fail"] = not ok
+    except Exception as e:  # noqa: BLE001
+        print(f"[Overview] 后台刷新失败(保留旧缓存): {e!r}")
+    finally:
+        with _MARKET_OVERVIEW_CACHE["lock"]:
+            _MARKET_OVERVIEW_CACHE["refreshing"] = False
+
+
 def get_market_overview_with_meta(force: bool = False) -> tuple[dict, dict]:
     """市场概况：指数行情 + 涨跌家数 + 成交额。
 
-    ⚠️ 带 15s 进程内缓存（2026-10-17 P2-3 骨架，2026-10-19 由 600s 调短，
-    实时数据不再压旧）：未命中缓存时透传 ``force`` 给底层取数并刷新缓存；
-    命中直接返回 (data, meta) 二元组。失败态（indices 为空）走 30s 短 TTL。
+    ⚠️ 15s 进程内缓存 + stale-while-revalidate（2026-10-19，SWR 当日新增）：
+      - 缓存新鲜（≤15s）：直接返回；
+      - 缓存过期但有旧值：**立即返回旧数据**，同时限流（10s 至多一次）触发
+        后台线程刷新。为什么：网关 index_valuation 冷算实测 2s~120s 大幅波动
+        （120s 是网关执行上限），同步等待=打开看板干等甚至 502 观感；
+        旧数据带 meta.updateTime，前端时间 chip 可判断新鲜度；
+      - 无任何缓存（冷启动首次）：同步走完整路径（此时没有旧值可返回）；
+      - ``force=True``（刷新按钮）：永远同步拿新数据，不走 SWR。
+    失败态（indices 为空）缓存 30s，语义同上。
     """
     if not force:
         with _MARKET_OVERVIEW_CACHE["lock"]:
@@ -1163,6 +1256,20 @@ def get_market_overview_with_meta(force: bool = False) -> tuple[dict, dict]:
                 ttl = _MARKET_OVERVIEW_TTL_FAIL if c.get("fail") else _MARKET_OVERVIEW_TTL
                 if age <= ttl:
                     return c["data"], c["meta"]
+                # 过期：SWR 秒回旧值 + 后台限流刷新
+                now = time.time()
+                if (
+                    not c.get("refreshing")
+                    and now - c.get("last_refresh_ts", 0.0) >= _MARKET_OVERVIEW_REFRESH_MIN_INTERVAL
+                ):
+                    c["refreshing"] = True
+                    c["last_refresh_ts"] = now
+                    threading.Thread(
+                        target=_refresh_market_overview_bg,
+                        daemon=True,
+                        name="overview-refresh",
+                    ).start()
+                return c["data"], c["meta"]
     data, meta = _get_market_overview_uncached()
     ok = bool(data.get("indices"))
     with _MARKET_OVERVIEW_CACHE["lock"]:
@@ -1180,11 +1287,16 @@ def _get_market_overview_uncached() -> tuple[dict, dict]:
         return mock_data.MOCK_MACRO_DATA["marketOverview"], _build_meta(True, "MOCK(模拟数据)")
     # 两个上游并行（2026-10-16）：网关冷算时 index_valuation 最坏 ~130s、
     # market_stats 最坏 ~70s，串行最坏 200s 才返回；并行取 max ≈ 130s。
+    _t0 = time.time()
     with ThreadPoolExecutor(max_workers=2) as pool:
         fut_idx = pool.submit(_fetch_index_valuation_data)
         fut_stats = pool.submit(get_market_stats_real)
         realtime_indices, _ = fut_idx.result()
         market_stats = fut_stats.result()
+    print(
+        f"[Overview] 上游并行总耗时 {time.time() - _t0:.2f}s "
+        f"(indices={'ok' if realtime_indices else 'empty'}, stats={'ok' if market_stats else 'none'})"
+    )
 
     if market_stats:
         # 成交额变化统一使用绝对值(亿元)：上游提供昨日成交额则直接相减；
@@ -1403,6 +1515,19 @@ def _save_sw_sector_snapshot(sectors: list[dict], trade_date: str | None = None)
     Returns:
         实际写入的行数（失败返回 0）。
     """
+    # ⚠️ 2026-10-19 P0 止血：base_sw_sector_daily 表再次损坏，duckdb native 段错误
+    # （backend 崩溃循环、宏观看板 502；10-15 曾修复过一次，10-19 复发）。
+    # 所有写入口（热力图顺带落库 / 回填 / 定时快照）都收敛到本函数，
+    # 此处一个 env 开关全部切断；表修复后置 SW_SNAPSHOT_WRITE=1 恢复。
+    if os.getenv("SW_SNAPSHOT_WRITE", "0") != "1":
+        global _SW_SNAPSHOT_WRITE_DISABLED_LOGGED
+        if not _SW_SNAPSHOT_WRITE_DISABLED_LOGGED:
+            _SW_SNAPSHOT_WRITE_DISABLED_LOGGED = True
+            print(
+                "[SW Snapshot] 落库已禁用（SW_SNAPSHOT_WRITE!=1，P0 segfault 止血，2026-10-19）；"
+                "表修复后置 SW_SNAPSHOT_WRITE=1 恢复"
+            )
+        return 0
     if not sectors:
         return 0
     try:
@@ -1643,12 +1768,15 @@ def get_sw_sector_relative_strength(days: int = 5) -> list[dict]:
         latest_date = latest[0]
 
         # 取最近 days+1 个交易日的数据（用于计算 N 日涨跌幅）
-        # 注意：DISTINCT+ORDER BY+LIMIT 在 DuckDB 1.5.x 会漏行，必须用 GROUP BY 写法
+        # 注意：DISTINCT+ORDER BY+LIMIT 在 DuckDB 1.5.x 会漏行，必须用 GROUP BY 写法；
+        # 也不要用 >= (子查询)（1.5.x 按标量子查询处理，多行报 InvalidInputException，
+        # 且被 except 静默吞掉返回空——2026-10-19 修复 relative-strength 潜伏空数据 bug），
+        # 用 IN + GROUP BY（与 get_sw_sector_rank_trend 同款模式，日期不足时优雅降级）
         rows = db.fetchall(
             """
             SELECT sector_code, sector_name, trade_date, change_pct, price, pe, pb, dividend_yield
             FROM base_sw_sector_daily
-            WHERE trade_date >= (
+            WHERE trade_date IN (
                 SELECT trade_date FROM base_sw_sector_daily
                 GROUP BY trade_date ORDER BY trade_date DESC LIMIT ?
             )
@@ -1667,16 +1795,23 @@ def get_sw_sector_relative_strength(days: int = 5) -> list[dict]:
             grouped[r[0]].append(r)
 
         result = []
+        # DuckDB 1.5.x 的 DECIMAL 列经 Python 客户端返回 decimal.Decimal，
+        # 且 round(Decimal, 2) 仍是 Decimal；直接塞进响应会被序列化成字符串，
+        # 违反前端 number 契约（toFixed 崩溃，2026-10-19 修复）。
+        # 与 get_sw_sector_history 保持同一显式 float() 转换模式。
+        def _num(v):
+            return float(v) if v is not None else None
+
         for sector_code, records in grouped.items():
             if len(records) < 2:
                 continue
             # 当日（最后一条）涨跌幅
-            today_change = records[-1][3] if records[-1][3] is not None else None
+            today_change = _num(records[-1][3])
             # 近 N 日累计涨跌幅（第一条到最后一条的 price 变化）
-            first_price = records[0][4]
-            last_price = records[-1][4]
+            first_price = _num(records[0][4])
+            last_price = _num(records[-1][4])
             cum_change = None
-            if first_price and last_price and first_price > 0:
+            if first_price is not None and last_price is not None and first_price > 0:
                 cum_change = round((last_price - first_price) / first_price * 100, 2)
 
             # 相对强度
@@ -1690,16 +1825,21 @@ def get_sw_sector_relative_strength(days: int = 5) -> list[dict]:
                 "today_change_pct": today_change,
                 "cum_change_pct": cum_change,
                 "relative_strength": rel_strength,
-                "pe": records[-1][5] if records[-1][5] else None,
-                "pb": records[-1][6] if records[-1][6] else None,
-                "dividend_yield": records[-1][7] if records[-1][7] else None,
+                "pe": _num(records[-1][5]),
+                "pb": _num(records[-1][6]),
+                "dividend_yield": _num(records[-1][7]),
                 "latest_date": str(records[-1][2]),
             })
 
-        # 按相对强度降序
-        result.sort(key=lambda x: x.get("relative_strength") or -999, reverse=True)
+        # 按相对强度降序（注意 0.0 是 falsy，不能用 `or -999`，会把 0 排到最后）
+        result.sort(
+            key=lambda x: x["relative_strength"] if x["relative_strength"] is not None else -999,
+            reverse=True,
+        )
         return result
-    except Exception:
+    except Exception as e:
+        # 不吞真实报错：打印后返回空（与相邻快照函数风格一致）
+        print(f"[market_service] get_sw_sector_relative_strength error: {e}")
         return []
 
 
@@ -2157,11 +2297,11 @@ def _fetch_index_valuation_data() -> tuple[list[dict], list[dict]]:
     realtime_indices: 用于 marketOverview.indices (MarketIndex 格式，仅 A 股核心指数)
     indices_valuation: 用于跨市场指数估值表 (IndexValuation 格式)
     """
+    _t_raw = time.time()
     data = _fetch_index_valuation_raw()
-
     if not data or not isinstance(data, list):
         return [], []
-
+    _t_after_raw = time.time()
     # 1. 统一先转成 MarketIndex 格式（pe/pb/百分位缺失时保留 None，绝不伪造为 0）
     raw_items: list[dict] = []
     for item in data:
@@ -2187,6 +2327,10 @@ def _fetch_index_valuation_data() -> tuple[list[dict], list[dict]]:
     other_items = [it for it in raw_items if not _is_a_share_index(it)]
 
     realtime_indices = _ensure_overview_indices(a_share_items)
+    print(
+        f"[Overview] index_valuation 分段: raw={_t_after_raw - _t_raw:.2f}s, "
+        f"ensure_overview={time.time() - _t_after_raw:.2f}s"
+    )
     all_items = realtime_indices + other_items
 
     # 3. 生成跨市场估值表数据（无百分位时 category=unknown，避免被误归入"极度低估"）

@@ -5,6 +5,7 @@ import { NDataTable, NButton, NIcon, useMessage, NTabs, NTabPane } from 'naive-u
 import { TrendingUp, WarningOutline, CheckmarkCircleOutline, ChevronDownOutline, ChevronUpOutline, SparklesOutline } from '@vicons/ionicons5'
 import { api } from '../utils/api'
 import { pctColor } from '../utils/percentile'
+import { formatBackendTime } from '../utils/time'
 import type {
   MacroIndicators,
   IndexValuation,
@@ -170,7 +171,8 @@ async function fetchMacroData(force = false) {
   await Promise.all([
     reg('indicators', () => api.getMacroIndicators(), (d) => { indicators.value = d }),
     reg('indices', () => api.getIndices(), (d) => { indices.value = d }),
-    // overview 带 10 分钟缓存（2026-10-17 P2-3）：仅刷新按钮 force 穿透
+    // overview 带 15s 短缓存 + SWR 后台刷新（2026-10-19 重定，原 600s）；
+    // 仅刷新按钮 force 穿透，SWR 过期有旧值时立即返旧值后台限流刷新
     reg('overview', () => api.getMarketOverview(force), (d) => { marketOverview.value = d }),
     reg('boardSectors', () => api.getMarketBoardSectors(), (d) => { boardSectors.value = d }),
     reg('fundFlows', () => api.getMarketFundFlows(), (d) => { fundFlows.value = d }),
@@ -202,7 +204,7 @@ async function refresh() {
   refreshing.value = true
   message.loading('正在刷新宏观数据...', { duration: 1200 })
   try {
-    // force=true：overview 穿透 10 分钟缓存（其余区无缓存，语义不变）
+    // force=true：overview 穿透 15s 缓存（其余区无缓存，语义不变）
     await fetchMacroData(true)
     if (hasData.value) {
       message.success(`已刷新 ${indices.value.length} 个指数数据`)
@@ -220,7 +222,8 @@ const allSectionsMock = computed(() => {
 
 const mockTimeText = computed(() => {
   const s = Object.values(sectionSources.value).find(x => x.mockTime)
-  return s?.mockTime ?? ''
+  // 与 pageUpdatedAtText 同理：mockTime 也是容器 UTC 的 naive 串，按 UTC 解析转本地
+  return formatBackendTime(s?.mockTime)
 })
 
 const dataSourceText = computed(() => {
@@ -236,6 +239,11 @@ const pageUpdatedAt = computed(() => {
     .sort()
   return times.length ? times[times.length - 1] : null
 })
+
+// banner 展示用本地化时间：后端 updateTime 是容器 UTC 的 naive 串，
+// 直接插值会显示 UTC 墙钟（比 CST 少 8 小时，像过期其实才生成），
+// PageHeader 内部已做同样转换（2026-10-19 修复）
+const pageUpdatedAtText = computed(() => formatBackendTime(pageUpdatedAt.value))
 
 // ERP 股债利差 3年分位：按全局"分位越高色温越高"标准机械映射（高分位=红）。
 // 注：ERP 分位越高=市场越便宜=越好，但视觉上仍显红，属一致性映射，不在此反转。
@@ -295,7 +303,7 @@ const indicesUpdateMeta = computed(() => {
   return time ? `Last update: ${time}` : 'Last update: —'
 })
 
-// 申万热力图数据更新时间（后端 meta.updateTime = 取数时刻；网关侧有 10 分钟缓存）
+// 申万热力图数据更新时间（后端 meta.updateTime = 取数时刻；sw-sectors 进程内缓存 3 分钟，失败态 30s）
 const swSectorsUpdatedAt = computed(() => sectionSources.value.swSectors?.updateTime ?? null)
 
 // 宏观指标区是否有有效数据：空对象/无关键利率数据时不渲染4个指标卡片
@@ -438,7 +446,7 @@ function handleCheckedChange(keys: (string | number)[]) {
     <div v-else class="data-source-banner real">
       <n-icon :component="CheckmarkCircleOutline" />
       <span>数据来源: {{ dataSourceText }}</span>
-      <span v-if="pageUpdatedAt" class="banner-updated">数据更新于 {{ pageUpdatedAt }}（非实时，缓存约 10 分钟）</span>
+      <span v-if="pageUpdatedAt" class="banner-updated">数据更新于 {{ pageUpdatedAtText }}（非实时，缓存数据，点「刷新」可强制更新）</span>
     </div>
     </template>
 

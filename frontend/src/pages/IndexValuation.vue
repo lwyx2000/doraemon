@@ -1,7 +1,7 @@
 <script setup lang="ts">
 defineOptions({ name: 'IndexValuation' })
-import { ref, computed, watch, onMounted } from 'vue'
-import { NDataTable, NTag, NSpin, NEmpty, NModal, NButton, NAlert, NTabs, NTabPane, useMessage } from 'naive-ui'
+import { ref, computed, watch, onMounted, h } from 'vue'
+import { NDataTable, NTag, NSpin, NEmpty, NModal, NButton, NAlert, NTabs, NTabPane, NTooltip, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { api } from '../utils/api'
 import type { BroadIndexValuation, IndustryValuation, SectionSourceMeta, SpreadHistoryPoint } from '../types'
@@ -9,6 +9,7 @@ import PageHeader from '../components/PageHeader.vue'
 import PercentileIndicator from '../components/PercentileIndicator.vue'
 import BaseChart from '../components/BaseChart.vue'
 import GlossaryPanel from '../components/GlossaryPanel.vue'
+import PercentileGlossary from '../components/PercentileGlossary.vue'
 import MethodologyGuide from '../components/MethodologyGuide.vue'
 import { pctColor, pctColorStyle } from '../utils/percentile'
 
@@ -88,6 +89,31 @@ function percentileLabel(pct: number | null): string {
   return '过热'
 }
 
+// ==================== 分位序列口径（tooltip 展示参照系） ====================
+// 不同指数的 PB/PE 历史起点不一（如创业板50 自 2015 起、上证红利自 2007 起），
+// 「全史分位」横向不可直接比较；把序列起止与样本数挂到 tooltip，读数自带上下文。
+function seriesScope(row: BroadIndexValuation, kind: 'pb' | 'pe' | 'spread'): string {
+  const hist = kind === 'pb' ? row.pb_history : kind === 'pe' ? row.pe_history : row.spread_history
+  const valid = (hist ?? []).filter((p: any) => {
+    const v = kind === 'pb' ? p.pb : kind === 'pe' ? p.pe_ttm : p.spread
+    return v != null
+  })
+  if (valid.length < 2) return '有效样本不足'
+  return `${valid[0].date.slice(0, 7)} ~ ${valid[valid.length - 1].date.slice(0, 7)}（${valid.length} 个月）`
+}
+
+// 10Y 窗口分位的实际生效范围：序列不足 120 个月时退化为全史（与全史列读数相同）
+function seriesScope10y(row: BroadIndexValuation, kind: 'pb' | 'pe'): string {
+  const hist = kind === 'pb' ? row.pb_history : row.pe_history
+  const valid = (hist ?? []).filter((p: any) => {
+    const v = kind === 'pb' ? p.pb : p.pe_ttm
+    return v != null
+  })
+  if (valid.length < 2) return '有效样本不足'
+  const win = valid.slice(-120)
+  return `${win[0].date.slice(0, 7)} ~ ${win[win.length - 1].date.slice(0, 7)}（${win.length} 个月${valid.length <= 120 ? '，历史不足120个月，实为全史口径' : ''}）`
+}
+
 // ==================== ERP 稳健 Z-score 配色（MAD，最近10年滚动窗口） ====================
 // Z_MAD > 1.5 → 低估(便宜/green)；Z_MAD < -1.5 → 高估(贵/red)；之间 → 中性
 function zscoreColor(zc: string | null): 'default' | 'success' | 'warning' | 'error' {
@@ -104,12 +130,66 @@ function zscoreLabel(zc: string | null): string {
   return '—'
 }
 
+// ==================== 多算法对比单元格（等权/中位，2026-10-27） ====================
+// 同一指标三种聚合：加权(买ETF真实口径) / 等权(成分股截尾均值，PE 截 95 分位) / 中位(中位数，抗极值)。
+// 单元格展示：上方绝对值 + 下方全史分位条；10Y 分位挂 tooltip。
+function algoCell(
+  value: number | null,
+  pctAll: number | null,
+  pct10y: number | null,
+  tip: string,
+): any {
+  // 单元格：上方「底层绝对值 + 全史分位%」（左值右分位），下方全史分位填充条；
+  // 10Y 分位挂 tooltip。分位条改用 PercentileIndicator 的填充条形式（更直观）。
+  return h(NTooltip, { trigger: 'hover' }, {
+    trigger: () => h(PercentileIndicator, { value: pctAll ?? null, metric: value, width: 80 }),
+    default: () => `${tip}\n全史分位：${pctAll != null ? pctAll.toFixed(1) + '%' : '—'}\n近10年分位：${pct10y != null ? pct10y.toFixed(1) + '%' : '—'}`,
+  })
+}
+
+// ==================== 表头悬停说明 ====================
+// 鼠标悬停列标题时弹出该列含义说明；标题禁止换行（CSS .n-data-table-th white-space:nowrap）。
+const HEADER_HELP: Record<string, string> = {
+  // 宽基表
+  name: '指数名称；★ 表示基准指数。⚠ 表示该指数历史样本不足 24 个月，估值分位 / PE·PB分位 / 拥挤度未计算。',
+  pb: '市净率（加权）：指数成分股总市值 / 净资产，反映"按净资产买贵不贵"。',
+  pe_ttm: '市盈率(TTM，滚动十二个月，纳亏口径)：含亏损股（负利润纳入分母），与万得展示一致；分位列走剔亏口径，两列口径不同、不可互推。',
+  pb_eq: 'PB 等权：成分股 PB 算术均值（不按市值加权），不被大市值股主导，反映成分股整体便宜程度。',
+  pb_med: 'PB 中位：成分股 PB 中位数，剔除极大/极小极值后的中枢，抗样本畸变。',
+  pe_ttm_eq: 'PE(TTM) 等权（纳亏口径，95 分位截尾均值），含亏损股；与「PE(TTM)」列同口径、不同加权。',
+  pe_ttm_med: 'PE(TTM) 中位（纳亏口径）：成分股 PE 中位数，抗极值；亏损股仍计入排序。',
+  pe_ttm_ex_eq: 'PE(TTM) 等权（剔亏口径）：仅 PE>0 成分股取 95 分位截尾均值，与中证官方分位口径一致。',
+  pe_ttm_ex_med: 'PE(TTM) 中位（剔亏口径）：仅 PE>0 成分股中位数，与等权口径互校。',
+  roe_mean: '净资产收益率均值(近5年)：成分股 ROE 的 5 年算术均值(%)，用于判断"便宜是否有价值陷阱"。',
+  spread: '股债利差 = 指数盈利收益率(1/PE) − 10Y 国债收益率(%)，越高表示股票相对债券越便宜。',
+  valuation_percentile: '综合估值分位：基于股债利差月度序列的全史升序百分位（高=便宜）。',
+  pe_percentile: 'PE 全史分位：基于 PE(TTM) 月度序列（剔亏口径）的全史升序百分位（高=贵）。',
+  pe_percentile_10y: 'PE 近10年分位：同一序列近 120 个月窗口升序百分位，对齐万得/中证官方常用口径。',
+  pb_percentile: 'PB 全史分位：基于 PB 月度序列（剔除净资产为负）的全史升序百分位（高=贵）。',
+  pb_percentile_10y: 'PB 近10年分位：同一序列近 120 个月窗口升序百分位，对齐万得/中证官方常用口径。',
+  crowding: '拥挤度：成分股成交/市值集中度分位（高=交易拥挤，潜在回调风险）。',
+  erp_zscore: 'ERP 稳健 Z 分数：基于近10年股债利差的 MAD 稳健 Z 值（>1.5 低估 / <-1.5 高估）。',
+  // 行业表
+  pe: '行业整体市盈率(TTM)：行业内成分股 PE 加权值。',
+  dividend_yield: '股息率：行业成分股现金分红收益率均值(%)。',
+}
+
+// 返回带悬停说明的表头标题（NTooltip 包裹）；标题文字 nowrap 由 CSS 强制单行。
+function headerWithHelp(key: string, title: string): any {
+  const tip = HEADER_HELP[key]
+  if (!tip) return title
+  return h(NTooltip, { trigger: 'hover' }, {
+    trigger: () => h('span', { style: 'white-space: nowrap; cursor: help;' }, title),
+    default: () => tip,
+  })
+}
+
 // ==================== 表格列定义 ====================
 const columns: DataTableColumns<BroadIndexValuation> = [
   {
-    title: '指数',
+    title: () => headerWithHelp('name', '指数'),
     key: 'name',
-    width: 110,
+    width: 92,
     fixed: 'left',
     render: (row) => {
       const label = row.name + (row.is_benchmark ? ' ★' : '')
@@ -126,77 +206,190 @@ const columns: DataTableColumns<BroadIndexValuation> = [
     },
   },
   {
-    title: 'PB',
+    title: () => headerWithHelp('pb', 'PB'),
     key: 'pb',
-    width: 80,
+    width: 54,
     align: 'right',
     render: (row) => row.pb != null ? row.pb.toFixed(2) : '—',
   },
   {
-    title: 'PE(TTM)',
+    title: () => headerWithHelp('pe_ttm', 'PE(TTM)'),
     key: 'pe_ttm',
-    width: 90,
+    width: 74,
     align: 'right',
-    render: (row) => row.pe_ttm != null ? row.pe_ttm.toFixed(1) : '—',
+    render: (row) => h(NTooltip, { trigger: 'hover' }, {
+      trigger: () => h('div', { style: 'text-align:right;' }, row.pe_ttm != null ? row.pe_ttm.toFixed(1) : '—'),
+      default: () => `绝对值口径：纳亏（亏损股负利润纳入分母 Σmv/Σ(mv/PE)）——反映指数真实盈利收益率，与万得展示一致。
+分位列（右列）走剔亏口径（仅聚 PE>0），两列口径不同、不可直接互推。
+亏损面越大两口径差越大：沪深300≈0%，中证2000 纳亏口径约为剔亏 3 倍。`,
+    }),
   },
   {
-    title: 'ROE均值(5Y)',
+    title: () => headerWithHelp('pb_eq', 'PB(等权)'),
+    key: 'pb_eq',
+    width: 96,
+    align: 'right',
+    render: (row) => algoCell(row.pb_eq, row.pb_eq_percentile ?? null, row.pb_eq_percentile_10y ?? null,
+      'PB 等权：成分股 PB 算术均值（不按市值加权）——不被大市值股主导，反映成分股整体便宜程度。'),
+  },
+  {
+    title: () => headerWithHelp('pb_med', 'PB(中位)'),
+    key: 'pb_med',
+    width: 96,
+    align: 'right',
+    render: (row) => algoCell(row.pb_med, row.pb_med_percentile ?? null, row.pb_med_percentile_10y ?? null,
+      'PB 中位：成分股 PB 中位数——剔除极大/极小极值后的中枢，抗样本畸变，常与等权接近。'),
+  },
+  {
+    title: () => headerWithHelp('pe_ttm_eq', 'PE(等权)'),
+    key: 'pe_ttm_eq',
+    width: 96,
+    align: 'right',
+    render: (row) => algoCell(row.pe_ttm_eq, row.pe_ttm_eq_percentile ?? null, row.pe_ttm_eq_percentile_10y ?? null,
+      'PE(TTM) 等权（纳亏口径）：成分股 PE 的 95 分位截尾均值，含亏损股（PE<0）——与「PE(TTM)」列同口径、不同加权。\n截尾：超出 5%/95% 分位的极值被拉回分位值后再平均，避免单只微利/微亏股（PE 趋 ±∞）主导整列（2026-10-28 修正；此前纯算术均值下中证2000 此列为 -0.36，现为 20.10）。\n⚠️ 亏损面大的指数（如科创50 现 -10.69）此列仍可能为负，判断贵贱请优先看「中位」或「加权」列。'),
+  },
+  {
+    title: () => headerWithHelp('pe_ttm_med', 'PE(中位)'),
+    key: 'pe_ttm_med',
+    width: 96,
+    align: 'right',
+    render: (row) => algoCell(row.pe_ttm_med, row.pe_ttm_med_percentile ?? null, row.pe_ttm_med_percentile_10y ?? null,
+      'PE(TTM) 中位（纳亏口径）：成分股 PE 中位数，抗极值——亏损股（PE<0）仍计入排序。'),
+  },
+  {
+    title: () => headerWithHelp('pe_ttm_ex_eq', 'PE剔亏(等权)'),
+    key: 'pe_ttm_ex_eq',
+    width: 112,
+    align: 'right',
+    render: (row) => algoCell(row.pe_ttm_ex_eq, row.pe_ttm_ex_eq_percentile ?? null, row.pe_ttm_ex_eq_percentile_10y ?? null,
+      'PE(TTM) 等权（剔亏口径）：仅 PE>0 成分股，取 95 分位截尾均值——分位计算基准，与中证官方分位口径一致；与「PE分位」列同口径、不同加权。\n已与 legulegu「等权滚动市盈率」对齐：2026-10-27 对拍沪深300 28.86 vs 28.33（+1.9%）、上证50 -1.2%、深证100 +1.4%；小盘残差略大（中证1000 +12.3%，因财报时点差异）。'),
+  },
+  {
+    title: () => headerWithHelp('pe_ttm_ex_med', 'PE剔亏(中位)'),
+    key: 'pe_ttm_ex_med',
+    width: 112,
+    align: 'right',
+    render: (row) => algoCell(row.pe_ttm_ex_med, row.pe_ttm_ex_med_percentile ?? null, row.pe_ttm_ex_med_percentile_10y ?? null,
+      'PE(TTM) 中位（剔亏口径）：仅 PE>0 成分股中位数——抗极值，与等权口径互校。'),
+  },
+  {
+    title: () => headerWithHelp('roe_mean', 'ROE均值(5Y)'),
     key: 'roe_mean',
-    width: 110,
+    width: 84,
     align: 'right',
     render: (row) => row.roe_mean != null ? row.roe_mean.toFixed(2) + '%' : '—',
   },
   {
-    title: '股债利差',
+    title: () => headerWithHelp('spread', '股债利差'),
     key: 'spread',
-    width: 100,
+    width: 72,
     align: 'right',
     render: (row) => row.spread != null ? row.spread.toFixed(2) + '%' : '—',
   },
   {
-    title: '估值分位',
+    title: () => headerWithHelp('valuation_percentile', '估值分位'),
     key: 'valuation_percentile',
-    width: 140,
+    width: 112,
     align: 'center',
-    render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
-      h(PercentileIndicator, { value: row.valuation_percentile, width: 60 }),
-      h(NTag, { color: pctColorStyle(row.valuation_percentile), size: 'small', bordered: false }, () => percentileLabel(row.valuation_percentile)),
-    ]),
+    render: (row) => h(NTooltip, { trigger: 'hover' }, {
+      trigger: () => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
+        h(PercentileIndicator, { value: row.valuation_percentile, width: 52 }),
+        h(NTag, { color: pctColorStyle(row.valuation_percentile), size: 'small', bordered: false }, () => percentileLabel(row.valuation_percentile)),
+      ]),
+      default: () => row.insufficient_history
+        ? `历史样本仅 ${row.history_samples ?? 0} 个月（不足 24 个月），为保证统计意义未计算分位`
+        : `基于股债利差月度序列 ${seriesScope(row, 'spread')}\n当前 10Y 国债 ${row.yield_10y?.toFixed(2) ?? '—'}%，处历史低位——会机械抬高利差、压低本分位，「便宜」部分来自债券端`,
+    }),
   },
   {
-    title: 'PE分位',
+    title: () => headerWithHelp('pe_percentile', 'PE分位'),
     key: 'pe_percentile',
-    width: 140,
+    width: 112,
     align: 'center',
-    render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
-      h(PercentileIndicator, { value: row.pe_percentile, width: 60 }),
-      h(NTag, { color: pctColorStyle(row.pe_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pe_percentile)),
-    ]),
+    render: (row) => h(NTooltip, { trigger: 'hover' }, {
+      trigger: () => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
+        h(PercentileIndicator, { value: row.pe_percentile, width: 52 }),
+        h(NTag, { color: pctColorStyle(row.pe_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pe_percentile)),
+      ]),
+      default: () => row.insufficient_history
+        ? `历史样本仅 ${row.history_samples ?? 0} 个月（不足 24 个月），为保证统计意义未计算分位`
+        : `基于 PE(TTM) 月度序列 ${seriesScope(row, 'pe')}，全史升序百分位（高=贵）
+聚合口径：剔亏（仅聚 PE>0 成分股）——2026-10-24 锚点校准确认中证官方分位在剔亏侧；纳亏口径会把小盘分位虚高 20~35pp
+当前值与序列同口径（剔亏）；「PE(TTM)」绝对值列仍为纳亏口径，两列不可直接互推
+窗口口径：全史月度；外部源（万得/中证）多用10Y日度，跨源读数可能差10~25pp
+注意：盈利下行期 PE 会被动抬高分位，与 PB 分位背离时以 PB/利差口径交叉验证
+同窗口对比：见「PE分位(10Y)」列（对齐万得/中证官方常用口径）`,
+    }),
   },
   {
-    title: 'PB分位',
+    title: () => headerWithHelp('pe_percentile_10y', 'PE分位(10Y)'),
+    key: 'pe_percentile_10y',
+    width: 112,
+    align: 'center',
+    render: (row) => h(NTooltip, { trigger: 'hover' }, {
+      trigger: () => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
+        h(PercentileIndicator, { value: row.pe_percentile_10y ?? null, width: 52 }),
+        h(NTag, { color: pctColorStyle(row.pe_percentile_10y ?? null), size: 'small', bordered: false }, () => percentileLabel(row.pe_percentile_10y ?? null)),
+      ]),
+      default: () => row.insufficient_history
+        ? `历史样本仅 ${row.history_samples ?? 0} 个月（不足 24 个月），为保证统计意义未计算分位`
+        : `基于 PE(TTM) 月度序列 ${seriesScope10y(row, 'pe')}，近10年窗口升序百分位（高=贵）
+对齐万得/中证官方常用口径（近10年），可直接跨源对比
+聚合口径：剔亏（仅聚 PE>0 成分股）——与中证官方分位口径一致
+月度过采样 vs 外部日度，读数可能差 1~3pp；序列不足120个月时本列与全史列相同`,
+    }),
+  },
+  {
+    title: () => headerWithHelp('pb_percentile', 'PB分位'),
     key: 'pb_percentile',
-    width: 140,
+    width: 112,
     align: 'center',
-    render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
-      h(PercentileIndicator, { value: row.pb_percentile, width: 60 }),
-      h(NTag, { color: pctColorStyle(row.pb_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pb_percentile)),
-    ]),
+    render: (row) => h(NTooltip, { trigger: 'hover' }, {
+      trigger: () => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
+        h(PercentileIndicator, { value: row.pb_percentile, width: 52 }),
+        h(NTag, { color: pctColorStyle(row.pb_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pb_percentile)),
+      ]),
+      default: () => row.insufficient_history
+        ? `历史样本仅 ${row.history_samples ?? 0} 个月（不足 24 个月），为保证统计意义未计算分位`
+        : `基于 PB 月度序列 ${seriesScope(row, 'pb')}，全史升序百分位（高=贵）
+聚合口径：剔除净资产为负（PB≤0）成分股
+窗口口径：全史月度；外部源（万得/中证）多用10Y日度——全史含2007/2015泡沫顶，本分位通常比10Y口径低10~30pp
+PB 便宜 + ROE 中枢下移时，警惕价值陷阱——参考 ROE均值(5Y) 列交叉判断
+同窗口对比：见「PB分位(10Y)」列（对齐万得/中证官方常用口径）`,
+    }),
   },
   {
-    title: '拥挤度',
+    title: () => headerWithHelp('pb_percentile_10y', 'PB分位(10Y)'),
+    key: 'pb_percentile_10y',
+    width: 112,
+    align: 'center',
+    render: (row) => h(NTooltip, { trigger: 'hover' }, {
+      trigger: () => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
+        h(PercentileIndicator, { value: row.pb_percentile_10y ?? null, width: 52 }),
+        h(NTag, { color: pctColorStyle(row.pb_percentile_10y ?? null), size: 'small', bordered: false }, () => percentileLabel(row.pb_percentile_10y ?? null)),
+      ]),
+      default: () => row.insufficient_history
+        ? `历史样本仅 ${row.history_samples ?? 0} 个月（不足 24 个月），为保证统计意义未计算分位`
+        : `基于 PB 月度序列 ${seriesScope10y(row, 'pb')}，近10年窗口升序百分位（高=贵）
+对齐万得/中证官方常用口径（近10年），可直接跨源对比
+月度过采样 vs 外部日度，读数可能差 1~3pp；序列不足120个月时本列与全史列相同
+聚合口径不变：剔除净资产为负（PB≤0）成分股`,
+    }),
+  },
+  {
+    title: () => headerWithHelp('crowding', '拥挤度'),
     key: 'crowding',
-    width: 140,
+    width: 112,
     align: 'center',
     render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
-      h(PercentileIndicator, { value: row.crowding, width: 60 }),
+      h(PercentileIndicator, { value: row.crowding, width: 52 }),
       h(NTag, { color: pctColorStyle(row.crowding), size: 'small', bordered: false }, () => row.crowding != null ? row.crowding.toFixed(0) + '%' : '—'),
     ]),
   },
   {
-    title: 'ERP Z分数',
+    title: () => headerWithHelp('erp_zscore', 'ERP Z分数'),
     key: 'erp_zscore',
-    width: 150,
+    width: 112,
     align: 'center',
     render: (row) => {
       if (row.erp_zscore == null) {
@@ -218,80 +411,109 @@ const columns: DataTableColumns<BroadIndexValuation> = [
 
 const industryColumns: DataTableColumns<IndustryValuation> = [
   {
-    title: '行业',
+    title: () => headerWithHelp('name', '行业'),
     key: 'name',
     width: 130,
     fixed: 'left',
     render: (row) => row.name || row.code,
   },
   {
-    title: 'PE',
+    title: () => headerWithHelp('pe', 'PE'),
     key: 'pe',
     width: 80,
     align: 'right',
     render: (row) => row.pe != null ? row.pe.toFixed(1) : '—',
   },
   {
-    title: 'PB',
+    title: () => headerWithHelp('pb', 'PB'),
     key: 'pb',
     width: 80,
     align: 'right',
     render: (row) => row.pb != null ? row.pb.toFixed(2) : '—',
   },
   {
-    title: '股息率',
+    title: () => headerWithHelp('dividend_yield', '股息率'),
     key: 'dividend_yield',
     width: 90,
     align: 'right',
     render: (row) => row.dividend_yield != null ? row.dividend_yield.toFixed(2) + '%' : '—',
   },
   {
-    title: 'PE分位',
+    title: () => headerWithHelp('pe_percentile', 'PE分位'),
     key: 'pe_percentile',
     width: 130,
     align: 'center',
     render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
-      h(PercentileIndicator, { value: row.pe_percentile, width: 60 }),
+      h(PercentileIndicator, { value: row.pe_percentile, width: 52 }),
       h(NTag, { color: pctColorStyle(row.pe_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pe_percentile)),
     ]),
   },
   {
-    title: 'PB分位',
+    title: () => headerWithHelp('pb_percentile', 'PB分位'),
     key: 'pb_percentile',
     width: 130,
     align: 'center',
     render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
-      h(PercentileIndicator, { value: row.pb_percentile, width: 60 }),
+      h(PercentileIndicator, { value: row.pb_percentile, width: 52 }),
       h(NTag, { color: pctColorStyle(row.pb_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pb_percentile)),
     ]),
   },
   {
-    title: '拥挤度',
+    title: () => headerWithHelp('crowding', '拥挤度'),
     key: 'crowding',
     width: 130,
     align: 'center',
     render: (row) => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
-      h(PercentileIndicator, { value: row.crowding, width: 60 }),
+      h(PercentileIndicator, { value: row.crowding, width: 52 }),
       h(NTag, { color: pctColorStyle(row.crowding), size: 'small', bordered: false }, () => row.crowding != null ? row.crowding.toFixed(0) + '%' : '—'),
     ]),
   },
 ]
 
-import { h } from 'vue'
-
-// 行点击直接打开详情弹窗
+// 双击行 → 打开详情弹窗（需求 A：双击打开明细，单击留给表格自身交互）
 const rowProps = (row: BroadIndexValuation) => ({
   style: 'cursor: pointer',
-  onClick: () => openDetail(row),
+  onDblclick: () => openDetail(row),
 })
+
+// ==================== 表格横向滚动（需求 A 改版） ====================
+// 在表格内按住 Shift + 滚轮 → 横向滚动；双击行看明细；
+// 普通（非 Shift）滚轮保持原生竖向滚动。
+// 运行时定位横向滚动容器（不依赖 naive-ui 内部 class，跨版本稳健）
+function findHScroller(root: HTMLElement): HTMLElement | null {
+  const byClass = root.querySelector('.n-data-table-scroll-x') as HTMLElement | null
+  if (byClass && byClass.scrollWidth > byClass.clientWidth + 1) return byClass
+  const stack: HTMLElement[] = [root]
+  while (stack.length) {
+    const el = stack.pop()!
+    for (const child of Array.from(el.children) as HTMLElement[]) {
+      const cs = getComputedStyle(child)
+      if ((cs.overflowX === 'auto' || cs.overflowX === 'scroll') && child.scrollWidth > child.clientWidth + 1) {
+        return child
+      }
+      stack.push(child)
+    }
+  }
+  return null
+}
+
+function onIvTableWheel(e: WheelEvent) {
+  if (!e.shiftKey) return // 非 Shift：原生竖向滚动
+  const wrap = e.currentTarget as HTMLElement
+  const scroller = findHScroller(wrap)
+  if (!scroller || scroller.scrollWidth <= scroller.clientWidth + 1) return
+  e.preventDefault() // 阻止原生竖向滚动，改用横向
+  scroller.scrollBy({ left: e.deltaY })
+}
 
 // 导出宽基估值 CSV（原指数分析页功能）
 function exportCSV() {
-  const headers = ['指数', 'PB', 'PE(TTM)', 'ROE均值(%)', '股债利差(%)', '估值分位(%)', 'PE分位(%)', 'PB分位(%)', '拥挤度(%)', 'ERP Z分数', 'ERP Z分类']
+  const headers = ['指数', 'PB', 'PE(TTM)', 'ROE均值(%)', '股债利差(%)', '估值分位(%)', 'PE分位(%)', 'PE分位10Y(%)', 'PB分位(%)', 'PB分位10Y(%)', '拥挤度(%)', 'ERP Z分数', 'ERP Z分类']
   const rows = data.value.map(idx => [
     idx.name, idx.pb ?? '', idx.pe_ttm ?? '', idx.roe_mean ?? '',
     idx.spread ?? '', idx.valuation_percentile ?? '',
-    idx.pe_percentile ?? '', idx.pb_percentile ?? '', idx.crowding ?? '',
+    idx.pe_percentile ?? '', idx.pe_percentile_10y ?? '',
+    idx.pb_percentile ?? '', idx.pb_percentile_10y ?? '', idx.crowding ?? '',
     idx.erp_zscore ?? '', zscoreLabel(idx.erp_zscore_class),
   ])
   const csv = [headers, ...rows].map(r => r.join(',')).join('\n')
@@ -384,18 +606,150 @@ const bandStats = computed(() => {
   }
 })
 
+// ============================================================
+// 滚动布林通道（自指数分析页合并，2026-10-20）——借鉴公众号「股债利差布林择时」的可视化形态：
+// 月频序列按 N 个自然月滚动窗口算均值/标准差 → 中轨 / 上轨(+2σ) / 下轨(−2σ)。
+// 与静态分位线互补：分位线看"历史分布排位"，布林带看"离近期常态波动区间边界多远"。
+// 纯前端计算，不改动任何口径；窗口以自然月回找，不受降采样步长影响。
+// 口径与主时间窗口解耦：通道基于全量历史序列计算，主窗口只决定 x 轴显示范围。
+// ============================================================
+const BOLL_WINDOW_OPTIONS = [36, 60] as const // 布林滚动窗口（月）：36=3Y 口径 / 60=5Y 口径
+const bollWindow = ref(60) // 默认 5Y（更长窗口更平滑）
+const BOLL_MIN_SAMPLES = 25 // 窗口样本不足则断开（该点不出通道），宁缺勿假
+
+function shiftMonths(dateStr: string, months: number): string {
+  const d = new Date(dateStr)
+  d.setMonth(d.getMonth() + months)
+  return d.toISOString().slice(0, 10)
+}
+
+function bollingerAt(pts: SpreadHistoryPoint[], i: number): { mid: number; upper: number; lower: number } | null {
+  const cutoff = shiftMonths(pts[i].date, -bollWindow.value)
+  // 月频升序序列：线性回找窗口起点（序列 ≤ 数百点，无需二分）
+  let lo = 0
+  while (lo < i && pts[lo].date < cutoff) lo++
+  const win = pts.slice(lo, i + 1).map(p => p.spread)
+  if (win.length < BOLL_MIN_SAMPLES) return null
+  const mean = win.reduce((s, v) => s + v, 0) / win.length
+  const variance = win.reduce((s, v) => s + (v - mean) ** 2, 0) / win.length
+  const sd = Math.sqrt(variance)
+  return { mid: mean, upper: mean + 2 * sd, lower: mean - 2 * sd }
+}
+
+// 通道三线（与主折线共用同一 category 轴）：先在**全量**序列上逐点算通道，再按 date 映射回
+// 当前窗口的 sampled 点——主窗口截断不影响带的完整性（1Y/3Y 短窗口同样全图有带）
+const bollinger = computed(() => {
+  const full = spreadHist.value
+  const pts = windowedHist.value
+  if (!pts.length || full.length < BOLL_MIN_SAMPLES) return null
+  const stepFull = Math.max(1, Math.floor(full.length / 200))
+  const fullBands = new Map<string, { mid: number; upper: number; lower: number }>()
+  for (let i = 0; i < full.length; i++) {
+    if (i % stepFull !== 0 && i !== full.length - 1) continue
+    const b = bollingerAt(full, i)
+    if (b) fullBands.set(full[i].date, b)
+  }
+  const step = Math.max(1, Math.floor(pts.length / 200))
+  const bands: ({ mid: number; upper: number; lower: number } | null)[] = []
+  for (let i = 0; i < pts.length; i++) {
+    if (i % step !== 0 && i !== pts.length - 1) continue
+    bands.push(fullBands.get(pts[i].date) ?? null)
+  }
+  return bands.some(b => b !== null) ? bands : null
+})
+
+// 沪深300 ERP 历史大顶/大底事件竖线（时间标注；事件点位为历史统计参考，与当前口径数值不混标）
+const ERP_EVENTS: { date: string; label: string }[] = [
+  { date: '2007-10-01', label: '2007 顶' },
+  { date: '2013-06-01', label: '2013 底' },
+  { date: '2015-06-01', label: '2015 顶' },
+  { date: '2021-02-01', label: '2021 顶' },
+]
+
 // 股债利差估值带：历史序列 + 90/70/50/10 分位线（月频降采样 ≤200 点）
+// + 布林通道三轨 + 沪深300 ERP 历史事件竖线（自指数分析页合并）
 const spreadBandOption = computed(() => {
   const stats = bandStats.value
   const pts = windowedHist.value
   if (!stats || pts.length < 2) return {}
   const step = Math.max(1, Math.floor(pts.length / 200))
   const sampled = pts.filter((_, i) => i % step === 0 || i === pts.length - 1)
+  const bands = bollinger.value
+  const series: any[] = []
+  if (bands) {
+    // 通道带用 stack 双线法：上轨透明占位 + 下轨以 delta 绘制，填充区即 上轨~下轨 之间
+    series.push({
+      name: '上轨', type: 'line', showSymbol: false, silent: true, stack: 'boll', smooth: false,
+      data: bands.map(b => (b ? +b.upper.toFixed(3) : null)),
+      lineStyle: { opacity: 0 }, areaStyle: { opacity: 0 }, tooltip: { show: false },
+    })
+    series.push({
+      name: '下轨', type: 'line', showSymbol: false, silent: true, stack: 'boll', smooth: false,
+      data: bands.map(b => (b ? +(b.lower - b.upper).toFixed(3) : null)),
+      lineStyle: { width: 1, type: 'dashed', color: 'rgba(100,116,139,0.55)' },
+      areaStyle: { color: 'rgba(100,116,139,0.14)' },
+      tooltip: { show: false },
+    })
+    series.push({
+      name: '中轨', type: 'line', showSymbol: false, silent: true, smooth: false,
+      data: bands.map(b => (b ? +b.mid.toFixed(3) : null)),
+      lineStyle: { width: 1, color: 'rgba(0,94,161,0.35)' },
+      tooltip: { show: false },
+    })
+  }
+  series.push({
+    name: '股债利差',
+    type: 'line',
+    smooth: false,
+    showSymbol: false,
+    data: sampled.map(p => p.spread),
+    lineStyle: { width: 2, color: '#005ea1' },
+    itemStyle: { color: '#005ea1' },
+    areaStyle: {
+      opacity: 0.1,
+      color: {
+        type: 'linear',
+        x: 0, y: 0, x2: 0, y2: 1,
+        colorStops: [
+          { offset: 0, color: 'rgba(0, 94, 161, 0.35)' },
+          { offset: 1, color: 'rgba(0, 94, 161, 0)' },
+        ],
+      },
+    },
+    markLine: {
+      symbol: 'none',
+      silent: true,
+      lineStyle: { type: 'dashed', width: 1 },
+      data: [
+        { yAxis: stats.p90, lineStyle: { color: 'rgba(220,38,38,0.5)' }, label: { formatter: '90%', position: 'end', fontSize: 9, color: '#dc2626' } },
+        { yAxis: stats.p70, lineStyle: { color: 'rgba(249,115,22,0.5)' }, label: { formatter: '70%', position: 'end', fontSize: 9, color: '#f97316' } },
+        { yAxis: stats.p50, lineStyle: { color: 'rgba(107,114,128,0.5)' }, label: { formatter: '50%', position: 'end', fontSize: 9, color: '#6b7280' } },
+        { yAxis: stats.p10, lineStyle: { color: 'rgba(59,130,246,0.5)' }, label: { formatter: '10%', position: 'end', fontSize: 9, color: '#3b82f6' } },
+        // 沪深300 ERP 历史大顶/大底事件竖线（仅沪深300：事件统计基于该指数；落点取当月首个采样点）
+        ...(selectedItem.value?.name === '沪深300'
+          ? ERP_EVENTS.map(e => {
+              // 事件日期须落在当前窗口数据范围内：数据始于 2011-09（2007 顶无落点），
+              // 早于窗口起点的事件不画——否则 find 会错误塌到窗口首点，多条竖线重叠、标签堆叠
+              if (e.date < pts[0].date) return null
+              const hit = sampled.find(p => p.date >= e.date)
+              return hit
+                ? {
+                    xAxis: hit.date,
+                    lineStyle: { color: 'rgba(139,92,246,0.6)', width: 1 },
+                    label: { show: true, formatter: e.label, position: 'start', fontSize: 9, color: '#8b5cf6', distance: 2 },
+                  }
+                : null
+            }).filter(Boolean)
+          : []),
+      ],
+    },
+  })
   return {
     tooltip: {
       trigger: 'axis',
       formatter: (params: any) => {
-        const p = params[0]
+        // 通道三线 silent + tooltip.show=false，仅主利差线进入提示
+        const p = (params as any[]).find(x => x.seriesName === '股债利差') ?? params[0]
         return `${p.axisValue}<br/>股债利差: <b>${p.value}%</b>`
       },
     },
@@ -415,38 +769,7 @@ const spreadBandOption = computed(() => {
       axisLabel: { fontSize: 10, color: '#717782', formatter: '{value}%' },
       splitLine: { lineStyle: { type: 'dashed', color: 'rgba(0,0,0,0.06)' } },
     },
-    series: [
-      {
-        type: 'line',
-        smooth: false,
-        showSymbol: false,
-        data: sampled.map(p => p.spread),
-        lineStyle: { width: 2, color: '#005ea1' },
-        itemStyle: { color: '#005ea1' },
-        areaStyle: {
-          opacity: 0.1,
-          color: {
-            type: 'linear',
-            x: 0, y: 0, x2: 0, y2: 1,
-            colorStops: [
-              { offset: 0, color: 'rgba(0, 94, 161, 0.35)' },
-              { offset: 1, color: 'rgba(0, 94, 161, 0)' },
-            ],
-          },
-        },
-        markLine: {
-          symbol: 'none',
-          silent: true,
-          lineStyle: { type: 'dashed', width: 1 },
-          data: [
-            { yAxis: stats.p90, lineStyle: { color: 'rgba(220,38,38,0.5)' }, label: { formatter: '90%', position: 'end', fontSize: 9, color: '#dc2626' } },
-            { yAxis: stats.p70, lineStyle: { color: 'rgba(249,115,22,0.5)' }, label: { formatter: '70%', position: 'end', fontSize: 9, color: '#f97316' } },
-            { yAxis: stats.p50, lineStyle: { color: 'rgba(107,114,128,0.5)' }, label: { formatter: '50%', position: 'end', fontSize: 9, color: '#6b7280' } },
-            { yAxis: stats.p10, lineStyle: { color: 'rgba(59,130,246,0.5)' }, label: { formatter: '10%', position: 'end', fontSize: 9, color: '#3b82f6' } },
-          ],
-        },
-      },
-    ],
+    series,
   }
 })
 
@@ -549,12 +872,13 @@ const pbChartOption = computed(() => {
   if (!hist.length) return {}
   return {
     tooltip: { trigger: 'axis' },
-    grid: { left: 50, right: 30, top: 20, bottom: 40 },
+    legend: { data: ['PB(加权)', 'PB(等权)', 'PB(中位)'], top: 0, textStyle: { fontSize: 10, color: '#717782' } },
+    grid: { left: 50, right: 30, top: 30, bottom: 40 },
     xAxis: { type: 'category', data: hist.map(h => h.date), boundaryGap: false, axisLabel: { fontSize: 10, color: '#717782' } },
     yAxis: { type: 'value', name: 'PB', scale: true, axisLabel: { fontSize: 10, color: '#717782' } },
     dataZoom: [{ type: 'inside' }, { type: 'slider', height: 16, bottom: 5 }],
     series: [{
-      name: 'PB',
+      name: 'PB(加权)',
       type: 'line',
       data: hist.map(h => h.pb),
       smooth: true,
@@ -562,6 +886,22 @@ const pbChartOption = computed(() => {
       lineStyle: { width: 2, color: '#f59e0b' },
       itemStyle: { color: '#f59e0b' },
       areaStyle: { color: 'rgba(245,158,11,0.1)' },
+    }, {
+      name: 'PB(等权)',
+      type: 'line',
+      data: hist.map(h => h.pb_eq ?? null),
+      smooth: true,
+      showSymbol: false,
+      lineStyle: { width: 1.2, color: '#f59e0b', type: 'dashed', opacity: 0.85 },
+      itemStyle: { color: '#f59e0b' },
+    }, {
+      name: 'PB(中位)',
+      type: 'line',
+      data: hist.map(h => h.pb_med ?? null),
+      smooth: true,
+      showSymbol: false,
+      lineStyle: { width: 1.2, color: '#16a34a', type: 'dotted', opacity: 0.85 },
+      itemStyle: { color: '#16a34a' },
     }],
   }
 })
@@ -575,7 +915,13 @@ const peChartOption = computed(() => {
       formatter: (params: any) =>
         params.map((p: any) => `${p.marker}${p.seriesName}: <b>${p.value ?? '—'}</b>`).join('<br/>'),
     },
-    legend: { data: ['PE(TTM)', ...(peStaticDiffers.value ? ['PE(静态)'] : [])], top: 0, textStyle: { fontSize: 10, color: '#717782' } },
+    legend: {
+      data: [
+        'PE(TTM)', ...(peStaticDiffers.value ? ['PE(静态)'] : []),
+        'PE(TTM)等权', 'PE(TTM)中位', 'PE剔亏等权', 'PE剔亏中位',
+      ],
+      top: 0, textStyle: { fontSize: 10, color: '#717782' },
+    },
     grid: { left: 50, right: 30, top: 30, bottom: 40 },
     xAxis: { type: 'category', data: hist.map(h => h.date), boundaryGap: false, axisLabel: { fontSize: 10, color: '#717782' } },
     yAxis: { type: 'value', name: 'PE', scale: true, axisLabel: { fontSize: 10, color: '#717782' } },
@@ -599,6 +945,38 @@ const peChartOption = computed(() => {
         lineStyle: { width: 1.2, color: '#94a3b8', type: 'dashed' },
         itemStyle: { color: '#94a3b8' },
       }] : []),
+      {
+        name: 'PE(TTM)等权',
+        type: 'line',
+        data: hist.map(h => h.pe_ttm_eq ?? null),
+        smooth: true, showSymbol: false,
+        lineStyle: { width: 1.2, color: '#0ea5e9', type: 'dashed' },
+        itemStyle: { color: '#0ea5e9' },
+      },
+      {
+        name: 'PE(TTM)中位',
+        type: 'line',
+        data: hist.map(h => h.pe_ttm_med ?? null),
+        smooth: true, showSymbol: false,
+        lineStyle: { width: 1.2, color: '#8b5cf6', type: 'dotted' },
+        itemStyle: { color: '#8b5cf6' },
+      },
+      {
+        name: 'PE剔亏等权',
+        type: 'line',
+        data: hist.map(h => h.pe_ttm_ex_eq ?? null),
+        smooth: true, showSymbol: false,
+        lineStyle: { width: 1.2, color: '#f97316', type: 'dashed' },
+        itemStyle: { color: '#f97316' },
+      },
+      {
+        name: 'PE剔亏中位',
+        type: 'line',
+        data: hist.map(h => h.pe_ttm_ex_med ?? null),
+        smooth: true, showSymbol: false,
+        lineStyle: { width: 1.2, color: '#ef4444', type: 'dotted' },
+        itemStyle: { color: '#ef4444' },
+      },
     ],
   }
 })
@@ -653,6 +1031,7 @@ const macroParams = computed(() => {
     <!-- 页面顶部说明：估值方法说明（公众号方法论）+ 缩写词典，均为可折叠、默认隐藏 -->
     <div class="top-guides">
       <MethodologyGuide />
+      <PercentileGlossary />
       <GlossaryPanel page-key="indexValuation" />
     </div>
 
@@ -730,20 +1109,40 @@ const macroParams = computed(() => {
         </n-alert>
 
         <!-- 数据表格 -->
-        <n-spin :show="loading">
-          <n-data-table
-            v-if="data.length"
-            :columns="columns"
-            :data="data"
-            :bordered="false"
-            :single-line="false"
-            size="small"
-            :max-height="560"
-            :scroll-x="1200"
-            :row-props="rowProps"
-          />
-          <n-empty v-else-if="!loading" description="暂无数据，请确保后端服务正常运行" style="padding: 60px 0" />
-        </n-spin>
+        <div class="iv-table-hint">
+          表格较宽：在表格内<b>按住 Shift + 滚轮</b>可左右滚动，<b>双击某一行</b>查看该指数详情；普通滚轮滚动不受影响。
+        </div>
+        <div class="iv-table-scroll" @wheel="onIvTableWheel">
+          <n-spin :show="loading">
+            <n-data-table
+              v-if="data.length"
+              :columns="columns"
+              :data="data"
+              :bordered="false"
+              :single-line="false"
+              size="small"
+              :max-height="560"
+              :scroll-x="1768"
+              :row-props="rowProps"
+            />
+            <n-empty v-else-if="!loading" description="暂无数据，请确保后端服务正常运行" style="padding: 60px 0" />
+          </n-spin>
+        </div>
+        <!-- 分位口径脚注：全史月度 vs 近10Y窗口 + 纳亏/剔亏双口径说明（2026-10-24 锚点校准后更新） -->
+        <n-text v-if="data.length" depth="3" style="font-size: 12px; line-height: 1.7; display: block; margin-top: 4px;">
+          分位口径：<b>PE分位 / PB分位</b> = 当前值在该指数<b>全历史月度序列</b>中的升序百分位（各指数序列起点见列头 tooltip）；
+          <b>2026-10-28 起历史已补齐至 2005 年</b>：上证50/沪深300/上证180/上证380/上证红利/沪深系与中证500/800/1000/2000/100、深证100/深证红利、创业板50 共 12 个指数，
+          2005–2009（或各自更早缺口）用乐咕乐股（legulegu）月度序列补齐——全史分位因此明显下移（沪深300 PE分位 64%→51%），与外部权威口径（legulegu/参考图 44%）收敛到 2~7pp；
+          科创50/中证2000/中证A500/创业板指等发布较晚，自其数据起点起统计。
+          补齐段仅含 PB（加权/等权/中位）与剔亏 PE（加权/中位）——legulegu 无纳亏 PE 口径，纳亏列仍自 2010 年起，等权 PE 因极值口径差异不补。
+          <b>PE分位(10Y) / PB分位(10Y)</b> = 同一序列<b>近 120 个月（约10年）窗口</b>内的升序百分位，对齐万得/中证官方常用口径，可直接跨源对比。
+          <b>PE 双口径（2026-10-24 锚点校准后确立）</b>：绝对值列「PE(TTM)」为<b>纳亏</b>口径（亏损股负利润纳入分母，与万得展示一致）；
+          <b>PE 分位列为剔亏口径</b>（仅聚 PE&gt;0 成分股）——经锚点校准（官方截图 vs legulegu 剔亏全史 43.4% 精确命中）确认中证官方分位在剔亏侧。
+          亏损面越大两口径差越大：沪深300 亏损面 2.2%（两口径几乎相同）→ 中证1000 13.9%（纳亏 PE 高约 44%）→ 中证2000 24.5%（纳亏 PE 高约 195%、分位虚高 20~35pp）。
+          PB 剔除净资产为负成分股。
+          两组读数差异来自窗口长度——全史含 2007/2015 泡沫顶，<b>全史 PB 分位通常比 10Y 口径低 10~30pp</b>；
+          历史不足 120 个月的指数，(10Y) 列退化为全史口径，两列读数相同。跨源对比请以 PE/PB 绝对值为准、分位作相对参考。
+        </n-text>
       </n-tab-pane>
 
       <n-tab-pane name="industry" tab="行业估值">
@@ -767,19 +1166,24 @@ const macroParams = computed(() => {
         >
           {{ industryMeta.message || '行业估值快照（本地 base_sw_sector_daily）尚未累积到数据，请确认网关可访问或稍后重试。' }}
         </n-alert>
-        <n-spin :show="industryLoading">
-          <n-data-table
-            v-if="industryData.length"
-            :columns="industryColumns"
-            :data="industryData"
-            :bordered="false"
-            :single-line="false"
-            size="small"
-            :max-height="560"
-            :scroll-x="780"
-          />
-          <n-empty v-else-if="!industryLoading" description="暂无行业估值数据" style="padding: 60px 0" />
-        </n-spin>
+        <div class="iv-table-hint">
+          表格较宽：在表格内<b>按住 Shift + 滚轮</b>可左右滚动，<b>双击某一行</b>查看该指数详情；普通滚轮滚动不受影响。
+        </div>
+        <div class="iv-table-scroll" @wheel="onIvTableWheel">
+          <n-spin :show="industryLoading">
+            <n-data-table
+              v-if="industryData.length"
+              :columns="industryColumns"
+              :data="industryData"
+              :bordered="false"
+              :single-line="false"
+              size="small"
+              :max-height="560"
+              :scroll-x="780"
+            />
+            <n-empty v-else-if="!industryLoading" description="暂无行业估值数据" style="padding: 60px 0" />
+          </n-spin>
+        </div>
       </n-tab-pane>
     </n-tabs>
 
@@ -853,6 +1257,11 @@ const macroParams = computed(() => {
               <div class="legend-item"><span class="legend-line dashed-orange" />70% 分位</div>
               <div class="legend-item"><span class="legend-line dashed-gray" />50% 分位</div>
               <div class="legend-item"><span class="legend-line dashed-blue" />10% 分位</div>
+              <div v-if="bollinger" class="legend-item"><span class="legend-line band" />布林通道({{ bollWindow === 60 ? '5Y' : '3Y' }}±2σ)</div>
+              <div v-if="bollinger" class="boll-toggle">
+                <span class="boll-toggle-label">布林窗口</span>
+                <button v-for="w in BOLL_WINDOW_OPTIONS" :key="w" type="button" class="boll-btn" :class="{ active: bollWindow === w }" @click="bollWindow = w">{{ w === 60 ? '5Y' : '3Y' }}</button>
+              </div>
             </div>
             <BaseChart :option="spreadBandOption" :height="260" />
             <div class="analysis-summary">
@@ -934,7 +1343,12 @@ const macroParams = computed(() => {
             股债利差 = ROE均值(近5年) ÷ PB − 10年期国债收益率 + 0.3 × CPI同比<br>
             估值分位 = 100 − 利差在历史中的升序百分位（越小=越便宜）<br>
             拥挤度 = (指数PB ÷ 中证全指PB) 在历史中的百分位（越小=相对越便宜）<br>
-            ERP Z分数 = (当前利差 − 近10年中位数) ÷ (MAD × 1.4826)，&gt;1.5 低估 / &lt;−1.5 高估（MAD 稳健，抗极端值）
+            ERP Z分数 = (当前利差 − 近10年中位数) ÷ (MAD × 1.4826)，&gt;1.5 低估 / &lt;−1.5 高估（MAD 稳健，抗极端值）<br>
+            <span style="color: #f59e0b;">
+              口径提示：①各指数历史序列起点不一（表格内悬停查看起止与样本数），「全史分位」横向不可直接比较；<br>
+              ②10Y 国债收益率处历史低位时，会机械抬高利差、压低估值分位——读数偏低部分来自债券端而非股票变便宜；<br>
+              ③盈利下行期 PE 分位会被动抬高，PB 便宜 + ROE 中枢下移时警惕价值陷阱。
+            </span>
           </n-text>
         </div>
       </div>
@@ -1186,6 +1600,35 @@ const macroParams = computed(() => {
 .legend-line.dashed-orange { border-top: 1px dashed rgba(249,115,22,0.6); height: 0; }
 .legend-line.dashed-gray { border-top: 1px dashed rgba(107,114,128,0.6); height: 0; }
 .legend-line.dashed-blue { border-top: 1px dashed rgba(59,130,246,0.6); height: 0; }
+.legend-line.band {
+  height: 7px;
+  background: rgba(100,116,139,0.14);
+  border-top: 1px dashed rgba(100,116,139,0.55);
+  border-bottom: 1px dashed rgba(100,116,139,0.55);
+}
+.boll-toggle {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.boll-toggle-label { font-size: 10px; color: #717782; }
+.boll-btn {
+  font-size: 10px;
+  line-height: 1.6;
+  padding: 0 8px;
+  border: 1px solid #d3d7e0;
+  border-radius: 4px;
+  background: transparent;
+  color: #717782;
+  cursor: pointer;
+}
+.boll-btn:hover { border-color: #005ea1; color: #005ea1; }
+.boll-btn.active {
+  background: #005ea1;
+  border-color: #005ea1;
+  color: #fff;
+}
 
 /* 估值评估摘要 */
 .analysis-summary {
@@ -1258,5 +1701,49 @@ const macroParams = computed(() => {
 .zscore-note b {
   font-family: 'JetBrains Mono', monospace;
   color: var(--text-primary);
+}
+
+/* 压缩单元格内边距，配合收窄列宽让整表尽量不滚动 */
+.index-valuation-page :deep(.n-data-table-td),
+.index-valuation-page :deep(.n-data-table-th) {
+  padding: 4px 6px;
+}
+
+/* 表头标题禁止换行：即便因此出现横向滚动条也不折行（PE(TTM) 等标题明确要求单行） */
+.index-valuation-page :deep(.n-data-table-th) {
+  white-space: nowrap;
+}
+
+/* 需求 A：表格横向滚动交互 —— 提示文字 + 左右边缘可滚动视觉提示（不拦截点击） */
+.iv-table-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin-bottom: 8px;
+}
+.iv-table-hint b {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.iv-table-scroll {
+  position: relative;
+}
+.iv-table-scroll::before,
+.iv-table-scroll::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  pointer-events: none;
+  z-index: 2;
+}
+.iv-table-scroll::before {
+  left: 0;
+  background: linear-gradient(to right, rgba(128, 128, 128, 0.16), transparent);
+}
+.iv-table-scroll::after {
+  right: 0;
+  background: linear-gradient(to left, rgba(128, 128, 128, 0.16), transparent);
 }
 </style>

@@ -142,6 +142,55 @@ def get_knowledge_doc(doc_id: str, user_id: str = Depends(get_current_user)):
     return ApiResponse(data=doc)
 
 
+@router.post("/knowledge/import", response_model=ApiResponse[dict])
+def import_knowledge_doc(
+    body: dict = Body(...),
+    user_id: str = Depends(get_current_user),
+):
+    """导入知识文档（粘贴/上传 md/txt），落 SQLite，AI 解读按启用态挂载。"""
+    title = str(body.get("title") or "").strip()
+    content = str(body.get("content") or "").strip()
+    tags = body.get("tags") or []
+    if not title:
+        return ApiResponse(code=400, message="标题不能为空")
+    if not content:
+        return ApiResponse(code=400, message="内容不能为空")
+    if len(title) > 100:
+        return ApiResponse(code=400, message="标题过长（≤100 字）")
+    if len(content) > 100_000:
+        return ApiResponse(code=400, message="内容过大（≤10 万字符）")
+    if not isinstance(tags, list):
+        tags = []
+    try:
+        fk_user = int(user_id)
+    except (TypeError, ValueError):
+        fk_user = None
+    doc = knowledge_service.create_doc(title=title, content=content, tags=tags, fk_user=fk_user)
+    return ApiResponse(data=doc)
+
+
+@router.delete("/knowledge/{doc_id}", response_model=ApiResponse[dict])
+def delete_knowledge_doc(doc_id: str, user_id: str = Depends(get_current_user)):
+    """删除导入的文档（内置文档不可删）。"""
+    if not knowledge_service.delete_doc(doc_id):
+        return ApiResponse(code=404, message="文档不存在或不可删除")
+    return ApiResponse(data={"id": doc_id, "deleted": True})
+
+
+@router.post("/knowledge/{doc_id}/toggle", response_model=ApiResponse[dict])
+def toggle_knowledge_doc(
+    doc_id: str,
+    body: dict = Body(...),
+    user_id: str = Depends(get_current_user),
+):
+    """启停导入文档：停用后不再参与 AI 解读/问答挂载（仍保留在知识库页）。"""
+    enabled = bool(body.get("enabled", True))
+    doc = knowledge_service.set_doc_enabled(doc_id, enabled)
+    if not doc:
+        return ApiResponse(code=404, message="文档不存在或非导入文档")
+    return ApiResponse(data=doc)
+
+
 # ============================================================
 # AI 解读 / 问答（SSE 流式）
 # ============================================================

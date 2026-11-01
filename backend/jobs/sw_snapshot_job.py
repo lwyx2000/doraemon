@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from datetime import date, datetime
@@ -42,6 +43,7 @@ _backfill_running = False
 #    这里保留原函数名做薄封装，全文其余调用点无需改动（行为完全一致）。
 from services.trading_calendar import is_trading_day as _is_trading_day  # noqa: E402
 from services.trading_calendar import load_trading_days as _load_trading_days  # noqa: E402
+from services import trading_calendar as _trading_calendar  # noqa: E402  （_trading_days 缓存探针）
 
 
 def _job_daily_snapshot() -> None:
@@ -124,6 +126,14 @@ def start_sw_snapshot_scheduler() -> None:
         print("[SW Job] MOCK 模式，不启动快照定时任务")
         return
 
+    # ⚠️ 2026-10-19 P0 止血：base_sw_sector_daily 表再次损坏，15:30 快照 job 触发
+    # duckdb native 段错误（backend 崩溃循环、看板 502；10-15 修复过一次，10-19 复发）。
+    # 表修复后置 SW_SNAPSHOT_JOB=1 恢复定时任务（落库开关见 market_service
+    # _save_sw_sector_snapshot 的 SW_SNAPSHOT_WRITE）。
+    if os.getenv("SW_SNAPSHOT_JOB", "0") != "1":
+        print("[SW Job] SW_SNAPSHOT_JOB!=1，快照定时任务不启动（P0 segfault 止血，2026-10-19）")
+        return
+
     try:
         from apscheduler.schedulers.background import BackgroundScheduler
         from apscheduler.triggers.cron import CronTrigger
@@ -195,5 +205,5 @@ def scheduler_status() -> dict:
         "running": _scheduler is not None and _scheduler.running,
         "snapshotTime": f"{SNAPSHOT_HOUR:02d}:{SNAPSHOT_MINUTE:02d}",
         "backfillRunning": _backfill_running,
-        "tradingCalendarLoaded": _trading_days is not None,
+        "tradingCalendarLoaded": _trading_calendar._trading_days is not None,
     }

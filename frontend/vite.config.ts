@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { execSync } from 'node:child_process'
+import { fileURLToPath, URL } from 'node:url'
 
 /**
  * 构建时注入版本信息（2026-10-09）。
@@ -42,4 +43,10 @@ function buildInfo() {
 export default defineConfig({
   plugins: [vue()],
   define: buildInfo(),
+  // 允许 dev server 读取项目根上一级的 docs/（ExternalApiDocs 页 ?raw 导入文档用）
+  server: {
+    fs: {
+      allow: [fileURLToPath(new URL('..', import.meta.url))],
+    },
+  },
 })

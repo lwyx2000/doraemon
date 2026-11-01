@@ -122,6 +122,34 @@ def _ensure_tables() -> None:
         )
         """
     )
+    # 持仓覆盖历史：import_holdings 覆盖更新某持仓前，先把旧行快照写入此表，
+    # 满足「旧的数据存到数据表中，记录下」需求（外部程序增量上传可回溯每次覆盖前的持仓）。
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS biz_holdings_history (
+            id           VARCHAR PRIMARY KEY,
+            fk_user BIGINT NOT NULL,
+            hold_id      VARCHAR NOT NULL,    -- 被覆盖的 biz_holdings.id
+            code         VARCHAR(20) NOT NULL,
+            name         VARCHAR(100) NOT NULL,
+            type         VARCHAR(20) NOT NULL,
+            broker       VARCHAR(50) DEFAULT '',
+            account      VARCHAR(50) DEFAULT '',
+            quantity     DOUBLE NOT NULL,
+            cost_price   DOUBLE NOT NULL,
+            manual_price DOUBLE,
+            stop_loss_pct DOUBLE,
+            take_profit_pct DOUBLE,
+            open_date    VARCHAR(10),
+            currency     VARCHAR(8) DEFAULT 'CNY',
+            created_at   VARCHAR,
+            updated_at   VARCHAR,
+            fair_value   DOUBLE,
+            source       VARCHAR(50) DEFAULT '',  -- 触发覆盖的来源（web / api / 源程序名）
+            archived_at  VARCHAR                   -- 覆盖发生时间（UTC ISO）
+        )
+        """
+    )
     _TABLES_READY = True
 
 
@@ -196,8 +224,37 @@ def _save_holding(user_id: str, item: dict) -> None:
     )
 
 
-def import_holdings(user_id: str, items: list[dict]) -> dict:
-    """批量导入：按 code+type+account 去重，已存在则覆盖更新。"""
+def _archive_holding(user_id: str, old: dict, source: str) -> None:
+    """覆盖更新前把旧持仓行快照写入 biz_holdings_history（仅真实库生效）。"""
+    if USE_MOCK_DATA:
+        return
+    _ensure_tables()
+    db = get_biz_db()
+    db.execute(
+        "INSERT INTO biz_holdings_history "
+        "(id, fk_user, hold_id, code, name, type, broker, account, quantity, cost_price, "
+        "manual_price, stop_loss_pct, take_profit_pct, open_date, currency, created_at, "
+        "updated_at, fair_value, source, archived_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            str(uuid.uuid4()), user_id, old.get("id"),
+            old.get("code"), old.get("name"), old.get("type"),
+            old.get("broker") or "", old.get("account") or "",
+            old.get("quantity"), old.get("cost_price"),
+            old.get("manual_price"), old.get("stop_loss_pct"), old.get("take_profit_pct"),
+            old.get("open_date"), old.get("currency") or "CNY",
+            old.get("created_at"), old.get("updated_at"), old.get("fair_value"),
+            source or "", _now_iso(),
+        ],
+    )
+
+
+def import_holdings(user_id: str, items: list[dict], source: str | None = None) -> dict:
+    """批量导入：按 code+type+account 去重，已存在则覆盖更新。
+
+    source 非空时，覆盖更新前会把被覆盖持仓的旧行快照写入 biz_holdings_history
+    （满足「旧的数据存到数据表中，记录下」的留痕需求）。
+    """
     existing = {f"{h['code']}|{h['type']}|{h.get('broker') or ''}|{h.get('account') or ''}": h for h in _load_holdings(user_id)}
     added = updated = 0
     failed: list[dict] = []
@@ -228,6 +285,9 @@ def import_holdings(user_id: str, items: list[dict]) -> dict:
         now = _now_iso()
         if key in existing:
             item = existing[key]
+            # 覆盖前先把旧行快照写入历史表（仅真实库、且 source 明确时留痕）
+            if source:
+                _archive_holding(user_id, item, source)
             item.update({
                 "name": name,
                 "broker": str(raw.get("broker") or item.get("broker") or ""),
@@ -317,6 +377,41 @@ def delete_holding(user_id: str, holding_id: str) -> bool:
         [_now_iso(), realized_pnl, close_price, holding_id],
     )
     return True
+
+
+def get_holdings_archive(user_id: str, hold_id: str | None = None) -> list[dict]:
+    """覆盖更新前的持仓旧行快照（biz_holdings_history）：按归档时间倒序。
+
+    hold_id 非空时仅返回该持仓的历史覆盖记录。
+    """
+    if USE_MOCK_DATA:
+        return []
+    _ensure_tables()
+    db = get_biz_db()
+    if hold_id:
+        rows = db.fetchall(
+            "SELECT id, hold_id, code, name, type, broker, account, quantity, cost_price, "
+            "open_date, currency, updated_at, source, archived_at "
+            "FROM biz_holdings_history WHERE fk_user = ? AND hold_id = ? ORDER BY archived_at DESC",
+            [user_id, hold_id],
+        )
+    else:
+        rows = db.fetchall(
+            "SELECT id, hold_id, code, name, type, broker, account, quantity, cost_price, "
+            "open_date, currency, updated_at, source, archived_at "
+            "FROM biz_holdings_history WHERE fk_user = ? ORDER BY archived_at DESC",
+            [user_id],
+        )
+    return [
+        {
+            "id": r[0], "hold_id": r[1], "code": r[2], "name": r[3], "type": r[4],
+            "broker": r[5] or "", "account": r[6] or "",
+            "quantity": float(r[7]), "cost_price": float(r[8]),
+            "open_date": r[9], "currency": r[10] or "CNY",
+            "updated_at": r[11], "source": r[12] or "", "archived_at": r[13],
+        }
+        for r in rows
+    ]
 
 
 def get_holding_history(user_id: str) -> list[dict]:

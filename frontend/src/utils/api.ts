@@ -40,6 +40,16 @@ function handleSessionExpired(path: string): void {
 }
 
 /**
+ * 重置「会话过期一次性开关」。
+ * 必须在建立新会话时调用（见 useAuth.setAuth）：该开关只置位、永不复位，
+ * 而 Login.vue 登录成功后走 router.push 软导航，JS 模块上下文跨登录保持，
+ * 若不重置，重新登录后的第二次会话过期不会再跳登录页，页面只会裸显错误条。
+ */
+export function resetSessionExpiredFlag(): void {
+  _sessionExpiredHandled = false
+}
+
+/**
  * 发送请求并返回 { data, meta }。
  * meta 为后端 ApiResponse 中的附加信息（如数据来源标记 isMock/dataSource）。
  */
@@ -436,6 +446,37 @@ export const api = {
     })
   },
 
+  // 持仓上传（无鉴权外部接口：增量合并，按 code+type+account 去重）
+  importHoldingsApi: (body: {
+    username: string
+    source?: string
+    account: string
+    broker_name?: string
+    remark?: string
+    terminal?: string
+    items: Array<Record<string, unknown>>
+  }) =>
+    request<HoldingImportResult>('/api/v1/holdings/import/api', undefined, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  // 成交记录导入（无鉴权外部接口：按 (user, trade_date) 覆盖上传）
+  importTrades: (body: {
+    username: string
+    source?: string
+    account: string
+    broker_name?: string
+    remark?: string
+    terminal?: string
+    trade_date: string
+    items: Array<Record<string, unknown>>
+  }) =>
+    request<TradeImportResult>('/api/v1/trades/import', undefined, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
   updateHolding: (id: string, body: Partial<Pick<Holding,
     'quantity' | 'cost_price' | 'manual_price' | 'broker' | 'account' | 'name' | 'open_date' | 'currency'
     | 'stop_loss_pct' | 'take_profit_pct' | 'fair_value'
@@ -575,6 +616,23 @@ export const api = {
 
   getKnowledgeDoc: (id: string) => request<KnowledgeDoc>(`/api/v1/ai/knowledge/${id}`),
 
+  importKnowledgeDoc: (data: { title: string; content: string; tags?: string[] }) =>
+    request<KnowledgeDocMeta>('/api/v1/ai/knowledge/import', undefined, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  deleteKnowledgeDoc: (id: string) =>
+    request<{ id: string; deleted: boolean }>(`/api/v1/ai/knowledge/${id}`, undefined, {
+      method: 'DELETE',
+    }),
+
+  toggleKnowledgeDoc: (id: string, enabled: boolean) =>
+    request<KnowledgeDocMeta>(`/api/v1/ai/knowledge/${id}/toggle`, undefined, {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    }),
+
   // ============================================================
   // AI 解读 / 问答（SSE 流式）
   // ============================================================
@@ -591,27 +649,56 @@ export const api = {
     streamAi('/api/v1/ai/chat', { message, context_type: contextType, history }, handlers, signal),
 
   // ============================================================
-  // 券商账号（个人中心维护，持仓页筛选/导入选用）
+  // 终端 / 券商（终端管理：一个终端可含多个券商，持仓页/个人中心维护）
   // ============================================================
-  getBrokerAccounts: () =>
-    request<BrokerAccount[]>('/api/v1/broker-accounts'),
+  getTerminals: () =>
+    request<Terminal[]>('/api/v1/terminals'),
 
-  createBrokerAccount: (broker: string, account: string) =>
-    request<BrokerAccount>('/api/v1/broker-accounts', undefined, {
+  createTerminal: (name: string, remark = '') =>
+    request<Terminal>('/api/v1/terminals', undefined, {
       method: 'POST',
-      body: JSON.stringify({ broker, account }),
+      body: JSON.stringify({ name, remark }),
     }),
 
-  updateBrokerAccount: (id: string, broker: string, account: string) =>
-    request<BrokerAccount>(`/api/v1/broker-accounts/${id}`, undefined, {
+  updateTerminal: (id: string, name: string, remark = '') =>
+    request<Terminal>(`/api/v1/terminals/${id}`, undefined, {
       method: 'PUT',
-      body: JSON.stringify({ broker, account }),
+      body: JSON.stringify({ name, remark }),
     }),
 
-  deleteBrokerAccount: (id: string) =>
-    request<{ deleted: boolean }>(`/api/v1/broker-accounts/${id}`, undefined, {
+  deleteTerminal: (id: string) =>
+    request<{ deleted: boolean }>(`/api/v1/terminals/${id}`, undefined, {
       method: 'DELETE',
     }),
+
+  // 券商：terminalId 缺省时拉取全部券商（导入下拉用）
+  getBrokers: (terminalId?: string) =>
+    request<Broker[]>(`/api/v1/terminals${terminalId ? `/${terminalId}/brokers` : '/brokers'}`),
+
+  createBroker: (terminalId: string, name: string, account: string, remark = '') =>
+    request<Broker>(`/api/v1/terminals/${terminalId}/brokers`, undefined, {
+      method: 'POST',
+      body: JSON.stringify({ name, account, remark }),
+    }),
+
+  updateBroker: (
+    terminalId: string,
+    brokerId: string,
+    body: Partial<Pick<Broker, 'name' | 'account' | 'remark' | 'fk_terminal'>>,
+  ) =>
+    request<Broker>(`/api/v1/terminals/${terminalId}/brokers/${brokerId}`, undefined, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+
+  deleteBroker: (terminalId: string, brokerId: string) =>
+    request<{ deleted: boolean }>(`/api/v1/terminals/${terminalId}/brokers/${brokerId}`, undefined, {
+      method: 'DELETE',
+    }),
+
+  // 上传留痕日志（持仓页「上传记录」tab）
+  getImportLogs: (limit = 100) =>
+    request<ImportLog[]>('/api/v1/import-logs', { limit }),
 
   // ============================================================
   // 账户名（个人中心维护，持仓页编辑时选用）
@@ -937,11 +1024,13 @@ import type {
   AiChannelsView,
   KnowledgeIndex,
   KnowledgeDoc,
+  KnowledgeDocMeta,
   AiStreamMeta,
   AiStreamError,
   Holding,
   HoldingsView,
   HoldingImportResult,
+  TradeImportResult,
   HoldingSnapshot,
   HoldingHistory,
   DataSourceStatus,
@@ -961,7 +1050,8 @@ import type {
   IndustryValuation,
   SpreadHistoryPoint,
   ProjectInfo,
-  BrokerAccount,
+  Terminal,
+  Broker,
   AccountName,
   StrategyDef,
   SignalResult,
@@ -986,4 +1076,5 @@ import type {
   LqrWideBase,
   LqrHuazheng,
   LqrStatus,
+  ImportLog,
 } from '../types'

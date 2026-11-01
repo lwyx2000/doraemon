@@ -114,3 +114,26 @@ def get_optional_user(token: Optional[str] = Depends(oauth2_scheme)) -> Optional
         return payload.get("sub")
     except JWTError:
         return None
+
+
+def resolve_external_user_id(user_id: Optional[int], username: Optional[str]) -> str:
+    """无鉴权外部接口：从 user_id 或 username 解析 fk_user（BIGINT，字符串返回）。
+
+    机器 / 外部程序调用无 JWT，必须以二者之一指明归属用户：
+    - user_id 非空：按 pk_user 校验存在；
+    - username 非空：解析为 pk_user；
+    - 两者皆空：400。
+    不存在的 user_id / username 同样 400。
+    """
+    db = get_biz_db()
+    if user_id is not None:
+        row = db.fetchone("SELECT pk_user FROM biz_users WHERE pk_user = ?", [int(user_id)])
+        if not row:
+            raise HTTPException(status_code=400, detail=f"user_id {user_id} 不存在")
+        return str(row[0])
+    if username:
+        row = db.fetchone("SELECT pk_user FROM biz_users WHERE username = ?", [username])
+        if not row:
+            raise HTTPException(status_code=400, detail=f"username {username} 不存在")
+        return str(row[0])
+    raise HTTPException(status_code=400, detail="必须提供 user_id 或 username 指明归属用户")
