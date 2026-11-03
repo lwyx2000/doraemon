@@ -43,6 +43,15 @@ def load_trading_days() -> set[date] | None:
     return _trading_days
 
 
+def is_loaded() -> bool:
+    """日历是否已在进程内（**不触发网络**）。
+
+    给"请求路径上想用日历、但不能为此付一次 30s 超时"的调用方用：
+    未加载时先跳过一次，等后台预热完自然生效 —— 而不是让列表接口陪着等。
+    """
+    return _trading_days is not None
+
+
 def is_trading_day(day: date | None = None) -> bool:
     """是否为 A 股交易日。节假日以日历为准，取不到时回退到周一~周五。"""
     day = day or date.today()

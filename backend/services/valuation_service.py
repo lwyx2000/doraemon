@@ -889,6 +889,28 @@ def get_industry_valuation(window_days: int = 250) -> tuple[list[dict], dict]:
             continue
         bench_daily[str(r["date"])] = pb_v
         bench_month[str(r["date"])[:7]] = pb_v  # 'YYYY-MM'
+
+    # 全A PB 是「月度」序列（月末日期），当月往往还未生成。若严格按当月键取值，
+    # 当日行业快照（如 2026-11-03）永远匹配不到基准 PB → cur_bench=None →
+    # current_ratio=None → 拥挤度整列为空。故对缺失月份做「前向填充」：
+    # 沿用最近一个已公布月份的 PB 作分母（2026-11-03 修复）。
+    bench_months_sorted = sorted(bench_month.keys())
+
+    def _bench_pb_for(date_str: str) -> float | None:
+        d = str(date_str)
+        v = bench_daily.get(d)
+        if v:
+            return v
+        m = d[:7]
+        v = bench_month.get(m)
+        if v:
+            return v
+        import bisect
+        i = bisect.bisect_right(bench_months_sorted, m) - 1
+        if i >= 0:
+            return bench_month[bench_months_sorted[i]]
+        return None
+
     if not bench_month:
         m = _build_meta(False, "全A基准PB获取失败(远程网关)")
         m["status"] = "unavailable"
@@ -943,10 +965,10 @@ def get_industry_valuation(window_days: int = 250) -> tuple[list[dict], dict]:
             spb = r.get("pb")
             if not spb:
                 continue
-            bpb = bench_daily.get(str(r["date"])) or bench_month.get(str(r["date"])[:7])
+            bpb = _bench_pb_for(r["date"])
             if bpb and bpb > 0:
                 ratio_hist.append(spb / bpb)
-        cur_bench = bench_daily.get(str(cur["date"])) or bench_month.get(str(cur["date"])[:7])
+        cur_bench = _bench_pb_for(cur["date"])
         current_ratio = pb / cur_bench if (pb and cur_bench and cur_bench > 0) else None
 
         pe_pct = _percentile(pe, pe_hist) if (pe is not None and pe_hist) else None

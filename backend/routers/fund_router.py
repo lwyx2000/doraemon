@@ -4,6 +4,7 @@ from fastapi import APIRouter, Query
 
 from models import ApiResponse, ClosedFundAnalysis, FundItem
 from services.fund_service import get_closed_fund_analysis, get_funds
+from services.fund_rotation_service import get_rotation_groups
 
 router = APIRouter(tags=["funds"])
 
@@ -32,3 +33,15 @@ def closed_fund_analysis() -> ApiResponse[list[ClosedFundAnalysis]]:
     """Return closed-end fund analysis sorted by score."""
     data, meta = get_closed_fund_analysis()
     return ApiResponse(data=data, meta=meta)
+
+
+@router.get("/funds/rotation-groups", response_model=ApiResponse[list[dict]])
+def rotation_groups(force: bool = Query(default=False, description="穿透 120s 缓存")) -> ApiResponse[list[dict]]:
+    """同标的跨基金溢价轮动：按「扣成本后价差」降序，给出卖高买低的换仓候选。
+
+    组内一律同口径比（自算 est_premium_pct 优先，覆盖不足时退官方 premium_pct），
+    净值失效（stale）的成员剔除并在 warnings 点名——见 fund_rotation_service 注释。
+    """
+    data, meta = get_rotation_groups(force=force)
+    return ApiResponse(data=data, meta=meta)
+

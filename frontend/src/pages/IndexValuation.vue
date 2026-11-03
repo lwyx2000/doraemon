@@ -130,6 +130,11 @@ function zscoreLabel(zc: string | null): string {
   return '—'
 }
 
+// ==================== 数据项 tooltip 延迟（2026-11-03） ====================
+// 鼠标悬停在表格「数据项」上时不立即弹出，等 3 秒后再弹，避免滑过表格时频繁打断阅读。
+// 仅用于单元格数据项的 NTooltip；表头悬停说明保持即时弹出。
+const DATA_TIP_PROPS = { trigger: 'hover', showDelay: 3000 }
+
 // ==================== 多算法对比单元格（等权/中位，2026-10-27） ====================
 // 同一指标三种聚合：加权(买ETF真实口径) / 等权(成分股截尾均值，PE 截 95 分位) / 中位(中位数，抗极值)。
 // 单元格展示：上方绝对值 + 下方全史分位条；10Y 分位挂 tooltip。
@@ -141,7 +146,7 @@ function algoCell(
 ): any {
   // 单元格：上方「底层绝对值 + 全史分位%」（左值右分位），下方全史分位填充条；
   // 10Y 分位挂 tooltip。分位条改用 PercentileIndicator 的填充条形式（更直观）。
-  return h(NTooltip, { trigger: 'hover' }, {
+  return h(NTooltip, DATA_TIP_PROPS, {
     trigger: () => h(PercentileIndicator, { value: pctAll ?? null, metric: value, width: 80 }),
     default: () => `${tip}\n全史分位：${pctAll != null ? pctAll.toFixed(1) + '%' : '—'}\n近10年分位：${pct10y != null ? pct10y.toFixed(1) + '%' : '—'}`,
   })
@@ -217,7 +222,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
     key: 'pe_ttm',
     width: 74,
     align: 'right',
-    render: (row) => h(NTooltip, { trigger: 'hover' }, {
+    render: (row) => h(NTooltip, DATA_TIP_PROPS, {
       trigger: () => h('div', { style: 'text-align:right;' }, row.pe_ttm != null ? row.pe_ttm.toFixed(1) : '—'),
       default: () => `绝对值口径：纳亏（亏损股负利润纳入分母 Σmv/Σ(mv/PE)）——反映指数真实盈利收益率，与万得展示一致。
 分位列（右列）走剔亏口径（仅聚 PE>0），两列口径不同、不可直接互推。
@@ -291,7 +296,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
     key: 'valuation_percentile',
     width: 112,
     align: 'center',
-    render: (row) => h(NTooltip, { trigger: 'hover' }, {
+    render: (row) => h(NTooltip, DATA_TIP_PROPS, {
       trigger: () => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
         h(PercentileIndicator, { value: row.valuation_percentile, width: 52 }),
         h(NTag, { color: pctColorStyle(row.valuation_percentile), size: 'small', bordered: false }, () => percentileLabel(row.valuation_percentile)),
@@ -306,7 +311,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
     key: 'pe_percentile',
     width: 112,
     align: 'center',
-    render: (row) => h(NTooltip, { trigger: 'hover' }, {
+    render: (row) => h(NTooltip, DATA_TIP_PROPS, {
       trigger: () => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
         h(PercentileIndicator, { value: row.pe_percentile, width: 52 }),
         h(NTag, { color: pctColorStyle(row.pe_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pe_percentile)),
@@ -326,7 +331,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
     key: 'pe_percentile_10y',
     width: 112,
     align: 'center',
-    render: (row) => h(NTooltip, { trigger: 'hover' }, {
+    render: (row) => h(NTooltip, DATA_TIP_PROPS, {
       trigger: () => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
         h(PercentileIndicator, { value: row.pe_percentile_10y ?? null, width: 52 }),
         h(NTag, { color: pctColorStyle(row.pe_percentile_10y ?? null), size: 'small', bordered: false }, () => percentileLabel(row.pe_percentile_10y ?? null)),
@@ -344,7 +349,7 @@ const columns: DataTableColumns<BroadIndexValuation> = [
     key: 'pb_percentile',
     width: 112,
     align: 'center',
-    render: (row) => h(NTooltip, { trigger: 'hover' }, {
+    render: (row) => h(NTooltip, DATA_TIP_PROPS, {
       trigger: () => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
         h(PercentileIndicator, { value: row.pb_percentile, width: 52 }),
         h(NTag, { color: pctColorStyle(row.pb_percentile), size: 'small', bordered: false }, () => percentileLabel(row.pb_percentile)),
@@ -363,7 +368,7 @@ PB 便宜 + ROE 中枢下移时，警惕价值陷阱——参考 ROE均值(5Y) �
     key: 'pb_percentile_10y',
     width: 112,
     align: 'center',
-    render: (row) => h(NTooltip, { trigger: 'hover' }, {
+    render: (row) => h(NTooltip, DATA_TIP_PROPS, {
       trigger: () => h('div', { style: 'display:flex; align-items:center; justify-content:center; gap:6px;' }, [
         h(PercentileIndicator, { value: row.pb_percentile_10y ?? null, width: 52 }),
         h(NTag, { color: pctColorStyle(row.pb_percentile_10y ?? null), size: 'small', bordered: false }, () => percentileLabel(row.pb_percentile_10y ?? null)),
@@ -1128,20 +1133,43 @@ const macroParams = computed(() => {
             <n-empty v-else-if="!loading" description="暂无数据，请确保后端服务正常运行" style="padding: 60px 0" />
           </n-spin>
         </div>
-        <!-- 分位口径脚注：全史月度 vs 近10Y窗口 + 纳亏/剔亏双口径说明（2026-10-24 锚点校准后更新） -->
-        <n-text v-if="data.length" depth="3" style="font-size: 12px; line-height: 1.7; display: block; margin-top: 4px;">
-          分位口径：<b>PE分位 / PB分位</b> = 当前值在该指数<b>全历史月度序列</b>中的升序百分位（各指数序列起点见列头 tooltip）；
-          <b>2026-10-28 起历史已补齐至 2005 年</b>：上证50/沪深300/上证180/上证380/上证红利/沪深系与中证500/800/1000/2000/100、深证100/深证红利、创业板50 共 12 个指数，
-          2005–2009（或各自更早缺口）用乐咕乐股（legulegu）月度序列补齐——全史分位因此明显下移（沪深300 PE分位 64%→51%），与外部权威口径（legulegu/参考图 44%）收敛到 2~7pp；
-          科创50/中证2000/中证A500/创业板指等发布较晚，自其数据起点起统计。
-          补齐段仅含 PB（加权/等权/中位）与剔亏 PE（加权/中位）——legulegu 无纳亏 PE 口径，纳亏列仍自 2010 年起，等权 PE 因极值口径差异不补。
-          <b>PE分位(10Y) / PB分位(10Y)</b> = 同一序列<b>近 120 个月（约10年）窗口</b>内的升序百分位，对齐万得/中证官方常用口径，可直接跨源对比。
-          <b>PE 双口径（2026-10-24 锚点校准后确立）</b>：绝对值列「PE(TTM)」为<b>纳亏</b>口径（亏损股负利润纳入分母，与万得展示一致）；
-          <b>PE 分位列为剔亏口径</b>（仅聚 PE&gt;0 成分股）——经锚点校准（官方截图 vs legulegu 剔亏全史 43.4% 精确命中）确认中证官方分位在剔亏侧。
-          亏损面越大两口径差越大：沪深300 亏损面 2.2%（两口径几乎相同）→ 中证1000 13.9%（纳亏 PE 高约 44%）→ 中证2000 24.5%（纳亏 PE 高约 195%、分位虚高 20~35pp）。
-          PB 剔除净资产为负成分股。
-          两组读数差异来自窗口长度——全史含 2007/2015 泡沫顶，<b>全史 PB 分位通常比 10Y 口径低 10~30pp</b>；
-          历史不足 120 个月的指数，(10Y) 列退化为全史口径，两列读数相同。跨源对比请以 PE/PB 绝对值为准、分位作相对参考。
+        <!-- 分位口径脚注：全史月度 vs 近10Y窗口 + 纳亏/剔亏双口径说明（2026-11-03 结构化排版） -->
+        <n-text v-if="data.length" tag="div" depth="3" class="iv-footnote">
+          <div class="fn-title">分位口径说明</div>
+
+          <div class="fn-section">
+            <div class="fn-h">① 全史分位 vs 近10年分位</div>
+            <ul class="fn-list">
+              <li><b>PE分位 / PB分位</b> = 当前值在该指数<b>全历史月度序列</b>中的升序百分位（各指数序列起点见列头 tooltip）。</li>
+              <li><b>PE分位(10Y) / PB分位(10Y)</b> = 同一序列<b>近 120 个月（约10年）窗口</b>内的升序百分位，对齐万得/中证官方常用口径，可直接跨源对比。</li>
+              <li>两组读数差异来自窗口长度——全史含 2007/2015 泡沫顶，<b>全史 PB 分位通常比 10Y 口径低 10~30pp</b>；历史不足 120 个月的指数，(10Y) 列退化为全史口径，两列读数相同。</li>
+            </ul>
+          </div>
+
+          <div class="fn-section">
+            <div class="fn-h">② 历史补齐（2026-10-28 起补齐至 2005 年）</div>
+            <ul class="fn-list">
+              <li>上证50/沪深300/上证180/上证380/上证红利/沪深系与中证500/800/1000/2000/100、深证100/深证红利、创业板50 共 <b>12 个指数</b>，2005–2009（或各自更早缺口）用乐咕乐股（legulegu）月度序列补齐——全史分位因此明显下移（沪深300 PE分位 64%→51%），与外部权威口径（legulegu/参考图 44%）收敛到 2~7pp。</li>
+              <li>科创50/中证2000/中证A500/创业板指等发布较晚，自其数据起点起统计。</li>
+              <li>补齐段仅含 <b>PB（加权/等权/中位）与剔亏 PE（加权/中位）</b>——legulegu 无纳亏 PE 口径，纳亏列仍自 2010 年起，等权 PE 因极值口径差异不补。</li>
+            </ul>
+          </div>
+
+          <div class="fn-section">
+            <div class="fn-h">③ PE 双口径（2026-10-24 锚点校准后确立）</div>
+            <ul class="fn-list">
+              <li>绝对值列「PE(TTM)」为<b>纳亏</b>口径（亏损股负利润纳入分母，与万得展示一致）；<b>PE 分位列为剔亏口径</b>（仅聚 PE&gt;0 成分股）——经锚点校准（官方截图 vs legulegu 剔亏全史 43.4% 精确命中）确认中证官方分位在剔亏侧。</li>
+              <li>亏损面越大两口径差越大：沪深300 亏损面 2.2%（两口径几乎相同）→ 中证1000 13.9%（纳亏 PE 高约 44%）→ 中证2000 24.5%（纳亏 PE 高约 195%、分位虚高 20~35pp）。</li>
+              <li>PB 剔除净资产为负成分股。</li>
+            </ul>
+          </div>
+
+          <div class="fn-section">
+            <div class="fn-h">④ 跨源对比建议</div>
+            <ul class="fn-list">
+              <li>跨源对比请以 <b>PE/PB 绝对值为准</b>、分位作相对参考。</li>
+            </ul>
+          </div>
         </n-text>
       </n-tab-pane>
 
@@ -1745,5 +1773,36 @@ const macroParams = computed(() => {
 .iv-table-scroll::after {
   right: 0;
   background: linear-gradient(to left, rgba(128, 128, 128, 0.16), transparent);
+}
+/* 分位口径脚注：结构化排版（2026-11-03） */
+.iv-footnote {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.iv-footnote .fn-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+.iv-footnote .fn-section {
+  margin-bottom: 8px;
+}
+.iv-footnote .fn-h {
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 2px;
+}
+.iv-footnote .fn-list {
+  margin: 0;
+  padding-left: 18px;
+}
+.iv-footnote .fn-list li {
+  margin-bottom: 2px;
+}
+.iv-footnote .fn-list li b {
+  color: var(--text-primary);
 }
 </style>

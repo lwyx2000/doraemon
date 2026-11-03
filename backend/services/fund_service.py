@@ -31,13 +31,21 @@ from services.meta_utils import gateway_no_data_meta, real_meta_base, mock_meta
 from services.akshare_client import get_session
 from services.cross_border_valuation import attach_estimated_valuations
 from services.est_nav_history_service import attach_valuation_errors
+from services.fund_premium_history_service import attach_premium_stats
+from services.futures_basis_service import attach_basis_diagnostics
 from utils.arbitrage import analyze_arbitrage
 from utils.closed_fund import analyze_closed_fund
 import mock_data
 
 
 def _processed_data_request(category: str, params: dict | None = None, retries: int = 3) -> dict | list | None:
-    """调用加工数据统一入口 (/api/processed_data)"""
+    """调用加工数据统一入口 (/api/processed_data)
+
+    ⚠️ 网关多副本已知问题（2026-11-03 实测）：`subtype=all` 在**部分副本上返回 404**
+    （22 字节错误体），命中率约 50%。共享 Session 的 keep-alive 一旦接到坏副本就会
+    「稳定 404」——同一 URL 用 curl 或新建连接却能 200。所以这里 404 后必须强制换连接
+    （Connection: close + 丢弃 Session），否则重试 3 次全打在同一台坏副本上白费。
+    """
     url = f"{AKSHARE_API_BASE}/api/processed_data"
     request_params = {"category": category}
     if params:
@@ -46,7 +54,9 @@ def _processed_data_request(category: str, params: dict | None = None, retries: 
     for attempt in range(retries):
         try:
             print(f"[Fund Service] 调用 {category} (尝试 {attempt + 1}/{retries})...")
-            response = get_session().get(url, params=request_params, timeout=30)
+            # 第 2 次起强制不复用连接，绕开可能已绑定的坏副本
+            headers = {"Connection": "close"} if attempt else None
+            response = get_session().get(url, params=request_params, timeout=30, headers=headers)
             response.raise_for_status()
             result = response.json()
 
@@ -59,6 +69,16 @@ def _processed_data_request(category: str, params: dict | None = None, retries: 
             print(f"[Fund Service] {category} 成功，返回 {data_info} 数据")
             return data
 
+        except requests.exceptions.HTTPError as e:
+            # 404/5xx 多半是命中缺路由的副本：把 Session 的连接池丢掉，下次重新握手
+            status = getattr(e.response, "status_code", None)
+            print(f"[Fund Service] {category} HTTP {status} (attempt {attempt + 1}/{retries})"
+                  + ("，疑似命中网关缺路由副本，已丢弃连接" if status == 404 else ""))
+            if status == 404:
+                try:
+                    get_session().close()
+                except Exception:
+                    pass
         except requests.exceptions.Timeout:
             print(f"[Fund Service] {category} 超时 (attempt {attempt + 1}/{retries})")
         except requests.exceptions.ConnectionError as e:
@@ -331,6 +351,92 @@ def _attach_index_valuation(funds: list[dict]) -> None:
                 break
 
 
+# ==================== 溢价双口径诊断 + 净值陈旧度（2026-11-03） ====================
+#
+# 这两项都源自《无敌哥估值说明文档》的实测结论，不上新数据源，纯本地计算。
+
+#: 净值日落后多少个交易日算「滞后」/「失效」。
+#: 跨境 QDII 的官方净值本来就 T-1~T-2 公布，0~2 是常态，不该报警；从 T+3 起，
+#: 锚定净值已经在用「几天前的仓位」外推，position 误差累积开始盖过溢价本身
+#: （本项目实测 position 残差 0.3%/日量级）；T+5 起折溢价读数基本不可用于下单。
+#: 对应文档 5.4「下单前三道检查」第①条：EST 日期不是最近交易日就作废 ——
+#: 513800 挂着 2025-09-29 的 EST 还在显示 14.67% 溢价，就是这个坑的教科书样本。
+_NAV_LAG_LEVELS: tuple[tuple[int, str], ...] = ((2, "fresh"), (4, "lag"))
+
+
+def _nav_lag_level(lag: int) -> str:
+    for limit, name in _NAV_LAG_LEVELS:
+        if lag <= limit:
+            return name
+    return "stale"
+
+
+def _attach_premium_diagnostics(funds: list[dict]) -> None:
+    """挂 ``premium_gap``（口径差）与 ``nav_lag_days`` / ``nav_stale_level``（陈旧度）。
+
+    ``premium_gap = 官方口径溢价 − 自算口径溢价``：官方口径的分母是基金公司公布的
+    净值（跨境品种常是 T-1 的，ETF 的盘中参考净值还含汇率口径差异），自算口径的
+    分母是 ``est_nav``。文档 5.2 实测：同一标的的 **ETF 类「官方 EST」系统性高于
+    「参考 EST」约 0.7~0.8%**（513100：官方 1.984 vs 参考 1.969），换算成溢价反而
+    低 0.7~0.9 个点（16.70% vs 17.58%）；LOF 类两者只差 0.02%。
+
+    也就是说：同一张表里 **ETF 的 ``premium_pct`` 天然比 LOF 偏低近 1 个点**，
+    按它横向排序会系统性高估 LOF、低估 ETF。把差值显式列出来，比在每个页面
+    写一段免责声明有用 —— 用户看到的不是「我们口径可能不同」而是具体差了多少。
+
+    陈旧度则回答文档 5.4 的第①道检查：净值锚是不是当天的。
+
+    ⚠️ 日历未预热时**跳过陈旧度**（只算口径差）：``latest_trading_day()`` 首次调用会
+    去网关拉全量交易日历，实测 30s 级。``/funds`` 是全站高频接口，不能为了一次
+    请求陪它等 30s；预热由 ``est_nav_snapshot_job`` 启动时的异步线程负责，
+    通常几十秒内就位，之后的请求自动带上陈旧度。
+    """
+    try:
+        from services import trading_calendar as tc
+
+        if not tc.is_loaded():
+            print("[Fund Service] 交易日历未预热，本次跳过净值陈旧度（仅算口径差）")
+            _attach_premium_gap_only(funds)
+            return
+        ref = tc.latest_trading_day()
+        trading_days_between = tc.trading_days_between
+    except Exception as e:
+        print(f"[Fund Service] 陈旧度计算跳过（交易日历不可用）: {type(e).__name__}: {e}")
+        return
+
+    hit_gap = _attach_premium_gap_only(funds)
+    hit_lag = 0
+    for f in funds:
+        nd = str(f.get("nav_date") or "")[:10]
+        if not nd:
+            continue
+        try:
+            d = datetime.strptime(nd, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        # 统计 nav_date **之后**的交易日数：昨天 → 1（常态），今天 → 0（已出）
+        lag = trading_days_between(d + timedelta(days=1), ref)
+        f["nav_lag_days"] = lag
+        f["nav_stale_level"] = _nav_lag_level(lag)
+        hit_lag += 1
+
+    if hit_gap or hit_lag:
+        print(f"[Fund Service] 溢价诊断：口径差 {hit_gap} 只 / 陈旧度 {hit_lag} 只")
+
+
+def _attach_premium_gap_only(funds: list[dict]) -> int:
+    """只算口径差（不依赖交易日历，永不阻塞）。返回命中只数。"""
+    hit = 0
+    for f in funds:
+        prem = f.get("premium_pct")
+        est = f.get("est_premium_pct")
+        # premium_pct==0 是部分源缺失时的占位值，不是真的平价，别拿它做差
+        if prem is not None and est is not None and float(prem) != 0.0:
+            f["premium_gap"] = round(float(prem) - float(est), 2)
+            hit += 1
+    return hit
+
+
 def _merge_supplement_funds(funds: list[dict], fund_subtype: str) -> None:
     """并入补充池（麦蕊 fund_rank 口径外的、仍在正常交易的场内基金）。
 
@@ -428,7 +534,8 @@ def get_funds_from_api(fund_subtype: str = "etf") -> list[dict]:
             "price": _safe_float(_pick(item, "最新价", "实时价", "当前单位净值")),
             "iopv": iopv,
             "premium_pct": premium_pct,
-            # 溢价百分位需逐只历史溢价率序列（fund_rank premium_history），无源 → None（前端显示 -）
+            # 溢价分位是「自己攒的历史」算出来的（fund_premium_history_service 每日落库），
+            # 这里先占位 None，由返回前的 attach_premium_stats 统一覆盖；样本<15 交易日时保持 None
             "premium_percentile": None,
             # 折溢价套利毛收益 = 溢价率（折价为负即反向套利空间），供 analyze_arbitrage 判定可行性。
             "net_arbitrage_yield": premium_pct,
@@ -461,6 +568,16 @@ def get_funds_from_api(fund_subtype: str = "etf") -> list[dict]:
         # 估值误差自检（T3）：挂最近一次 est_nav 与真实净值的偏差 + 近 20 日 mae/max。
         # 只读 DuckDB 汇总缓存（TTL 120s），不发网络请求，放在返回前最后一步。
         attach_valuation_errors(funds)
+
+    # 商品期货期现基差（仅 est_method=futures 的 161226/159985；诊断用，**不进 est_nav**）。
+    # 挂在这里而不是 _estimate_by_futures 里，是因为它的数据源独立（网关 futures_spot_price_daily）
+    # 且按天缓存——不该让估值快照去等一个每日只变一次的接口。
+    attach_basis_diagnostics(funds)
+
+    # 溢价双口径诊断 + 净值陈旧度（纯本地计算；对 closed 也适用，故放在 subtype 分支外）
+    _attach_premium_diagnostics(funds)
+    # 溢价率历史分位（读 DuckDB 汇总缓存 TTL 300s；样本不足时不写字段，前端显示 '-'）
+    attach_premium_stats(funds)
 
     print(f"[Fund Service] 成功获取 {len(funds)} 个 {fund_subtype}")
     return funds

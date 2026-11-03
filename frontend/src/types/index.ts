@@ -437,7 +437,13 @@ export interface FundItem {
   price: number
   iopv: number
   premium_pct: number
-  premium_percentile: number | null   // 需历史溢价率序列，无源时为 null（前端显示 -）
+  premium_percentile: number | null   // 溢价分位：本项目每日落库自建序列算得，样本<15 交易日为 null
+  premium_ma20?: number | null        // 历史溢价 20 日均值(%)；样本<10 时缺省
+  premium_hist_n?: number | null      // 分位所用样本数（交易日）
+  premium_hist_base?: 'est' | 'official' | null // 分位所用口径：自算优先，退回官方
+  premium_gap?: number | null         // 口径差 = 官方溢价 − 自算溢价(百分点)；|>0.5| 需提示
+  nav_lag_days?: number | null        // 净值日落后最近交易日的交易日数
+  nav_stale_level?: 'fresh' | 'lag' | 'stale' | null // 净值锚陈旧度分级
   net_arbitrage_yield: number
   remaining_term?: string
   annualized?: number
@@ -470,6 +476,12 @@ export interface FundItem {
   est_futures_symbol?: string            // 合约，如 AG0
   est_futures_price_kind?: 'settle' | 'live'  // settle=最新交易日结算价（已定盘）/ live=盘中最新价
   est_futures_resid_pct?: number         // 实测残差(%/日)
+  // 期现基差诊断（仅期货口径）：**不参与 est_nav**，只用于判断展期收益
+  // 期货基金的业绩基准本身就是期货价格指数，减去基差会引入 1~2% 系统误差（见 futures_basis_service）
+  est_basis_rate?: number | null         // 主力基差率(%)：正=现货升水/期货贴水，负=期货升水
+  est_basis_curve?: 'back' | 'contango' | null // back=贴水(换月有正展期收益) / contango=升水
+  est_basis_date?: string | null         // 基差数据日期
+  est_basis_note?: string | null         // 月差异常时的提示
   // 估值误差自检（T3）：est_nav 与基金公司公布真实净值的偏差。null=还没有回填样本
   valuation_error?: number | null        // 最近一次误差(%)：(est_nav/nav_actual-1)*100
   valuation_error_date?: string | null   // 该误差对应的净值日
@@ -477,6 +489,63 @@ export interface FundItem {
   valuation_error_mae?: number | null    // 近 20 日平均绝对误差(%)
   valuation_error_max?: number | null    // 近 20 日最大绝对误差(%)
   underlying_type?: string       // 底层资产类型
+}
+
+// 同标的跨基金溢价轮动（后端 services/fund_rotation_service.py）
+export type PeerRotationAction = 'switch' | 'marginal' | 'none'
+
+export interface PeerRotationMember {
+  code: string
+  name: string
+  type?: string | null
+  kind?: string              // etf / lof（按代码段判定，不依赖 type 字段）
+  price: number | null
+  nav: number | null
+  premium_pct: number
+  nav_date: string | null
+  nav_lag_days: number | null
+  nav_stale_level: 'fresh' | 'lag' | 'stale' | null
+  volume: number | null
+  est_method?: string | null
+  premium_gap?: number | null
+}
+
+export interface PeerRotationExcluded {
+  code: string
+  name: string
+  premium_pct: number
+  nav_date?: string | null
+  nav_lag_days?: number | null
+  reason: string
+}
+
+export interface PeerRotationGroup {
+  group: string
+  group_name: string
+  premium_basis: 'est' | 'official'   // est=自算口径（跨ETF/LOF可比）/ official=集思录官方口径
+  count: number
+  premium_min: number
+  premium_max: number
+  premium_median: number
+  spread: number                      // 组内溢价极差(pp)
+  net_edge: number                    // 扣掉双边换仓成本后的价差(pp)
+  action: PeerRotationAction
+  sell: PeerRotationMember            // 建议卖出（组内溢价最高）
+  buy: PeerRotationMember             // 建议买入（组内溢价最低）
+  members: PeerRotationMember[]
+  excluded: PeerRotationExcluded[]
+  warnings: string[]
+}
+
+export interface PeerRotationMeta {
+  groups?: number
+  switchable?: number
+  funds?: number
+  costPct?: number
+  thresholds?: { switch: number; marginal: number }
+  staleFilter?: boolean
+  warning?: string | null
+  updateTime?: string
 }
 
 // ETF 基金（集思录策略：折溢价套利 / 网格交易 / 行业轮动 / 估值定投）
@@ -490,7 +559,13 @@ export interface EtfFund {
   premium_pct: number
   volume: number | null          // 新浪兜底源提供成交额(元)；缺失时为 null
   // 折溢价套利
-  premium_percentile: number | null   // 需历史溢价率序列，无源时为 null（前端显示 -）
+  premium_percentile: number | null   // 溢价分位：本项目每日落库自建序列算得，样本<15 交易日为 null
+  premium_ma20?: number | null        // 历史溢价 20 日均值(%)；样本<10 时缺省
+  premium_hist_n?: number | null      // 分位所用样本数（交易日）
+  premium_hist_base?: 'est' | 'official' | null // 分位所用口径：自算优先，退回官方
+  premium_gap?: number | null         // 口径差 = 官方溢价 − 自算溢价(百分点)；|>0.5| 需提示
+  nav_lag_days?: number | null        // 净值日落后最近交易日的交易日数
+  nav_stale_level?: 'fresh' | 'lag' | 'stale' | null // 净值锚陈旧度分级
   net_arbitrage_yield: number
   subscribe_limit?: string
   // 套利风险量化

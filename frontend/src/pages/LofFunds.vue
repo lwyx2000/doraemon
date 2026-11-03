@@ -33,6 +33,7 @@ import TabBar from '../components/TabBar.vue'
 import LoadingState from '../components/LoadingState.vue'
 import SectionFallback from '../components/SectionFallback.vue'
 import GlossaryPanel from '../components/GlossaryPanel.vue'
+import FundRotationPanel from '../components/FundRotationPanel.vue'
 import { useFieldHelp } from '../composables/useFieldHelp'
 import { getFieldTip } from '../composables/helpContent'
 
@@ -256,6 +257,12 @@ function estNavTip(row: FundItem): string {
     if (row.est_futures_price_kind === 'settle') parts.push('现价用最新交易日结算价（已定盘）')
     else if (row.est_futures_price_kind === 'live') parts.push('现价用盘中最新价（当日结算价未出）')
     if (row.est_futures_resid_pct != null) parts.push(`实测残差 ${row.est_futures_resid_pct}%/日`)
+    if (row.est_basis_rate != null) {
+      const curve = row.est_basis_curve === 'back' ? '贴水/换月正展期' : row.est_basis_curve === 'contango' ? '升水/换月负展期' : '平水'
+      parts.push(`主力基差 ${row.est_basis_rate > 0 ? '+' : ''}${row.est_basis_rate}%（${curve}）`)
+      parts.push('基差不参与估值：业绩基准本身就是期货价格指数')
+    }
+    if (row.est_basis_note) parts.push(row.est_basis_note)
     if (row.est_base_date) parts.push(`基准日 ${row.est_base_date}`)
     return parts.join('；')
   }
@@ -301,8 +308,14 @@ const columns = computed(() => {
       align: 'right' as const,
       render: (row: FundItem) => {
         const color = row.premium_pct >= 0 ? 'var(--color-danger)' : 'var(--color-success)'
-        const text = `${row.premium_pct >= 0 ? '+' : ''}${row.premium_pct}%`
-        return h('span', { class: 'mono right', style: { color } }, text)
+        // 净值锚陈旧（T+5 起）时溢价读数不可用：数字照给但必须带警示，
+        // 否则就是「EST 停在一年多前还显示 14.67% 溢价」那类陷阱
+        const stale = row.nav_stale_level === 'stale'
+        const tip = row.nav_lag_days != null
+          ? `净值锚 ${row.nav_date ?? '-'}（落后 ${row.nav_lag_days} 个交易日${stale ? '，已失效，勿据此下单' : ''}）`
+          : undefined
+        const text = `${row.premium_pct >= 0 ? '+' : ''}${row.premium_pct}%${stale ? ' ⚠' : ''}`
+        return h('span', { class: 'mono right', style: { color }, title: tip }, text)
       },
     },
     {
@@ -353,14 +366,39 @@ const columns = computed(() => {
       },
     },
     {
-      title: '百分位',
+      // 口径差：官方口径（基金公司净值）− 自算口径（est_nav）。
+      // 跨境 ETF 类官方参考净值含汇率口径差异，实测系统性低 0.7~0.9 个点；
+      // LOF 类两口径基本一致。不标出来，跨基金比溢价就会串口径。
+      title: titleWithHelp('口径差', 'premium_gap'),
+      key: 'premium_gap',
+      align: 'right' as const,
+      render: (row: FundItem) => {
+        if (row.premium_gap == null) return h('span', { class: 'mono right' }, '-')
+        const big = Math.abs(row.premium_gap) > 0.5
+        return h('span', {
+          class: 'mono right',
+          style: big ? { color: 'var(--color-warning)', fontWeight: 600 } : undefined,
+          title: `官方口径 ${row.premium_pct}% − 自算口径 ${row.est_premium_pct}%；跨基金比较时请统一口径`,
+        }, `${row.premium_gap >= 0 ? '+' : ''}${row.premium_gap.toFixed(2)}`)
+      },
+    },
+    {
+      title: titleWithHelp('溢价百分位', 'premium_percentile'),
       key: 'premium_percentile',
       align: 'right' as const,
       render: (row: FundItem) => {
-        // 溢价百分位需历史溢价率序列，无源时后端返回 null，显示 '-' 而非伪造数值
-        if (row.premium_percentile == null) return h('span', { class: 'mono right' }, '-')
+        // 分位来自本项目每日落库的自建序列（base_fund_premium_daily）。
+        // 样本不足 15 个交易日时后端不给值 → 显示 '-'，不伪造
+        if (row.premium_percentile == null) {
+          return h('span', {
+            class: 'mono right',
+            title: '样本不足 15 个交易日，暂不出分位（不是 0，是没有可比历史）',
+          }, '-')
+        }
         const bg = pctColor(row.premium_percentile)
-        return h('div', { class: 'perc-bar-cell' }, [
+        const tip = `${row.premium_hist_base === 'est' ? '自算' : '官方'}口径；样本 ${row.premium_hist_n ?? '-'} 个交易日` +
+          (row.premium_ma20 != null ? `；20 日均值 ${row.premium_ma20}%` : '')
+        return h('div', { class: 'perc-bar-cell', title: tip }, [
           h('div', { class: 'perc-bar-track' }, [
             h('div', {
               class: 'perc-bar-fill',
@@ -605,6 +643,9 @@ const columns = computed(() => {
         <span class="footer-info">当前 {{ filteredFunds.length }} 条基金数据</span>
       </div>
     </DataPanel>
+
+    <!-- 同标的跨基金溢价轮动：卖组内高溢价、买低溢价（懒加载，点「分析」才拉全市场） -->
+    <FundRotationPanel />
 
     <!-- 底部面板（动态计算） -->
     <div class="bottom-bento">

@@ -253,7 +253,13 @@ const arbitrageColumns = [
   { title: titleWithHelp('折溢价率', 'premium_pct'), key: 'premium_pct', align: 'right' as const,
     render: (row: EtfFund) => {
       const color = row.premium_pct >= 5 ? 'var(--color-danger)' : row.premium_pct >= 1 ? 'var(--color-warning)' : 'var(--text-secondary)'
-      return h('span', { style: { color, fontWeight: 700 } }, `${row.premium_pct >= 0 ? '+' : ''}${row.premium_pct}%`)
+      // 净值锚陈旧（T+5 起）时溢价读数不可用：数字照给，但必须带警示，否则就是 513800 那类"假溢价"
+      const stale = row.nav_stale_level === 'stale'
+      const tip = row.nav_lag_days != null
+        ? `净值锚 ${row.nav_date ?? '-'}（落后 ${row.nav_lag_days} 个交易日${stale ? '，已失效，勿据此下单' : ''}）`
+        : undefined
+      return h('span', { style: { color, fontWeight: 700 }, title: tip },
+        `${row.premium_pct >= 0 ? '+' : ''}${row.premium_pct}%${stale ? ' ⚠' : ''}`)
     },
   },
   {
@@ -292,8 +298,29 @@ const arbitrageColumns = [
     },
   },
   {
+    // 口径差：官方口径（基金公司净值 / 盘中参考净值）− 自算口径（est_nav）。
+    // 跨境 ETF 的官方参考净值含汇率口径差异，实测系统性低 0.7~0.9 个点，
+    // 不标出来就会被当成"这只 ETF 比同类便宜"。|差|>0.5 才提亮，避免满屏告警。
+    title: titleWithHelp('口径差', 'premium_gap'), key: 'premium_gap', align: 'right' as const,
+    render: (row: EtfFund) => {
+      if (row.premium_gap == null) return h('span', { class: 'mono' }, '-')
+      const big = Math.abs(row.premium_gap) > 0.5
+      return h('span', {
+        class: 'mono',
+        style: big ? { color: 'var(--color-warning)', fontWeight: 600 } : undefined,
+        title: `官方口径 ${row.premium_pct}% − 自算口径 ${row.est_premium_pct}%；跨基金比较溢价时请统一用一个口径`,
+      }, `${row.premium_gap >= 0 ? '+' : ''}${row.premium_gap.toFixed(2)}`)
+    },
+  },
+  {
     title: titleWithHelp('溢价百分位', 'premium_percentile'), key: 'premium_percentile', align: 'center' as const,
-    render: (row: EtfFund) => h(PercentileIndicator, { value: row.premium_percentile }),
+    render: (row: EtfFund) => {
+      const tip = row.premium_hist_n
+        ? `${row.premium_hist_base === 'est' ? '自算' : '官方'}口径；样本 ${row.premium_hist_n} 个交易日` +
+          (row.premium_ma20 != null ? `；20 日均值 ${row.premium_ma20}%` : '')
+        : '样本不足 15 个交易日，暂不出分位（不是 0，是没有可比历史）'
+      return h('div', { title: tip }, [h(PercentileIndicator, { value: row.premium_percentile })])
+    },
   },
   {
     title: titleWithHelp('套利收益(区间)', 'net_arbitrage_yield'), key: 'net_arbitrage_yield', align: 'right' as const,

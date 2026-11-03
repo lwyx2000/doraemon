@@ -310,6 +310,13 @@ export const api = {
   getClosedFundAnalysis: () =>
     requestWithMeta<FundItem[]>('/api/v1/funds/closed/analysis'),
 
+  // 同标的跨基金溢价轮动（组内卖高溢价、买低溢价）
+  getFundRotationGroups: (force?: boolean) =>
+    requestWithMeta<PeerRotationGroup[]>(
+      '/api/v1/funds/rotation-groups',
+      force ? { force: '1' } : undefined,
+    ),
+
   // ---- Convertible Bonds ----
   getConvertibleBonds: (force?: boolean) =>
     requestWithMeta<ConvertibleBond[]>('/api/v1/cb/convertible-bonds', force ? { force: '1' } : undefined),
@@ -1002,6 +1009,7 @@ import type {
   IndexValuation,
   IndexValuationHistPoint,
   FundItem,
+  PeerRotationGroup,
   MarketOverview,
   BoardSector,
   FundFlows,
