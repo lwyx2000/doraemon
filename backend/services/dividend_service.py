@@ -240,6 +240,27 @@ FUND_CACHE_TTL = 24 * 3600
 VALUE_FAIL_TTL = 30 * 60
 _VALUE_FAIL_AT: dict[str, float] = {}
 
+# ============================================================
+# 指数日K（stock_zh_index_hist_csindex）取数防线（2026-11-04）
+# ============================================================
+# 背景：该接口单次返回 2016 至今全量（~2600 行 / 1MB）。跟踪误差按基金逐只
+# 重复拉同一指数、现金流指数 force 时全量拉，几十次 1MB 请求在几秒内砸过去，
+# 会把上游的瞬时故障放大成满屏 500（2026-11-04 15:57/16:01 实测）。
+#: 成功结果缓存（key=(code, start)；历史日K 一天一变，6h 足够）
+INDEX_HIST_CACHE_TTL = 6 * 3600
+_INDEX_HIST_CACHE: dict[tuple[str, str], tuple[float, list[dict]]] = {}
+#: 同 key 的 singleflight 锁，避免并发线程重复打上游
+_INDEX_HIST_LOCKS: dict[tuple[str, str], threading.Lock] = {}
+_INDEX_HIST_GUARD = threading.Lock()
+#: 上游**失败**后的静默期（秒）。⚠️ 与「中证不覆盖」严格区分：
+#:   失败（网关非200/超时）= 可重试，静默期内不再打扰；
+#:   成功响应但空数据 = 不覆盖，由 _pe_refresh 写进 unsupported 表永久跳过。
+HIST_FAIL_TTL = 30 * 60
+_HIST_FAIL_AT: dict[str, float] = {}
+#: 已确认「中证不覆盖」的进程内集合（惰性从库加载，避免每次取数都读 DB）
+_HIST_UNSUPPORTED: set[str] = set()
+_HIST_UNSUPPORTED_LOADED = False
+
 #: 最近一次取到的股息率（code -> (dy, dy_date)），上游封禁期间用于「沿用最后一期」
 _DY_LAST: dict[str, tuple[float | None, str | None]] = {}
 _DY_LOADED = False
@@ -349,18 +370,79 @@ def _fetch_index_hist(code: str) -> list[dict]:
     return _fetch_index_hist_range(code, HIST_START)
 
 
-def _fetch_index_hist_range(code: str, start: str) -> list[dict]:
-    """指数日频历史（滚动市盈率），``start`` 形如 ``20160101`` / ``20260101``。
+def _hist_unsupported_codes() -> set[str]:
+    """惰性加载「中证不覆盖」集合；运行期由 ``_pe_mark_unsupported`` 同步追加。"""
+    global _HIST_UNSUPPORTED_LOADED
+    if not _HIST_UNSUPPORTED_LOADED:
+        try:
+            _HIST_UNSUPPORTED.update(_pe_unsupported_codes())
+        except Exception as e:  # pragma: no cover — 库不可用时按「无黑名单」处理
+            print(f"[Dividend] 不覆盖名单加载失败（忽略）: {type(e).__name__}")
+        _HIST_UNSUPPORTED_LOADED = True
+    return _HIST_UNSUPPORTED
 
-    ⚠️ 中证官网长期限流，调用方必须容忍返回空列表（上层会退回本地缓存并打 stale 标记）。
+
+def _fetch_index_hist_range(code: str, start: str) -> list[dict]:
+    """指数日频历史（收盘 + 滚动市盈率），``start`` 形如 ``20160101`` / ``20260101``。
+
+    三道防线（2026-11-04）：
+      ① 已确认「中证不覆盖」的指数直接跳过，不白耗网关配额；
+      ② 上游失败后静默 ``HIST_FAIL_TTL``，期间直接返回空，不再重试放大故障；
+      ③ 成功结果按 ``(code, start)`` 缓存 6h + singleflight，同一指数的重复请求
+         （跟踪误差按基金逐只拉 / 现金流指数 force）只打一次上游。
+
+    ⚠️ 「失败」与「不覆盖」必须区分：``akshare_request`` 失败时**返回 None 而不抛异常**，
+       本函数把失败记进 ``_HIST_FAIL_AT`` 并返回空；只有成功响应但空列表才是真·不覆盖。
+       ``_pe_refresh`` 依据这个标记决定「稍后重试」还是「写进 unsupported 永久跳过」。
+    ⚠️ 调用方必须容忍空列表（上层会退回本地缓存并打 stale 标记）。
     """
-    data = akshare_request(
-        "stock_zh_index_hist_csindex",
-        {"symbol": code, "start_date": start, "end_date": _today()},
-        timeout=30,
-        retries=2,
-    )
-    return data if isinstance(data, list) else []
+    if code in _hist_unsupported_codes():
+        return []
+    ts = _HIST_FAIL_AT.get(code)
+    if ts and (time.time() - ts) < HIST_FAIL_TTL:
+        return []
+
+    key = (code, start)
+    hit = _INDEX_HIST_CACHE.get(key)
+    if hit and (time.time() - hit[0]) <= INDEX_HIST_CACHE_TTL:
+        return list(hit[1])
+
+    with _INDEX_HIST_GUARD:
+        # 回收过期结果：增量刷新每天的 start 都不同，不回收会让全量 1MB 结果常驻。
+        # ⚠️ 只清缓存、**不动锁字典**——删锁会让等待中的线程拿到新锁，
+        #   与正在请求的线程并发打上游，singleflight 反而失效。
+        now = time.time()
+        for k, (ts, _v) in list(_INDEX_HIST_CACHE.items()):
+            if now - ts > INDEX_HIST_CACHE_TTL:
+                _INDEX_HIST_CACHE.pop(k, None)
+        lock = _INDEX_HIST_LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        # 双检：等锁期间可能已由同 key 的另一线程填好缓存 / 触发静默期
+        hit = _INDEX_HIST_CACHE.get(key)
+        if hit and (time.time() - hit[0]) <= INDEX_HIST_CACHE_TTL:
+            return list(hit[1])
+        if code in _hist_unsupported_codes():
+            return []
+        ts = _HIST_FAIL_AT.get(code)
+        if ts and (time.time() - ts) < HIST_FAIL_TTL:
+            return []
+
+        data = akshare_request(
+            "stock_zh_index_hist_csindex",
+            {"symbol": code, "start_date": start, "end_date": _today()},
+            timeout=30,
+            retries=2,
+        )
+        if data is None:
+            # 网关非 200 / 超时 / 连接失败 → 可重试，静默期内不再打扰上游
+            _HIST_FAIL_AT[code] = time.time()
+            print(f"[Dividend] {code} 指数日K 上游失败，静默 {HIST_FAIL_TTL // 60} 分钟")
+            return []
+        rows = data if isinstance(data, list) else []
+        if rows:
+            _INDEX_HIST_CACHE[key] = (time.time(), rows)
+            _HIST_FAIL_AT.pop(code, None)
+        return list(rows)
 
 
 def _series_is_behind(series: list[tuple[str, float]]) -> bool:
@@ -739,8 +821,17 @@ def _pe_refresh(code: str, full: bool = False, since_days: int | None = None) ->
         print(f"[Dividend] {code} PE 上游拉取失败: {e}")
         return 0
     if not rows:
-        # 正常响应但空数据 → 中证不覆盖该指数（换时间再试也没用）
-        _PE_LAST_ERROR[code] = "中证不覆盖该指数"
+        # ⚠️ 2026-11-04 修正：空结果有两种含义，必须区分。
+        #   ``akshare_request`` 失败时返回 None **而不抛异常**（上面的 except 基本不会触发），
+        #   ``_fetch_index_hist_range`` 会记 ``_HIST_FAIL_AT`` 后返回空 —— 这是**限流/报错**，
+        #   该降频重试；只有「成功响应但空列表」才是中证不覆盖（永久跳过）。
+        #   原实现把所有空结果都判成「不覆盖」，会把限流期间的指数误写进
+        #   base_dividend_index_pe_unsupported → 该指数 PE 序列永久冻结。
+        ts = _HIST_FAIL_AT.get(code)
+        if ts and (time.time() - ts) < HIST_FAIL_TTL:
+            _PE_LAST_ERROR[code] = "上游限流/报错（静默期，稍后重试）"
+        else:
+            _PE_LAST_ERROR[code] = "中证不覆盖该指数"
         return 0
     if not _pe_save_rows(code, rows):
         # 有行但一行都没落库 → 数据陈旧（限流中间态），属可重试
@@ -853,6 +944,8 @@ def _pe_mark_unsupported(code: str, name: str) -> None:
             "VALUES (?,?,?,?) ON CONFLICT (code) DO UPDATE SET reason=excluded.reason",
             [code, name, _PE_LAST_ERROR.get(code, "上游无数据"), datetime.now(CST)],
         )
+        # 同步进程内黑名单，让 _fetch_index_hist_range 立即跳过，无需等重启
+        _HIST_UNSUPPORTED.add(code)
     except Exception as e:  # pragma: no cover
         print(f"[Dividend] 标记 {code} 不支持失败（忽略）: {e}")
 
@@ -947,12 +1040,23 @@ def pe_backfill_start(codes: list[str] | None = None, limit: int = 8) -> dict:
         all_specs = [(c, n) for c, n, _r, _a in DIVIDEND_INDICES] + [
             (c, n) for c, n, _reg, _al in CASHFLOW_INDICES if c.startswith("93")
         ]
-        todo = [
+        candidates = [
             (c, n)
             for c, n in all_specs
             if c not in unsupported
             and (not _pe_get_series(c) or _series_is_behind(_pe_get_series(c)))
-        ][: max(1, limit)]
+        ]
+
+        # ⚠️ 2026-11-04：按「最陈旧优先」排序，形成每日轮转。
+        #   原实现按 DIVIDEND_INDICES 声明顺序直接取前 limit 个；全量回填完成后
+        #   待办变成「已回填但序列变旧」的指数，若前 6 个长期补不动，后面的永远
+        #   轮不到（实测 pe_date 冻结成 10-16/10-23/10-27/10-28 的阶梯）。
+        #   排序后每天推进的都是当前最旧的一批，所有指数都能轮到。
+        def _last_date(spec: tuple[str, str]) -> str:
+            s = _pe_get_series(spec[0])
+            return s[-1][0] if s else ""
+
+        todo = sorted(candidates, key=_last_date)[: max(1, limit)]
 
     if not todo:
         _PE_BACKFILL.update(
@@ -988,7 +1092,11 @@ def pe_backfill_start(codes: list[str] | None = None, limit: int = 8) -> dict:
             _PE_BACKFILL["current"] = code
             before = len(_pe_get_series(code))
             try:
-                added = ds_pe_refresh_full(code)
+                # ⚠️ 2026-11-04：已回填过的指数走**增量**（从本地最后日期起抓），
+                #   只有「本地完全无序列」的首次回填才抓 2016 至今全量。
+                #   全量单次约 1MB；每天 6 个全量是 15:57 那批 500 被放大的主因，
+                #   而且补最近十几个交易日根本不需要十年的历史。
+                added = ds_pe_refresh_incremental(code) if before > 0 else ds_pe_refresh_full(code)
             except Exception as e:  # noqa: BLE001
                 _log(f"✗ {code} {name} 异常 {type(e).__name__}: {e}")
                 return code, 0, False
@@ -1058,6 +1166,17 @@ def pe_backfill_start(codes: list[str] | None = None, limit: int = 8) -> dict:
 def ds_pe_refresh_full(code: str) -> int:
     """全量回填单个指数（内部调 _pe_refresh(full=True)）。"""
     return _pe_refresh(code, full=True)
+
+
+def ds_pe_refresh_incremental(code: str) -> int:
+    """增量刷新单个指数：从本地序列最后日期起抓（2026-11-04）。
+
+    供每日回填 job 轮转使用。与全量回填的差别只有 ``start``：
+      · 全量 ``HIST_START`` → ~2600 行 / 1MB，只用于首次建档；
+      · 增量 ``_pe_latest_date(code)`` → 通常十几个交易日，响应极小。
+    ``_pe_save_rows`` 按 (code, trade_date) 幂等 upsert，两种方式可安全混跑。
+    """
+    return _pe_refresh(code, full=False)
 
 
 # ============================================================

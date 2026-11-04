@@ -13,7 +13,7 @@ sector_concentration 恒为 None，前端显示「—」）。现补齐真实数
   容器请求均返回 ``Data:null``），且容器出口 IPv4 被东财 API 域名封禁；但
   ``fund.eastmoney.com`` 的静态 JS 资产（含 ``Data_netWorthTrend`` 净值序列）在容器内
   plain requests 可稳定拉取，故改用此源（单请求取全历史、无需翻页/放慢频率），对齐其
-  跟踪指数的日收益（``_fetch_index_hist`` 的收盘日变动），纯本地算 residual std 后
+  跟踪指数的日收益（``_fetch_index_hist_range`` 近 2 年窗口的收盘日变动），纯本地算 residual std 后
   ×√252 年化。**无跟踪指数代码 / 净值缓存不足的基金跳过**（值留 None）。
 - 分红频率（payout_freq，枚举：0 不定期/无、1 年度、2 半年、4 季度、12 月度）：
   天天基金 F10「分红配送」页（fhsp_{code}.html）解析历次分红登记日，取近 4 年、
@@ -309,7 +309,7 @@ def ensure_fund_nav(code: str, db) -> bool:
 
 def _compute_tracking_error(code: str, index_code: str | None, db) -> tuple[float | None, int | None]:
     """年化跟踪误差（%）。基金日净值增长率读本地缓存 base_fund_nav，对齐跟踪指数日收益
-    （_fetch_index_hist）。返回 (te_annual_pct, 样本天数)；无指数/净值样本不足返 (None, n)。
+    （_fetch_index_hist_range）。返回 (te_annual_pct, 样本天数)；无指数/净值样本不足返 (None, n)。
 
     ⚠️ 2026-10-09 改：净值改为读 ensure_fund_nav 落库的 base_fund_nav——东财
     ``api.fund.eastmoney.com/f10/lsjz`` JSON 接口当天全局失效、且容器出口 IPv4 被东财
@@ -319,7 +319,7 @@ def _compute_tracking_error(code: str, index_code: str | None, db) -> tuple[floa
     if not index_code:
         return None, None
     # ⚠️ 懒导入：避免与 dividend_service 顶层互相 import 造成循环依赖（启动即崩）
-    from services.dividend_service import _fetch_index_hist
+    from services.dividend_service import _fetch_index_hist_range
     try:
         # 读本地净值缓存（daily_growth 已是百分数 ÷100 后的值，与历史口径一致）
         rows = db.fetchall(
@@ -337,7 +337,13 @@ def _compute_tracking_error(code: str, index_code: str | None, db) -> tuple[floa
         if len(fund_ret) < TE_MIN_SAMPLES:
             return None, len(fund_ret)
 
-        idx_rows = _fetch_index_hist(index_code)
+        # ⚠️ 2026-11-04：只拉近 NAV_WINDOW_DAYS(~2Y)，与本地净值缓存窗口对齐。
+        #   原实现 `_fetch_index_hist(index_code)` 每次都抓 2016 至今全量（~2600行/1MB），
+        #   而同一跟踪指数会被多只基金重复调用（实测 000824/000825/000922 各出现 4 次）
+        #   → 上游瞬时抖动被打成一片 500。跟踪误差本来就只用近 2 年样本。
+        #   dividend_service 侧另有 (code,start) 缓存 + singleflight，重复调用只打一次上游。
+        start = (datetime.now(CST) - timedelta(days=NAV_WINDOW_DAYS)).strftime("%Y%m%d")
+        idx_rows = _fetch_index_hist_range(index_code, start)
         idx_close: dict[str, float] = {}
         for r in idx_rows:
             d = str(r.get("日期") or "")[:10]

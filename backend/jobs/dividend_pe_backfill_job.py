@@ -11,7 +11,10 @@
       · 每天只推进一小批（默认 6 个），温和小步走
       · 并发固定 2（不可调高，见 PE_BACKFILL_CONCURRENCY）
       · 断点续传：已回填的指数自动跳过，中断/失败无需人工干预
-      · 全部回填完（或剩下的都是中证不覆盖的）后自动停掉，不空转
+      · 全量回填完成后**不停表**（2026-11-04）：继续每天按「最陈旧优先」
+        增量刷新已回填的指数；此前待办清零就 remove_job，导致 37 个指数的
+        PE 序列与每日股息率双双冻结（force=0 的 overview 纯本地不碰上游）
+      · 定时器永久保留，股息率每日刷新同样依赖它
 
 保留手动端点 ``POST /api/v1/dividend/fill-index-pe`` 供排查时立刻补一批。
 """
@@ -78,26 +81,25 @@ def _run_fill(job_name: str, limit: int) -> None:
             threading.Event().wait(0.5)
 
         s = ds.pe_backfill_status()
-        # 停止条件：**所有剩余待办都已被判定为「中证不覆盖」**。
-        # ⚠️ 不能用「rows_added==0」当条件（2026-10-08 修正）：
-        #   中证限流是**间歇性**的，连续几轮撞上限流窗口很正常，但那不代表
-        #   「已经没东西可补」——贸然停止会导致数据永远停在旧日期。
-        #   故只看 `pending_count == 0`：待办清零 = 真的补完了（要么成功、要么确认不覆盖）。
+        # ⚠️ 2026-11-04 修正：**不再因为 pending_count==0 停掉定时器**。
+        #   `pending_count` 只统计「从未回填过」的指数，不含「已回填但序列变旧」的；
+        #   全量回填完成后一旦 remove_job，37 个指数的 PE 序列就再也不会自动更新
+        #   （get_dividend_overview(force=0) 纯本地、不碰上游），实测 pe_date 冻结成
+        #   10-16(8) / 10-23(6) / 10-27(6) / 10-28(6) 的阶梯，只有手动 force 才补。
+        #   更隐蔽的是：remove_job 移除的是本 job 自己，股息率每日刷新其实也一起没了。
+        #
+        #   现在 pe_backfill_start 的待办已覆盖「已回填但陈旧」的指数，按最旧优先
+        #   轮转、且已有序列走增量拉取（ds_pe_refresh_incremental），因此本 job
+        #   每天照跑即可同时完成：① 新指数首次全量回填 ② 已回填指数每日增量刷新。
+        #   定时器必须永久保留。
         pending = s.get("pending_count")
         if pending is None:  # 老版本无此字段 → 退回旧判据
             pending = (s.get("index_count", 0) - s.get("done_count", 0))
-        if pending == 0:
-            print(
-                f"[{job_name}] PE 待办已清零（已回填 {s.get('done_count')}/{s.get('index_count')}，"
-                f"其中不覆盖 {s.get('unsupported_count', 0)} 个）→ 停掉 PE 回填定时器，"
-                f"但**股息率仍需每日刷新**，故本 job 保留、只跳过 PE 部分"
-            )
-            _stop_scheduler(keep_job=True)
-        else:
-            print(
-                f"[{job_name}] 本轮新增 {s.get('rows_added', 0)} 行，"
-                f"仍有 {pending} 个待补（下轮继续）"
-            )
+        print(
+            f"[{job_name}] 本轮新增 {s.get('rows_added', 0)} 行，"
+            f"已回填 {s.get('done_count')}/{s.get('index_count')}，"
+            f"待首次回填 {pending} 个 → 定时器保留，明日继续增量刷新"
+        )
         record_success(job_name, run, 0.0)
     except Exception as e:  # noqa: BLE001
         print(f"[{job_name}] 回填失败：{type(e).__name__}: {e}")
@@ -174,9 +176,11 @@ def _startup_backfill() -> None:
 def _stop_scheduler(keep_job: bool = False) -> None:
     """停掉定时器。
 
-    ``keep_job=True`` 时只**移除 PE 回填这条job**、保留调度器本身——
-    因为本 job 还兼着**股息率每日刷新**（2026-10-08）：PE 待办清零后
-    股息率仍必须每天刷新，否则会冻结在最后一次 force=1 的值。
+    ⚠️ ``keep_job=True`` 是 2026-10-08 的历史路径（「PE 待办清零后只移除 PE job、
+    保留调度器刷股息率」），但它移除的其实就是本 job 自己，股息率同样会停；
+    且 2026-11-04 已改为「全量回填完成后仍每日增量刷新」，运行中**不再调用自停**。
+    现仅 ``stop_dividend_pe_backfill_scheduler()``（应用 shutdown）以 keep_job=False
+    调用本函数。参数保留仅为兼容既有调用签名。
     """
     global _scheduler
     if _scheduler is None:
@@ -238,9 +242,9 @@ def start_dividend_pe_backfill_scheduler() -> None:
 def stop_dividend_pe_backfill_scheduler() -> None:
     """停止定时回填（应用 shutdown 时调用，与 start_* 对称）。
 
-    ⚠️ 与内部 ``_stop_scheduler(keep_job=True)`` 语义不同：后者只用于
-    「PE 待办清零、但股息率仍需每日刷新」的运行中自停场景；
-    shutdown 场景下 PE 回填与股息率刷新都应完全停止，故此处 keep_job=False。
+    ⚠️ 2026-11-04 起运行中**已无自停场景**：全量回填完成后仍需每日增量刷新，
+    「PE 待办清零但股息率还要刷」的历史路径已废弃。
+    shutdown 时 PE 回填与股息率刷新都应完全停止，故此处 keep_job=False。
     """
     _stop_scheduler(keep_job=False)
 

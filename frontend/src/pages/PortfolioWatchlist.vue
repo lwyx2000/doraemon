@@ -25,7 +25,7 @@ const { titleWithHelp } = useFieldHelp()
 const { data: funds, loading, error, meta, refresh: refetch } = useAsyncData<FundItem[]>(() => api.getFunds())
 const gatewayEmpty = computed(() => isGatewayNoData(meta.value))
 onMounted(refetch)
-const activeTab = ref<string>('index')
+const activeTab = ref<string>('all')
 
 // 表格分页：每页默认 20 行，客户端分页
 const pagination = ref<PaginationProps>({
@@ -45,7 +45,6 @@ const showAddModal = ref(false)
 const addForm = reactive<{ name: string; code: string; type: FundItem['type'] }>({ name: '', code: '', type: 'lof' })
 const typeOptions = [
   { label: 'LOF 基金', value: 'lof' },
-  { label: '封闭基金', value: 'closed' },
   { label: 'QDII 基金', value: 'qdii' },
 ]
 function openAddModal() {
@@ -79,11 +78,14 @@ function submitAdd() {
   showAddModal.value = false
 }
 
+// 只保留本页真正有数据源的分类：
+// · 封闭式基金已有独立菜单 /closed-funds，这里不再重复做 tab（2026-11-04）
+// · 原「指数 / 可转债」tab 的数据源根本不是基金列表（靠 slice(0,4) 截 4 行基金凑数），
+//   点进去是误导，故一并移除。
 const tabs = [
-  { key: 'index', label: '指数' },
+  { key: 'all', label: '全部' },
   { key: 'lof', label: 'LOF基金' },
-  { key: 'closed', label: '封闭基金' },
-  { key: 'cb', label: '可转债' },
+  { key: 'qdii', label: '跨境QDII' },
 ]
 
 function exportPortfolio() {
@@ -96,11 +98,22 @@ function exportPortfolio() {
   message.success(`已导出 ${rows.length} 条 ${tabs.find(t => t.key === activeTab.value)?.label || ''} 数据`)
 }
 
+// ⚠️ 不能按 `f.type` 分类：后端 `/funds` 不带 type 时 subtype_map 没有 'all' 键，
+//    5100 只里 5095 只被统一标成 'etf'（实测），按 type 筛 LOF/QDII/封闭式必然恒空。
+//    可靠依据：代码段 16x / 50x = LOF；`category='cross_border'` = 跨境 QDII。
+function isLofCode(code: string) {
+  return code.startsWith('16') || code.startsWith('50')
+}
 const displayFunds = computed(() => {
   if (!funds.value) return []
-  if (activeTab.value === 'closed') return funds.value.filter(f => f.type === 'closed')
-  if (activeTab.value === 'lof') return funds.value.filter(f => f.type === 'lof' || f.type === 'qdii')
-  return funds.value.slice(0, 4)
+  if (activeTab.value === 'lof') return funds.value.filter(f => isLofCode(f.code))
+  if (activeTab.value === 'qdii') {
+    // 剔除 price==iopv 且无成交的场外联接份额（没有场内溢价可看）
+    return funds.value.filter(f =>
+      f.category === 'cross_border' && (f.premium_pct !== 0 || f.volume != null),
+    )
+  }
+  return funds.value
 })
 
 const columns = computed(() => [
@@ -116,7 +129,7 @@ const columns = computed(() => [
     render: (row: FundItem) => row.price.toFixed(3),
   },
   {
-    title: titleWithHelp(activeTab.value === 'closed' ? '折价率' : '溢价率', 'premium_pct'),
+    title: titleWithHelp('溢价率', 'premium_pct'),
     key: 'premium_pct',
     align: 'right' as const,
     render: (row: FundItem) => {
@@ -167,33 +180,51 @@ const columns = computed(() => [
 // ECharts options — replace static SVG donut + sparkline
 // ============================================================
 
-// Asset allocation donut chart
-const allocationChartOption = computed(() => ({
-  tooltip: {
-    trigger: 'item',
-    formatter: '{b}: {c} ({d}%)',
-  },
-  legend: { show: false },
-  series: [
-    {
-      type: 'pie',
-      radius: ['55%', '78%'],
-      avoidLabelOverlap: false,
-      label: { show: false },
-      labelLine: { show: false },
-      itemStyle: {
-        borderColor: 'transparent',
-        borderWidth: 2,
-      },
-      data: [
-        { value: 45, name: 'LOF基金', itemStyle: { color: '#005ea1' } },
-        { value: 30, name: '封闭基金', itemStyle: { color: '#585e6c' } },
-        { value: 15, name: '可转债', itemStyle: { color: '#864f00' } },
-        { value: 10, name: 'REITs', itemStyle: { color: '#2178c3' } },
-      ],
+// 资产配置：按真实列表分类计数（互斥，避免同一只被重复计数）。
+// 原实现是 45/30/15/10 四个写死的假数 + 「封闭基金」标签，已废弃。
+const allocationCounts = computed(() => {
+  const all = funds.value || []
+  const qdii = all.filter(f => f.category === 'cross_border').length
+  const lof = all.filter(f => isLofCode(f.code) && f.category !== 'cross_border').length
+  return { qdii, lof, other: Math.max(0, all.length - qdii - lof), total: all.length }
+})
+const allocationLegend = computed(() => {
+  const { qdii, lof, other, total } = allocationCounts.value
+  const pct = (n: number) => total ? `${Math.round(n / total * 100)}%` : '0%'
+  return [
+    { label: `境内LOF (${pct(lof)})`, color: '#005ea1' },
+    { label: `跨境QDII (${pct(qdii)})`, color: '#585e6c' },
+    { label: `其他ETF (${pct(other)})`, color: '#2178c3' },
+  ]
+})
+const allocationChartOption = computed(() => {
+  const { qdii, lof, other } = allocationCounts.value
+  return {
+    tooltip: {
+      trigger: 'item',
+      formatter: '{b}: {c} ({d}%)',
     },
-  ],
-}))
+    legend: { show: false },
+    series: [
+      {
+        type: 'pie',
+        radius: ['55%', '78%'],
+        avoidLabelOverlap: false,
+        label: { show: false },
+        labelLine: { show: false },
+        itemStyle: {
+          borderColor: 'transparent',
+          borderWidth: 2,
+        },
+        data: [
+          { value: lof, name: '境内LOF', itemStyle: { color: '#005ea1' } },
+          { value: qdii, name: '跨境QDII', itemStyle: { color: '#585e6c' } },
+          { value: other, name: '其他ETF', itemStyle: { color: '#2178c3' } },
+        ],
+      },
+    ],
+  }
+})
 
 // Discount convergence trend — line chart with area gradient
 const convergenceData = [75, 60, 80, 55, 85, 95]
@@ -272,15 +303,14 @@ const convergenceChartOption = computed(() => ({
         <div class="donut-container">
           <BaseChart :option="allocationChartOption" :height="140" />
           <div class="donut-center">
-            <span class="donut-total">14</span>
+            <span class="donut-total">{{ allocationCounts.total }}</span>
             <span class="donut-label">总计</span>
           </div>
         </div>
         <div class="allocation-legend">
-          <div class="legend-item"><span class="legend-dot" style="background: var(--color-primary)" />LOF基金 (45%)</div>
-          <div class="legend-item"><span class="legend-dot" style="background:#585e6c" />封闭基金 (30%)</div>
-          <div class="legend-item"><span class="legend-dot" style="background:#864f00" />可转债 (15%)</div>
-          <div class="legend-item"><span class="legend-dot" style="background: var(--color-primary-hover)" />REITs (10%)</div>
+          <div v-for="item in allocationLegend" :key="item.label" class="legend-item">
+            <span class="legend-dot" :style="{ background: item.color }" />{{ item.label }}
+          </div>
         </div>
       </div>
 
@@ -338,10 +368,10 @@ const convergenceChartOption = computed(() => ({
       <div class="risk-panel">
         <h4>相关性矩阵</h4>
         <div class="corr-grid">
-          <div /><div class="corr-label-sm">LOF</div><div class="corr-label-sm">CLS</div><div class="corr-label-sm">BND</div><div class="corr-label-sm">IDX</div>
+          <div /><div class="corr-label-sm">LOF</div><div class="corr-label-sm">QDII</div><div class="corr-label-sm">BND</div><div class="corr-label-sm">IDX</div>
           <div class="corr-label-sm">LOF</div>
           <div class="corr-cell" style="opacity:0.9" /><div class="corr-cell" style="opacity:0.6" /><div class="corr-cell" style="opacity:0.2" /><div class="corr-cell" style="opacity:0.4" />
-          <div class="corr-label-sm">CLS</div>
+          <div class="corr-label-sm">QDII</div>
           <div class="corr-cell" style="opacity:0.6" /><div class="corr-cell" style="opacity:0.9" /><div class="corr-cell" style="opacity:0.3" /><div class="corr-cell" style="opacity:0.1" />
         </div>
       </div>
