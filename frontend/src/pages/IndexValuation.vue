@@ -133,7 +133,9 @@ function zscoreLabel(zc: string | null): string {
 // ==================== 数据项 tooltip 延迟（2026-11-03） ====================
 // 鼠标悬停在表格「数据项」上时不立即弹出，等 3 秒后再弹，避免滑过表格时频繁打断阅读。
 // 仅用于单元格数据项的 NTooltip；表头悬停说明保持即时弹出。
-const DATA_TIP_PROPS = { trigger: 'hover', showDelay: 3000 }
+// as const 必须保留：否则 trigger 被推断为 string，而 NTooltip 的 trigger 是字面量联合
+// (PopoverTrigger)，vue-tsc -b 会在 h(NTooltip, DATA_TIP_PROPS, ...) 处报 TS2769。
+const DATA_TIP_PROPS = { trigger: 'hover', showDelay: 3000 } as const
 
 // ==================== 多算法对比单元格（等权/中位，2026-10-27） ====================
 // 同一指标三种聚合：加权(买ETF真实口径) / 等权(成分股截尾均值，PE 截 95 分位) / 中位(中位数，抗极值)。
