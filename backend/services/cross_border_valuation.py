@@ -1,22 +1,26 @@
 """跨境 LOF/QDII 篮子自算估值服务（参考 lofarb arbcore 自算估值移植）。
 
-核心公式（lofarb unified_valuation.basket_valuation 的矩阵形态，doraemon 无
-Woody hedge 数据，魔法公式即其单组件特例，直接走矩阵公式）：
+核心公式（对齐 palmmicro《估值说明文档》2.2 / 附录 B 通用式：
+`前日净值 × (1 + 仓位系数 × Δ标的) × (1 + Δ汇率)`）：
 
-    est_nav = nav * (1 + position/100 * (Σ w_i * (P_i_now/P_i_base) * (fx_now/fx_base) - 1))
+    est_nav = nav * (1 + Σ w_i * ((1 + position/100 * (P_i_now/P_i_base - 1)) * (fx_now/fx_base) - 1))
+
+关键口径：Δ标的按 position 缩放（现金部分不跟标的指数涨跌），Δ汇率作用于整块
+外币资产（QDII 现金头寸也是外币，全额受汇率影响），所以汇率不打仓位折扣。
+单币种篮子化简即 nav*(1+pos*(R-1))*(fx_now/fx_base)；多币种逐组件各折各的汇率。
 
 - nav / nav_date：53 网关 fund_rank 提供的真实净值与净值日期；
 - P_i_base：净值日期对应的底层市场收盘价。美股 T 日收盘在北京时间 T+1 凌晨落地，
   QDII 净值日（中国交易日）T 反映的是 T-1 美股收盘 → us 篮子基准日 = nav_date - 1；
   A股/港股/境内期货的净值与行情同日 → 基准日 = nav_date；
 - P_i_now：优先实时报价（新浪 gb_/腾讯/期货 hf_），非交易时段退回最新日K收盘；
-- fx：篮子货币兑 CNY 变化（新浪 fx_susdcny/fx_shkdcny/fx_sjpycny，
-  base=昨收=now-涨跌额，now=现价）。
+- fx：篮子货币兑 CNY 变化。文档 3.15③/5.2 钉死净值口径用人民币**中间价**，故 USD/HKD/JPY
+  取 currency_boc_safe 中间价最近两日比值（今日/昨日）；缓存为空时退回新浪即期 fx_susdcny 等。
 
 第二种方法：指数跟踪法（method="index"，移植 lofarb step11_simple_static_valuation）。
 用于「有 position 但篮子为空」的港股恒生系 LOF：
 
-    est_nav = nav * (1 + position/100 * (idx_now/idx_base * fx_now/fx_base - 1))
+    est_nav = nav * (1 + position/100 * (idx_now/idx_base - 1)) * (fx_now/fx_base)
 
 - idx_now：新浪港股指数实时（hkHSI 字段布局与 A 股相反：[3]昨收 [6]现价）；
 - idx_base：腾讯 hkfqkline 日K在 nav_date 当日的收盘。港股与 A 股同交易日历，
@@ -27,7 +31,7 @@ Woody hedge 数据，魔法公式即其单组件特例，直接走矩阵公式�
 第三种方法：期货结算价口径（method="futures"，pure 模式，移植 lofarb step12）。
 用于「持仓≈单一期货合约」的商品 LOF/ETF（161226 沪银、159985 豆粕）：
 
-    est_nav = nav * (1 + position/100 * (fut_now/fut_base * fx_now/fx_base - 1))
+    est_nav = nav * (1 + position/100 * (fut_now/fut_base - 1)) * (fx_now/fx_base)
 
 - fut_base：**nav_date 当日的结算价**。实测（2026-10-29，57 个交易日，见下）：
   内盘商品基金的净值按当日结算价估值，既不是收盘价，也不是滞后一日。
@@ -99,7 +103,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 
-from services.akshare_client import akshare_request, get_session
+from services.akshare_client import akshare_request, akshare_api_get, get_session
 
 SNAPSHOT_TTL = 300  # 秒
 
@@ -300,9 +304,58 @@ def _fetch_us_realtime(snaps: dict) -> None:
     print(f"[CrossBorderValuation] 美股实时命中 {len(out)}/{len(_us_symbols)}")
 
 
+# 人民币中间价（currency_boc_safe）缓存。文档 3.15③/5.2 钉死：基金净值公告口径用
+# 「美元人民币中间价」，不是在岸即期。中间价一天只公布一次（约 09:15），1h 缓存足够；
+# 取数 7~9s，_fetch_fx 由 _build_snapshot 在后台快照线程里调，不阻塞请求路径。
+# 与日经慢腿各自独立：日经腿在 index_global_hist_em 失败时会提前 return、根本不调
+# currency_boc_safe，所以不能复用它的结果，必须单独取一份。
+_BOC_MID_TTL = 3600
+_boc_mid_state: dict = {"data": {}, "at": 0.0}
+_boc_mid_lock = threading.Lock()
+
+
+def _boc_col(row: dict, name: str):
+    """按「包含」取列，兼容网关字段名偶发的空格变体（如 ' 迪拉姆'）。"""
+    k = next((k for k in row if name in str(k)), None)
+    return row.get(k) if k else None
+
+
+def _get_boc_mid() -> dict:
+    """人民币中间价日序列 {USD/HKD/JPY: [(date, rate), ...]}（按日期升序），1h 缓存。
+
+    下游只用比值 fx_now/fx_base，rate 的绝对量纲（美元列是「100 美元兑人民币」）会在
+    相除时约掉，故不需要 /100。取不到时返回旧缓存（可能为空），由 _fetch_fx 退回新浪即期。
+    """
+    now = time.time()
+    with _boc_mid_lock:
+        if _boc_mid_state["data"] and now - _boc_mid_state["at"] < _BOC_MID_TTL:
+            return _boc_mid_state["data"]
+    boc = akshare_request("currency_boc_safe", retries=1, timeout=90)
+    data: dict[str, list] = {}
+    if isinstance(boc, list):
+        for r in boc:
+            d = _norm_date(str(r.get("日期") or ""))
+            if not d:
+                continue
+            for code, col in (("USD", "美元"), ("HKD", "港元"), ("JPY", "日元")):
+                v = _f(_boc_col(r, col))
+                if v:
+                    data.setdefault(code, []).append((d, v))
+        for code in data:
+            data[code].sort()
+    with _boc_mid_lock:
+        if data:
+            _boc_mid_state["data"] = data
+            _boc_mid_state["at"] = now
+        return _boc_mid_state["data"]
+
+
 def _fetch_fx(snaps: dict) -> None:
-    """新浪汇率 hq_str_fx_xxx：[1]现价(买) [3]昨收 [17]日期。
-    验证：现-昨收 = [11]涨跌额，[10]为涨跌%。base=昨收=[3]。"""
+    """汇率腿。文档 3.15③/5.2 钉死净值口径用人民币**中间价**，故 USD/HKD/JPY 一律取
+    currency_boc_safe 中间价日序列的最近两日比值（今日中间价/昨日中间价）；中间价缓存
+    为空时（冷启动/网关故障）退回新浪即期 fx_xxx（[1]现价 [3]昨收 [17]日期）。
+    两者都是「最近一个交易日的 1 日变化率」，语义一致（周末/节假日同样取最近两日），
+    只是中间价更贴净值公告口径。取的是比值，量纲相除即约掉。"""
     out = {}
     need = [(_CURRENCY_FIELD[c], c) for c in sorted(_currencies) if c in _CURRENCY_FIELD]
     if need:
@@ -315,9 +368,21 @@ def _fetch_fx(snaps: dict) -> None:
                     prev = _f(fields[3])
                     code = {"fx_susdcny": "USD", "fx_shkdcny": "HKD", "fx_sjpycny": "JPY"}.get(m.group(1))
                     if code and now and prev and prev > 0:
-                        out[code] = {"now": now, "base": prev, "date": fields[17]}
+                        out[code] = {"now": now, "base": prev, "date": fields[17], "src": "sina"}
         except Exception as e:
             print(f"[CrossBorderValuation] 汇率抓取失败: {e}")
+    # 中间价覆盖即期（文档口径）。只覆盖取到 >=2 个交易日的币种，其余保留即期兜底。
+    mid = _get_boc_mid()
+    n_mid = 0
+    for code in ("USD", "HKD", "JPY"):
+        series = mid.get(code) or []
+        if len(series) >= 2:
+            (d_now, v_now), (d_base, v_base) = series[-1], series[-2]
+            if v_now and v_base and v_base > 0:
+                out[code] = {"now": v_now, "base": v_base, "date": d_now, "src": "boc_mid"}
+                n_mid += 1
+    if n_mid:
+        print(f"[CrossBorderValuation] 汇率中间价覆盖 {n_mid}/3 币种（USD/HKD/JPY）")
     out.setdefault("CNY", {"now": 1.0, "base": 1.0, "date": ""})
     snaps["fx"] = out
 
@@ -588,18 +653,44 @@ def _fetch_hk_index(snaps: dict) -> None:
         print(f"[CrossBorderValuation] 港股指数实时命中 {len(out)}/{len(_hk_index_symbols)}")
 
 
-def _fetch_hk_index_daily(snaps: dict) -> None:
-    """港股指数历史日K（腾讯 hkfqkline，2026-10-28 实测为唯一可用源）。
+def _hk_index_daily_via_gateway(sym: str) -> list[tuple[str, float]]:
+    """网关 /api/hk/kline 取港股指数日K —— 只给腾讯没有的指数用（如恒生中型股 hkHSMI）。
 
-    新浪 HK_IndexService.getDayK 两个域名分别返回 Service not valid / not found，
-    网关 stock_hk_index_daily_em 超时；腾讯可取 60 根：
-        GET web.ifzq.gtimg.cn/appstock/app/hkfqkline/get
-            ?_var=kline_dayqfq&param=hkHSI,day,,,60,qfq
-    字段顺序是 [0]日期 [1]开 [2]收 [3]高 [4]低，不是常见的「开高低收」。
-    校验：高 > 开/收 > 低（实测 23157.40 > 23083.99 > 23023.04）。
+    网关只认裸大写码，故剥掉新浪/腾讯体系的 hk 前缀：hkHSMI → HSMI。返回 (date, close)
+    升序、最多 60 根。2026-11-02 实测 tickflow_hk 给 HSMI 79 根、末根 close=3955.96，
+    与新浪实时昨收自洽。取不到（未装/超时/落到陈旧源）就返回空，交上层判 '-'，绝不用
+    代理价凑数。新鲜度不在这里挡，由 _estimate_by_index 的 _INDEX_MAX_BASE_LAG_DAYS=7 兜底。
+    """
+    bare = sym[2:] if sym.lower().startswith("hk") else sym
+    data = akshare_api_get("/api/hk/kline",
+                           {"code": bare, "period": "day", "count": 60},
+                           retries=1, timeout=25)
+    rows = data if isinstance(data, list) else (
+        (data.get("kline") or data.get("list") or []) if isinstance(data, dict) else [])
+    pairs = []
+    for b in rows:
+        if not isinstance(b, dict):
+            continue
+        d = _norm_date(str(b.get("datetime") or b.get("date") or ""))
+        c = _f(b.get("close"))
+        if d and c:
+            pairs.append((d, c))
+    pairs.sort()
+    return pairs[-60:]
+
+
+def _fetch_hk_index_daily(snaps: dict) -> None:
+    """港股指数历史日K。首选腾讯 hkfqkline；腾讯取不到时退回数据网关 /api/hk/kline。
+
+    腾讯字段顺序是 [0]日期 [1]开 [2]收 [3]高 [4]低（实测 23157.40 > 23083.99 > 23023.04）。
+    但腾讯并不覆盖所有恒生细分指数：hkHSI/hkHSCEI/hkHSTECH 有日K，而 501303 真正跟踪的
+    恒生中型股 hkHSMI 腾讯返回空 day（2026-11-02 实测）——这类只有网关能补，见
+    _hk_index_daily_via_gateway。两者都拿不到则本轮不出数（前端显示 '-'），绝不代理凑数。
     """
     store = snaps.setdefault("hk_index", {})
+    n_gw = 0
     for sym in sorted(_hk_index_symbols):
+        pairs = []
         try:
             resp = get_session().get(
                 "https://web.ifzq.gtimg.cn/appstock/app/hkfqkline/get"
@@ -610,18 +701,22 @@ def _fetch_hk_index_daily(snaps: dict) -> None:
             txt = resp.content.decode("utf-8", "ignore")
             payload = json.loads(txt[txt.find("=") + 1:])
             bars = ((payload.get("data") or {}).get(sym) or {}).get("day") or []
-            pairs = []
             for b in bars[-60:]:
                 d, c = _norm_date(b[0]), _f(b[2])   # [2] 收盘
                 if d and c:
                     pairs.append((d, c))
-            if pairs:
-                store.setdefault(sym, {}).update({"daily": pairs})
         except Exception as e:
-            print(f"[CrossBorderValuation] 港股指数日K {sym} 失败: {type(e).__name__}: {e}")
+            print(f"[CrossBorderValuation] 港股指数日K {sym} 腾讯失败: {type(e).__name__}: {e}")
+        if not pairs:                       # 腾讯无此指数日K → 网关兜底（如 hkHSMI）
+            pairs = _hk_index_daily_via_gateway(sym)
+            if pairs:
+                n_gw += 1
+        if pairs:
+            store.setdefault(sym, {}).update({"daily": pairs})
     if _hk_index_symbols:
         n = sum(1 for v in store.values() if v.get("daily"))
-        print(f"[CrossBorderValuation] 港股指数日K命中 {n}/{len(_hk_index_symbols)}")
+        print(f"[CrossBorderValuation] 港股指数日K命中 {n}/{len(_hk_index_symbols)}"
+              f"（腾讯 {n - n_gw} + 网关兜底 {n_gw}）")
 
 
 # ---------------------------------------------------------------- 快照管理
@@ -740,7 +835,8 @@ def _estimate_one(snap: dict, fund: dict, cfg: dict) -> dict | None:
     base_dt = datetime.strptime(nav_date, "%Y-%m-%d")
     us_base_date = (base_dt - timedelta(days=1)).strftime("%Y-%m-%d")  # 美股收盘滞后一个北京日
 
-    w_change = 0.0
+    growth = 0.0
+    pos_frac = position / 100.0
     price_date = ""
     for c in basket:
         sym, mkt, w = c["symbol"], c["market"], (c.get("weight") or 0) / 100.0
@@ -767,11 +863,14 @@ def _estimate_one(snap: dict, fund: dict, cfg: dict) -> dict | None:
                 return None
             base, now = got["prev_close"], got["now"]
             price_date = max(price_date, got.get("date") or "")
-        w_change += w * (now / base) * (fx["now"] / fx["base"])
-    if w_change <= 0:
-        return None
+        # 汇率作用于整块外币资产（含现金头寸），不按仓位打折；标的涨跌才按仓位缩放。
+        # 单币种时与 palmmicro「前日净值×(1+仓位×Δ标的)×(1+Δ汇率)」完全等价，
+        # 多币种篮子（如 160644 港美股）逐组件各折各的汇率，是同一口径的推广。
+        price_ratio = now / base
+        fx_ratio = fx["now"] / fx["base"]
+        growth += w * ((1.0 + pos_frac * (price_ratio - 1.0)) * fx_ratio - 1.0)
 
-    est_nav = nav * (1.0 + (position / 100.0) * (w_change - 1.0))
+    est_nav = nav * (1.0 + growth)
     if not math.isfinite(est_nav) or est_nav <= 0:
         return None
     out = {
@@ -790,7 +889,7 @@ def _estimate_one(snap: dict, fund: dict, cfg: dict) -> dict | None:
 def _estimate_by_index(snap: dict, fund: dict, cfg: dict) -> dict | None:
     """单指数代理估值（移植 lofarb step11_simple_static_valuation）。
 
-        est_nav = nav * (1 + position/100 * (idx_now/idx_base * fx_now/fx_base - 1))
+        est_nav = nav * (1 + position/100 * (idx_now/idx_base - 1)) * (fx_now/fx_base)
 
     港股与 A 股同交易日历：净值日 T 的净值已反映 T 日收盘，故基准日 = nav_date。
     与矩阵公式在「单成分、权重 100%」时代数等价，所以没有新增公式，只换了取数路径。
@@ -855,7 +954,8 @@ def _estimate_by_index(snap: dict, fund: dict, cfg: dict) -> dict | None:
 
     idx_ratio = now / bp[1]
     fx_ratio = fx["now"] / fx["base"]
-    est_nav = nav * (1.0 + (position / 100.0) * (idx_ratio * fx_ratio - 1.0))
+    # 汇率整块生效、不随仓位打折；JP 合腿序列 currency=CNY→fx_ratio=1，与改前一致
+    est_nav = nav * (1.0 + (position / 100.0) * (idx_ratio - 1.0)) * fx_ratio
     if not math.isfinite(est_nav) or est_nav <= 0:
         return None
 
@@ -879,7 +979,7 @@ def _estimate_by_index(snap: dict, fund: dict, cfg: dict) -> dict | None:
 def _estimate_by_futures(snap: dict, fund: dict, cfg: dict) -> dict | None:
     """期货结算价口径 pure 模式（移植 lofarb realtime_futures_analysis 的 pure 分支）。
 
-        est_nav = nav * (1 + position/100 * (fut_now/fut_base * fx_now/fx_base - 1))
+        est_nav = nav * (1 + position/100 * (fut_now/fut_base - 1)) * (fx_now/fx_base)
 
     与 _estimate_by_index 同构，三处不同：
     1) 基准/现价优先用**结算价**，因为内盘商品基金按结算价估净值
@@ -933,7 +1033,8 @@ def _estimate_by_futures(snap: dict, fund: dict, cfg: dict) -> dict | None:
 
     fut_ratio = now / bp[1]
     fx_ratio = fx["now"] / fx["base"]
-    est_nav = nav * (1.0 + (position / 100.0) * (fut_ratio * fx_ratio - 1.0))
+    # 内盘商品基金 currency=CNY→fx_ratio=1，与改前完全一致（结算价无汇率腿）
+    est_nav = nav * (1.0 + (position / 100.0) * (fut_ratio - 1.0)) * fx_ratio
     if not math.isfinite(est_nav) or est_nav <= 0:
         return None
 
