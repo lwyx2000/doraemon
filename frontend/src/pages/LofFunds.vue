@@ -7,7 +7,6 @@ import {
   TrendingUp,
   WalletOutline,
   EarthOutline,
-  LockClosedOutline,
   PulseOutline,
   FlashOutline,
   StatsChartOutline,
@@ -96,7 +95,8 @@ function exportFunds() {
     const t = tacticalMap.value.get(f.code)
     const state = tacticalState(t)
     const base = [
-      f.name, f.code, f.type, f.price.toFixed(3), f.iopv.toFixed(3), f.premium_pct,
+      f.name, f.code, activeTab.value === 'qdii' ? 'QDII-LOF' : f.type,
+      f.price.toFixed(3), f.iopv.toFixed(3), f.premium_pct,
       f.premium_percentile ?? '', f.net_arbitrage_yield, f.volume ?? '',
     ]
     if (tacticalLoaded.value) {
@@ -122,13 +122,21 @@ onMounted(() => {
   loadStrategies()
 })
 
+// QDII/跨境标的判定：
+//   后段 /funds?type=lof 返回的每条 type 恒为 'lof'（由 fund_subtype 统一赋值），
+//   不存在 type='qdii' / 'closed' 的条目 —— 旧版按 type 筛导致两个 tab 恒空。
+//   真实可用的分类是后端按名称算的 category='cross_border'（28 只跨境 LOF）。
+//   其中约 12 只是场外联接 C/E 份额：price==iopv、premium_pct==0、volume 为 null，
+//   没有场内报价、无套利意义，故剔除；只保留有场内价/成交的品种。
+const isCrossBorderTradable = (f: FundItem) =>
+  f.category === 'cross_border' && (f.premium_pct !== 0 || f.volume != null)
+
 const filteredFunds = computed(() => {
   if (!funds.value) return []
-  if (activeTab.value === 'lof') return funds.value.filter(f => f.type === 'lof')
   if (activeTab.value === 'qdii') {
     // QDII: 按可行性分级排序，同级按调整后收益下限降序
     return funds.value
-      .filter(f => f.type === 'qdii')
+      .filter(isCrossBorderTradable)
       .sort((a, b) => {
         const fa = qdiiAnalysisMap.value.get(a.code)
         const fb = qdiiAnalysisMap.value.get(b.code)
@@ -138,14 +146,15 @@ const filteredFunds = computed(() => {
         return fb.adjustedYieldLow - fa.adjustedYieldLow
       })
   }
-  return funds.value.filter(f => f.type === 'closed')
+  // LOF（默认）：单独菜单「封闭基金」负责封基，本页不再重复承载
+  return funds.value.filter(f => f.type === 'lof')
 })
 
-// 全量套利可行性分析映射 (LOF/QDII/封闭均需 T+N 敞口分析)
+// 全量套利可行性分析映射 (LOF/QDII 均需 T+N 敞口分析)
 const arbitrageAnalysisMap = computed(() => {
   if (!funds.value) return new Map<string, ArbitrageAnalysis>()
-  // 对所有有套利收益的基金执行分析
-  const arbitrageFunds = funds.value.filter(f => Math.abs(f.net_arbitrage_yield) > 0 || f.type === 'qdii')
+  // 对所有有套利收益的基金执行分析；QDII 跨境标的即使毛收益为 0 也纳入（限购/停牌判定需要）
+  const arbitrageFunds = funds.value.filter(f => Math.abs(f.net_arbitrage_yield) > 0 || isCrossBorderTradable(f))
   return analyzeArbitrageBatch(arbitrageFunds)
 })
 
@@ -203,8 +212,7 @@ const lofStats = computed(() => {
 
 const tabs = [
   { key: 'lof', label: 'LOF基金', icon: WalletOutline },
-  { key: 'qdii', label: 'QDII', icon: EarthOutline },
-  { key: 'closed', label: '封闭式', icon: LockClosedOutline },
+  { key: 'qdii', label: 'QDII / 跨境LOF', icon: EarthOutline },
 ]
 
 // ---- 战术信号 + 胜率扫描（共享逻辑见 useSignalScan；对当前 Tab 筛选结果生效，最多前 100 只）----
@@ -519,26 +527,8 @@ const columns = computed(() => {
     )
   }
 
-  // 条件列：仅封闭式 tab 显示（位于成交量与状态之间）
-  if (activeTab.value === 'closed') {
-    cols.push(
-      {
-        title: '剩余期限',
-        key: 'remaining_term',
-        align: 'right' as const,
-        render: (row: FundItem) => h('span', { class: 'mono right' }, row.remaining_term ?? '-'),
-      },
-      {
-        title: '预估收益',
-        key: 'est_ytm',
-        align: 'right' as const,
-        render: (row: FundItem) => h('span', {
-          class: 'mono right',
-          style: { color: 'var(--color-primary)', fontWeight: 700 },
-        }, `${row.est_ytm ?? '-'}%`),
-      },
-    )
-  }
+  // 封基专属列（剩余期限 / 预估收益）已随「封闭式」tab 一并移除：
+  // 封闭基金由侧边栏独立菜单承载，本页不再重复提供。
 
   cols.push({
     title: '状态',
@@ -684,22 +674,24 @@ const columns = computed(() => {
       </div>
     </div>
 
-    <!-- 底部提示 -->
+    <!-- 底部提示：全部由当前真实列表推导，不再使用硬编码示例数值 -->
     <div v-if="activeTab === 'qdii'" class="insight-bar qdii-insight">
       <n-icon :component="PulseOutline" size="20" class="insight-icon" />
-      <span v-if="filteredFunds.some(f => qdiiAnalysisMap.get(f.code)?.feasibility === 'infeasible')">
-        <strong style="color: var(--color-danger)">QDII套利陷阱预警：</strong>
-        检测到限购品种，资金容量C级，套利收益已归零。
-        T+2到账期间净值波动敞口可达 4-5%，需严格评估资金容量与时间成本后再执行。
-      </span>
-      <span v-else>
-        <strong>QDII溢价套利提示：</strong>当前QDII基金溢价处于高位，扣除成本后净套利收益为正，但需关注T+2到账敞口风险。
+      <span>
+        <strong>口径说明：</strong>本页 QDII / 跨境 LOF 共 {{ filteredFunds.length }} 只，
+        取自 LOF 列表中后端标记为「跨境」且有场内报价的品种（已剔除无场内价的场外联接份额）。
+        跨境份额 T+2 到账，套利需扣资金占用与限购成本；
+        <span v-if="filteredFunds.some(f => qdiiAnalysisMap.get(f.code)?.feasibility === 'infeasible')">
+          <strong style="color: var(--color-danger)">当前检测到限购 / 资金容量 C 级品种，其套利收益已归零。</strong>
+        </span>
+        <span v-else>当前未检测到不可行标的，执行前仍需自行核对净值与外汇额度。</span>
       </span>
     </div>
     <div v-else class="insight-bar">
       <n-icon :component="PulseOutline" size="20" class="insight-icon" />
       <span>
-        <strong>QDII溢价套利提示：</strong>纳指LOF当前溢价6.25%，扣除申购赎回成本后净套利收益约1.82%，存在套利空间。
+        <strong>LOF 折溢价概览：</strong>当前 {{ filteredFunds.length }} 只，折溢价绝对值超过 3% 的
+        {{ lofStats.opportunityCount }} 只。封闭基金请从左侧「封闭基金」菜单查看。
       </span>
     </div>
     </div>
