@@ -29,6 +29,7 @@ import GlossaryPanel from '../components/GlossaryPanel.vue'
 import MarketOverview from '../components/MarketOverview.vue'
 import BoardSectorPanel from '../components/BoardSectorPanel.vue'
 import SwHeatmap from '../components/SwHeatmap.vue'
+import SwRankTrend from '../components/SwRankTrend.vue'
 import FundFlowPanel from '../components/FundFlowPanel.vue'
 import ZTStatsPanel from '../components/ZTStatsPanel.vue'
 import FundRankingPanel from '../components/FundRankingPanel.vue'
@@ -550,6 +551,9 @@ function handleCheckedChange(keys: (string | number)[]) {
       />
       <SectionFallback v-else key="fallback" :error="sectionError.swSectors ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.swSectors?.isMock && sectionSources.swSectors?.gatewayEmpty" :min-height="160" @retry="retrySection('swSectors')" />
     </Transition>
+
+    <!-- A股行业热力图历史：最近 N 个交易日每日行业涨跌幅与排名（本地快照表，组件自取数） -->
+    <SwRankTrend />
 
     <!-- 跨市场指数估值（默认收起） -->
     <div class="market-valuation-section">

@@ -412,7 +412,7 @@ const distributionChartOption = computed(() => {
       <template #actions>
         <TabBar v-model="activeTab" :tabs="tabs" />
         <div class="panel-info">
-          <span>自动刷新: 5秒</span>
+          <span>数据源：基金实时列表</span>
           <n-icon :component="FilterOutline" size="16" />
         </div>
       </template>

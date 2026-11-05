@@ -161,7 +161,7 @@ export const pageHelpContent: Record<string, PageHelpContent> = {
       '成交量 < 10万 → 流动性极差，大资金无法退出',
       '年化收敛收益率 > 8% → 高息机会',
     ],
-    dataFreq: '日K线 + NAV日频 + 底层持仓月频',
+    dataFreq: '基金实时列表（当前截面）+ 战术信号/胜率扫描按需计算；折价-期限分布为当日横截面，无逐日折价历史',
   },
   convertibleBonds: {
     title: '可转债扫描器',

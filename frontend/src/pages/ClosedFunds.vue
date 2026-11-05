@@ -1,7 +1,7 @@
 <script setup lang="ts">
 defineOptions({ name: 'ClosedFunds' })
-import { h, ref, reactive, computed, onMounted } from 'vue'
-import { NButton, NDataTable, NIcon, NModal, NInput, NTag, NSelect, NInputNumber, useMessage } from 'naive-ui'
+import { h, ref, computed, onMounted } from 'vue'
+import { NButton, NDataTable, NIcon, NTag, NSelect, NInputNumber, useMessage } from 'naive-ui'
 import type { PaginationProps } from 'naive-ui'
 import { TimerOutline, WarningOutline, FlashOutline, StatsChartOutline } from '@vicons/ionicons5'
 import { api, useAsyncData, isGatewayNoData } from '../composables/useApi'
@@ -129,38 +129,48 @@ function scoreColor(score: number): string {
   return 'var(--color-danger)'
 }
 
-// 添加标的弹窗
-const showAddModal = ref(false)
-const addForm = reactive({ name: '', code: '' })
-function openAddModal() {
-  addForm.name = ''
-  addForm.code = ''
-  showAddModal.value = true
+// 折价率 · 剩余期限分布（真实横截面，替代原写死的「折价收敛趋势」假柱状图）
+// 后端只提供当日截面，没有逐日折价历史；这里按剩余期限分组展示平均折价，
+// 用于观察「越临近到期折价是否越浅」的收敛形态，属横截面而非时间序列。
+interface DiscountBucket {
+  label: string
+  count: number
+  avgDiscount: number
+  height: number
 }
-function submitAdd() {
-  if (!addForm.name.trim() || !addForm.code.trim()) {
-    message.warning('请填写基金名称和代码')
-    return
-  }
-  if (!funds.value) return
-  if (funds.value.some(f => f.code === addForm.code.trim())) {
-    message.error(`代码 ${addForm.code.trim()} 已存在`)
-    return
-  }
-  funds.value.push({
-    name: addForm.name.trim(),
-    code: addForm.code.trim(),
-    type: 'closed',
-    price: 1.0,
-    iopv: 1.0,
-    premium_pct: 0,
-    premium_percentile: 50,
-    net_arbitrage_yield: 0,
-    volume: 0,
+const DISCOUNT_BUCKETS = [
+  { label: '<3月', min: 0, max: 90 },
+  { label: '3-6月', min: 90, max: 180 },
+  { label: '6-12月', min: 180, max: 365 },
+  { label: '1-2年', min: 365, max: 730 },
+  { label: '>2年', min: 730, max: Infinity },
+]
+const discountByMaturity = computed<DiscountBucket[]>(() => {
+  // 只统计后端明确给出剩余期限的基金；缺字段不猜，避免默认 365 天制造假样本
+  const list = (funds.value ?? []).filter(
+    f => !!f.remaining_term && typeof f.premium_pct === 'number' && Number.isFinite(f.premium_pct),
+  )
+  const buckets = DISCOUNT_BUCKETS.map(b => {
+    const items = list.filter(f => {
+      const d = parseRemainingDays(f.remaining_term ?? undefined)
+      return d >= b.min && d < b.max
+    })
+    const avg = items.length
+      ? items.reduce((s, f) => s + Math.abs(f.premium_pct), 0) / items.length
+      : 0
+    return { label: b.label, count: items.length, avgDiscount: avg, height: 0 }
   })
-  message.success(`已添加: ${addForm.name.trim()} (${addForm.code.trim()})`)
-  showAddModal.value = false
-}
+  const max = Math.max(...buckets.map(b => b.avgDiscount), 0.0001)
+  return buckets.map(b => ({
+    ...b,
+    height: b.count ? Math.max(8, Math.round((b.avgDiscount / max) * 100)) : 0,
+  }))
+})
+const discountCovered = computed(() => discountByMaturity.value.reduce((s, b) => s + b.count, 0))
+const maxDiscountBucketLabel = computed(() => {
+  const valid = discountByMaturity.value.filter(b => b.count > 0)
+  return valid.length ? valid.reduce((a, b) => (b.avgDiscount > a.avgDiscount ? b : a)).label : ''
+})
 
 function exportFunds() {
   if (!funds.value) return
@@ -441,7 +451,6 @@ const columns = [
     <div v-else-if="funds" class="closed-page">
     <PageHeader title="封闭基金分析" subtitle="封闭基金折价率监控与到期套利分析" helpKey="closedFunds" :updated-at="meta?.updateTime">
       <template #actions>
-        <n-button size="small" @click="openAddModal">添加</n-button>
         <n-button size="small" type="primary" @click="exportFunds">导出</n-button>
       </template>
     </PageHeader>
@@ -458,7 +467,7 @@ const columns = [
     </div>
 
     <!-- Fund Table -->
-    <DataPanel title="封闭基金监控列表" meta="自动刷新: 5秒">
+    <DataPanel title="封闭基金监控列表" meta="数据源：基金实时列表（当前截面）">
       <div class="tactical-toolbar">
         <n-select
           v-model="selectedStrategyId"
@@ -543,35 +552,26 @@ const columns = [
       </div>
 
       <div class="bottom-panel">
-        <h4>折价收敛趋势</h4>
-        <div class="sparkline-bars">
-          <div v-for="bar in [75, 60, 80, 55, 85, 95]" :key="bar"
-            :style="{ height: bar + '%' }"
-            :class="['spark-bar', { active: bar === 95 }]" />
+        <h4>折价率 · 剩余期限分布</h4>
+        <div v-if="discountCovered > 0" class="sparkline-bars">
+          <div v-for="b in discountByMaturity" :key="b.label" class="bar-col">
+            <div class="bar-track">
+              <div
+                class="spark-bar"
+                :class="{ active: b.label === maxDiscountBucketLabel, empty: b.count === 0 }"
+                :style="{ height: b.height + '%' }"
+                :title="`${b.label}｜${b.count} 只｜平均折价 ${b.count ? b.avgDiscount.toFixed(2) + '%' : '无样本'}`"
+              />
+            </div>
+            <span class="bar-value">{{ b.count ? b.avgDiscount.toFixed(1) + '%' : '—' }}</span>
+            <span class="bar-label">{{ b.label }}</span>
+          </div>
         </div>
+        <div v-else class="empty-hint">暂无剩余期限数据（后端未提供 remaining_term）</div>
+        <p class="panel-note">横截面：按剩余期限分组的平均折价率（{{ discountCovered }} 只），非时间序列</p>
       </div>
     </div>
     </div>
-
-    <!-- 添加标的弹窗 -->
-    <n-modal v-model:show="showAddModal" preset="card" title="添加封闭基金" style="width: 420px; max-width: 92vw;" :bordered="false">
-      <div style="display: flex; flex-direction: column; gap: 12px;">
-        <div style="display: flex; flex-direction: column; gap: 4px;">
-          <label style="font-size: 11px; font-weight: 700; color: var(--text-muted);">基金名称</label>
-          <n-input v-model:value="addForm.name" placeholder="例如：科创封闭1年" />
-        </div>
-        <div style="display: flex; flex-direction: column; gap: 4px;">
-          <label style="font-size: 11px; font-weight: 700; color: var(--text-muted);">基金代码</label>
-          <n-input v-model:value="addForm.code" placeholder="例如：508056.SH" />
-        </div>
-      </div>
-      <template #footer>
-        <div style="display: flex; justify-content: flex-end; gap: 8px;">
-          <n-button size="small" @click="showAddModal = false">取消</n-button>
-          <n-button size="small" type="primary" @click="submitAdd">添加</n-button>
-        </div>
-      </template>
-    </n-modal>
   </LoadingState>
 </template>
 
@@ -840,18 +840,56 @@ const columns = [
   flex: 1;
   display: flex;
   align-items: flex-end;
-  gap: 4px;
+  gap: 6px;
+  padding: 4px 0;
+}
+
+.bar-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.bar-track {
+  width: 100%;
+  height: 72px;
+  display: flex;
+  align-items: flex-end;
 }
 
 .spark-bar {
-  flex: 1;
+  width: 100%;
+  min-height: 2px;
   background: rgba(0, 94, 161, 0.3);
   border-radius: 3px 3px 0 0;
-  transition: all 0.2s;
+  transition: height 0.2s;
 }
 
+.spark-bar.empty { background: rgba(0, 94, 161, 0.08); }
 .spark-bar.active { background: var(--color-primary); }
 .spark-bar:hover { background: var(--color-primary-hover); }
+
+.bar-value {
+  font-family: 'JetBrains Mono, monospace';
+  font-size: 10px;
+  color: var(--text-primary);
+}
+
+.bar-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.panel-note {
+  margin: 6px 0 0;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
 
 /* Responsive: collapse multi-column grids on smaller screens */
 @media (max-width: 768px) {
