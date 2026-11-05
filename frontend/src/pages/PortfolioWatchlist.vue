@@ -3,12 +3,11 @@ defineOptions({ name: 'PortfolioWatchlist' })
 import { ref, computed, h, reactive, onMounted } from 'vue'
 import { NButton, NIcon, NDataTable, NModal, NInput, NSelect, useMessage } from 'naive-ui'
 import type { PaginationProps } from 'naive-ui'
-import { Add, Download, TrendingUpOutline, FilterOutline } from '@vicons/ionicons5'
+import { Add, Download, FilterOutline } from '@vicons/ionicons5'
 import { useAsyncData } from '../composables/useApi'
 import { api, isGatewayNoData } from '../utils/api'
 import type { FundItem } from '../types'
 import { exportToCSV } from '../utils/export'
-import { pctColor } from '../utils/percentile'
 import PageHeader from '../components/PageHeader.vue'
 import StatCard from '../components/StatCard.vue'
 import DataPanel from '../components/DataPanel.vue'
@@ -18,7 +17,6 @@ import SectionFallback from '../components/SectionFallback.vue'
 import BaseChart from '../components/BaseChart.vue'
 import GlossaryPanel from '../components/GlossaryPanel.vue'
 import { useFieldHelp } from '../composables/useFieldHelp'
-import { getFieldTip } from '../composables/helpContent'
 
 const message = useMessage()
 const { titleWithHelp } = useFieldHelp()
@@ -63,18 +61,20 @@ function submitAdd() {
     message.error(`代码 ${addForm.code.trim()} 已存在`)
     return
   }
+  // 只写进当前内存列表：无行情源，绝不编造 1.000 的价格或 50% 的分位。
   funds.value.push({
     name: addForm.name.trim(),
     code: addForm.code.trim(),
     type: addForm.type,
-    price: 1.0,
-    iopv: 1.0,
+    category: addForm.type === 'qdii' ? 'cross_border' : undefined,
+    price: 0,
+    iopv: 0,
     premium_pct: 0,
-    premium_percentile: 50,
+    premium_percentile: null,
     net_arbitrage_yield: 0,
-    volume: 0,
+    volume: null,
   })
-  message.success(`已添加: ${addForm.name.trim()} (${addForm.code.trim()})`)
+  message.info(`已临时添加 ${addForm.name.trim()}（仅本次会话有效、无行情数据，刷新后不保留）`)
   showAddModal.value = false
 }
 
@@ -89,10 +89,11 @@ const tabs = [
 ]
 
 function exportPortfolio() {
-  const headers = ['标的名称', '代码', '价格', '折溢价率', '年化收益', '到期收益', '百分位', '成交量']
+  // 只导出真实有值的字段；原先的年化收益/到期收益/百分位全市场 0 条有值，不应出现在导出里
+  const headers = ['标的名称', '代码', '价格', '溢价率', '成交量', '分类', '自算净值', '口径差']
   const rows = displayFunds.value.map(f => [
-    f.name, f.code, f.price.toFixed(3), f.premium_pct, f.annualized ?? '',
-    f.est_ytm ?? '', f.premium_percentile ?? '', f.volume ?? '',
+    f.name, f.code, f.price.toFixed(3), f.premium_pct, f.volume ?? '',
+    categoryLabel(f), f.est_nav ?? '', f.premium_gap ?? '',
   ])
   exportToCSV(`portfolio_${activeTab.value}_${new Date().toISOString().slice(0, 10)}`, headers, rows)
   message.success(`已导出 ${rows.length} 条 ${tabs.find(t => t.key === activeTab.value)?.label || ''} 数据`)
@@ -116,6 +117,21 @@ const displayFunds = computed(() => {
   return funds.value
 })
 
+function categoryLabel(f: FundItem) {
+  if (f.category === 'cross_border') return '跨境QDII'
+  if (isLofCode(f.code)) return '境内LOF'
+  return '其他ETF'
+}
+function formatVolume(v: number | null | undefined) {
+  if (v == null) return '-'
+  if (v >= 1e8) return `${(v / 1e8).toFixed(2)}亿`
+  if (v >= 1e4) return `${(v / 1e4).toFixed(2)}万`
+  return String(Math.round(v))
+}
+const dash = () => h('span', { class: 'text-muted' }, '-')
+
+// 原「年化收益 / 到期收益 / 到期日 / 百分位」四列全市场 0 条有值（实测 0/5100），
+// 旧代码用 `(x || 0).toFixed(1)` 把缺失渲染成 `0.0%` 属于伪造数据，已换成真实有值的列。
 const columns = computed(() => [
   {
     title: '基金名称',
@@ -123,56 +139,55 @@ const columns = computed(() => [
     render: (row: FundItem) => h('span', { class: 'fund-name' }, row.name),
   },
   {
+    title: '代码',
+    key: 'code',
+    render: (row: FundItem) => h('span', { style: { fontFamily: 'monospace' } }, row.code),
+  },
+  {
     title: '价格',
     key: 'price',
     align: 'right' as const,
-    render: (row: FundItem) => row.price.toFixed(3),
+    render: (row: FundItem) => row.price ? row.price.toFixed(3) : dash(),
   },
   {
     title: titleWithHelp('溢价率', 'premium_pct'),
     key: 'premium_pct',
     align: 'right' as const,
     render: (row: FundItem) => {
+      // 红涨绿跌（A股惯例）：溢价为正标红、折价为负标绿
       const color = row.premium_pct >= 0 ? 'var(--color-danger)' : 'var(--color-success)'
-      const text = `${row.premium_pct >= 0 ? '+' : ''}${row.premium_pct}%`
+      const text = `${row.premium_pct >= 0 ? '+' : ''}${Number(row.premium_pct).toFixed(2)}%`
       return h('span', { style: { color } }, text)
     },
   },
   {
-    title: '年化收益',
-    key: 'annualized',
+    title: '成交额',
+    key: 'volume',
     align: 'right' as const,
-    render: (row: FundItem) => `${(row.annualized || 0).toFixed(1)}%`,
+    render: (row: FundItem) => row.volume != null ? formatVolume(row.volume) : dash(),
   },
   {
-    title: titleWithHelp('到期收益', 'ytm'),
-    key: 'est_ytm',
+    title: '分类',
+    key: 'category',
+    render: (row: FundItem) => h('span', {
+      class: 'category-tag',
+      style: { color: row.category === 'cross_border' ? 'var(--color-primary)' : undefined },
+    }, categoryLabel(row)),
+  },
+  {
+    title: titleWithHelp('自算净值', undefined, '跨境 LOF/QDII 的篮子自算预估净值；底层行情不足时不估算，显示 -'),
+    key: 'est_nav',
     align: 'right' as const,
-    render: (row: FundItem) => h(
-      'span',
-      { style: { color: 'var(--color-primary)', fontWeight: 700 } },
-      `${(row.est_ytm || 0).toFixed(1)}%`,
-    ),
+    render: (row: FundItem) => row.est_nav != null ? Number(row.est_nav).toFixed(4) : dash(),
   },
   {
-    title: '到期日',
-    key: 'maturity',
-    render: (row: FundItem) => {
-      if (row.maturity && row.premium_pct < -10) {
-        return h('span', { class: 'maturity-badge' }, row.maturity)
-      }
-      return h('span', null, row.maturity || '-')
-    },
-  },
-  {
-    title: titleWithHelp('百分位', 'premium_percentile'),
-    key: 'premium_percentile',
-    align: 'center' as const,
-    render: (row: FundItem) => row.premium_percentile != null
-      ? h('div', { class: 'perc-bar' }, [
-        h('div', { class: 'perc-fill', style: { width: row.premium_percentile + '%', background: pctColor(row.premium_percentile) } }),
-      ])
-      : h('span', { class: 'text-muted' }, '-'),
+    title: titleWithHelp('口径差', undefined, '官方溢价 − 自算溢价（百分点）；绝对值 > 0.5 说明两套口径明显不一致'),
+    key: 'premium_gap',
+    align: 'right' as const,
+    render: (row: FundItem) => row.premium_gap != null
+      ? h('span', { style: { color: Math.abs(row.premium_gap) > 0.5 ? 'var(--color-danger)' : undefined } },
+        `${row.premium_gap >= 0 ? '+' : ''}${Number(row.premium_gap).toFixed(2)}pp`)
+      : dash(),
   },
 ])
 
@@ -226,46 +241,77 @@ const allocationChartOption = computed(() => {
   }
 })
 
-// Discount convergence trend — line chart with area gradient
-const convergenceData = [75, 60, 80, 55, 85, 95]
-const convergenceChartOption = computed(() => ({
-  tooltip: { trigger: 'axis', formatter: (p: any) => `第${p[0].index + 1}期: ${p[0].value}%` },
-  grid: { top: 8, right: 8, bottom: 8, left: 24 },
-  xAxis: {
-    type: 'category',
-    show: false,
-    data: convergenceData.map((_, i) => i + 1),
-  },
-  yAxis: {
-    type: 'value',
-    show: true,
-    axisLabel: { fontSize: 9, formatter: '{value}%' },
-    splitLine: { lineStyle: { type: 'dashed', opacity: 0.3 } },
-  },
-  series: [
-    {
-      type: 'line',
-      smooth: true,
-      symbol: 'circle',
-      symbolSize: 6,
-      showSymbol: true,
-      data: convergenceData,
-      lineStyle: { width: 2, color: '#005ea1' },
-      itemStyle: { color: '#005ea1' },
-      areaStyle: {
-        opacity: 0.15,
-        color: {
-          type: 'linear',
-          x: 0, y: 0, x2: 0, y2: 1,
-          colorStops: [
-            { offset: 0, color: 'rgba(0, 94, 161, 0.4)' },
-            { offset: 1, color: 'rgba(0, 94, 161, 0)' },
-          ],
-        },
-      },
-    },
-  ],
-}))
+// ============================================================
+// 折溢价统计：全部由 /funds 实时列表算出，无任何写死数值。
+// 口径 = 全市场「境内 LOF + 跨境 QDII」中**有场内报价**的标的。
+//       A股 ETF 官方溢价恒为 0（iopv==nav）、场外联接份额无成交，混进来会稀释均值。
+// ============================================================
+function hasExchangeQuote(f: FundItem) {
+  return f.premium_pct !== 0 || f.volume != null
+}
+const premiumUniverse = computed(() => (funds.value || []).filter(f =>
+  (isLofCode(f.code) || f.category === 'cross_border') && hasExchangeQuote(f),
+))
+const premiumStats = computed(() => {
+  const all = funds.value || []
+  const candidates = all.filter(f => isLofCode(f.code) || f.category === 'cross_border')
+  const list = premiumUniverse.value
+  const vals = list.map(f => Number(f.premium_pct) || 0)
+  const sorted = [...list].sort((a, b) => Number(b.premium_pct) - Number(a.premium_pct))
+  return {
+    total: candidates.length,
+    count: list.length,
+    avg: vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null,
+    max: vals.length ? Math.max(...vals) : null,
+    min: vals.length ? Math.min(...vals) : null,
+    high: list.filter(f => f.premium_pct >= 3),
+    discount: list.filter(f => f.premium_pct <= -1),
+    topPremium: sorted.filter(f => f.premium_pct > 0).slice(0, 5),
+    // 只列真正折价（<0）的标的；无折价时列表为空，模板显示空态而不是把最低的正溢价叫「折价」
+    topDiscount: sorted.slice().reverse().filter(f => f.premium_pct < 0).slice(0, 5),
+  }
+})
+const pctText = (v: number | null | undefined, digits = 2) =>
+  v == null ? '-' : `${v >= 0 ? '+' : ''}${Number(v).toFixed(digits)}%`
+const pctOf = (n: number) => {
+  const c = premiumStats.value.count
+  return c ? `${Math.round(n / c * 100)}%` : '0%'
+}
+// 进度条宽度也用真实占比，不再写死 75% / 70% / 25% / 60%
+const barWidth = (n: number, base?: number) => {
+  const d = base ?? premiumStats.value.count
+  return d ? `${Math.min(100, Math.max(0, n / d * 100)).toFixed(1)}%` : '0%'
+}
+
+const BUCKETS = ['<-5', '-5~-2', '-2~0', '0~2', '2~5', '>=5'] as const
+function bucketOf(p: number) {
+  if (p < -5) return 0
+  if (p < -2) return 1
+  if (p < 0) return 2
+  if (p < 2) return 3
+  if (p < 5) return 4
+  return 5
+}
+const distributionChartOption = computed(() => {
+  const counts: number[] = new Array(BUCKETS.length).fill(0)
+  for (const f of premiumUniverse.value) counts[bucketOf(Number(f.premium_pct) || 0)] += 1
+  return {
+    tooltip: { trigger: 'axis', formatter: (p: any) => `${p[0].name}% : ${p[0].value} 只` },
+    grid: { top: 18, right: 10, bottom: 22, left: 34 },
+    xAxis: { type: 'category', data: [...BUCKETS], axisLabel: { fontSize: 9, color: '#8a9099' } },
+    yAxis: { type: 'value', axisLabel: { fontSize: 9 }, splitLine: { lineStyle: { type: 'dashed', opacity: 0.3 } } },
+    series: [{
+      type: 'bar',
+      barMaxWidth: 34,
+      data: counts.map((v, i) => ({
+        value: v,
+        // 红涨绿跌：溢价桶红、折价桶绿
+        itemStyle: { color: i <= 2 ? '#2e9e6b' : '#d94a48', borderRadius: [3, 3, 0, 0] },
+      })),
+      label: { show: true, position: 'top', fontSize: 9, color: '#5c636d' },
+    }],
+  }
+})
 </script>
 
 <template>
@@ -280,7 +326,7 @@ const convergenceChartOption = computed(() => ({
     <SectionFallback v-if="gatewayEmpty" :gateway-empty="true" :min-height="520" @retry="refetch" />
     <div v-else-if="funds" class="watchlist-page">
     <!-- Header -->
-    <PageHeader title="投资组合看板" :subtitle="`监控 ${funds?.length ?? 0} 个高置信度资产，覆盖4个资产类别 · 盯住折溢价机会，跟踪组合盈亏、折价收敛趋势与相关性风险，支持添加标的与导出 CSV`" help-key="portfolioWatchlist" :updated-at="meta?.updateTime">
+    <PageHeader title="投资组合看板" :subtitle="`监控 ${funds?.length ?? 0} 只基金 · 聚焦 LOF / 跨境 QDII 的场内折溢价，均值、分布与极值榜均由实时列表计算`" help-key="portfolioWatchlist" :updated-at="meta?.updateTime">
       <template #actions>
         <n-button size="small" @click="openAddModal">
           <template #icon><n-icon :component="Add" /></template>
@@ -314,27 +360,50 @@ const convergenceChartOption = computed(() => ({
         </div>
       </div>
 
-      <!-- Performance Cards -->
+      <!-- 折溢价统计卡片：数值与进度条宽度全部由实时列表计算 -->
       <div class="bento-card">
-        <span class="bento-label">总盈亏</span>
-        <span class="bento-value" style="color: var(--color-success)">+¥1.24M</span>
-        <div class="bento-trend">
-          <n-icon :component="TrendingUpOutline" size="16" />
-          2.4% 今日
+        <span class="bento-label">平均溢价（有场内报价）</span>
+        <span class="bento-value" :style="{ color: (premiumStats.avg ?? 0) >= 0 ? 'var(--color-danger)' : 'var(--color-success)' }">
+          {{ pctText(premiumStats.avg) }}
+        </span>
+        <div class="bento-trend" style="color: var(--text-muted)">
+          最高 {{ pctText(premiumStats.max) }} · 最低 {{ pctText(premiumStats.min) }}
         </div>
-        <div class="progress-bar"><div class="progress-fill success" style="width:75%" /></div>
+        <div class="progress-bar">
+          <div class="progress-fill" :style="{ width: barWidth(premiumStats.high.length), background: 'var(--color-danger)' }" />
+        </div>
       </div>
 
-      <StatCard label="波动率" value="14.2%" sub="Beta: 0.85">
-        <div class="progress-bar"><div class="progress-fill" style="width:70%" /></div>
+      <StatCard
+        label="高溢价标的"
+        :value="premiumStats.high.length"
+        :sub="`溢价 ≥ 3% · 占 ${pctOf(premiumStats.high.length)}`"
+        color="var(--color-danger)"
+      >
+        <div class="progress-bar">
+          <div class="progress-fill" :style="{ width: barWidth(premiumStats.high.length), background: 'var(--color-danger)' }" />
+        </div>
       </StatCard>
 
-      <StatCard label="最大回撤" value="-8.4%" sub="近12月恢复期: 12天">
-        <div class="progress-bar"><div class="progress-fill blue" style="width:25%" /></div>
+      <StatCard
+        label="折价标的"
+        :value="premiumStats.discount.length"
+        :sub="`溢价 ≤ -1% · 占 ${pctOf(premiumStats.discount.length)}`"
+        color="var(--color-success)"
+      >
+        <div class="progress-bar">
+          <div class="progress-fill success" :style="{ width: barWidth(premiumStats.discount.length) }" />
+        </div>
       </StatCard>
 
-      <StatCard label="平均折价" value="12.5%" color="#864f00" sub="目标: 15%" :tip="getFieldTip('discount_pct')">
-        <div class="progress-bar"><div class="progress-fill" style="width:60%; background:#864f00" /></div>
+      <StatCard
+        label="覆盖标的"
+        :value="premiumStats.count"
+        :sub="`全市场 ${premiumStats.total} 只 LOF / 跨境中有报价`"
+      >
+        <div class="progress-bar">
+          <div class="progress-fill blue" :style="{ width: barWidth(premiumStats.count, premiumStats.total) }" />
+        </div>
       </StatCard>
     </div>
 
@@ -359,27 +428,40 @@ const convergenceChartOption = computed(() => ({
       />
     </DataPanel>
 
-    <!-- Risk Indicators -->
+    <!-- 真实分布 + 极值榜：替代原写死的「折价收敛趋势」曲线与「相关性矩阵」色块 -->
     <div class="bottom-grid">
       <div class="risk-panel">
-        <h4>折价收敛趋势</h4>
-        <BaseChart :option="convergenceChartOption" :height="160" />
+        <h4>溢价率分布 <span class="panel-sub">（{{ premiumStats.count }} 只有报价标的 · 横轴 %）</span></h4>
+        <BaseChart :option="distributionChartOption" :height="160" />
       </div>
       <div class="risk-panel">
-        <h4>相关性矩阵</h4>
-        <div class="corr-grid">
-          <div /><div class="corr-label-sm">LOF</div><div class="corr-label-sm">QDII</div><div class="corr-label-sm">BND</div><div class="corr-label-sm">IDX</div>
-          <div class="corr-label-sm">LOF</div>
-          <div class="corr-cell" style="opacity:0.9" /><div class="corr-cell" style="opacity:0.6" /><div class="corr-cell" style="opacity:0.2" /><div class="corr-cell" style="opacity:0.4" />
-          <div class="corr-label-sm">QDII</div>
-          <div class="corr-cell" style="opacity:0.6" /><div class="corr-cell" style="opacity:0.9" /><div class="corr-cell" style="opacity:0.3" /><div class="corr-cell" style="opacity:0.1" />
+        <h4>溢价 / 折价极值 <span class="panel-sub">（实时列表）</span></h4>
+        <div class="rank-cols">
+          <div class="rank-col">
+            <div class="rank-head" style="color: var(--color-danger)">溢价 TOP5</div>
+            <div v-for="f in premiumStats.topPremium" :key="`h-${f.code}`" class="rank-row">
+              <span class="rank-code">{{ f.code }}</span>
+              <span class="rank-name">{{ f.name }}</span>
+              <span class="rank-pct" style="color: var(--color-danger)">{{ pctText(f.premium_pct) }}</span>
+            </div>
+            <div v-if="!premiumStats.topPremium.length" class="rank-empty">当前无溢价标的</div>
+          </div>
+          <div class="rank-col">
+            <div class="rank-head" style="color: var(--color-success)">折价 TOP5</div>
+            <div v-for="f in premiumStats.topDiscount" :key="`d-${f.code}`" class="rank-row">
+              <span class="rank-code">{{ f.code }}</span>
+              <span class="rank-name">{{ f.name }}</span>
+              <span class="rank-pct" style="color: var(--color-success)">{{ pctText(f.premium_pct) }}</span>
+            </div>
+            <div v-if="!premiumStats.topDiscount.length" class="rank-empty">当前无折价标的</div>
+          </div>
         </div>
       </div>
     </div>
     </div>
 
     <!-- 添加标的弹窗 -->
-    <n-modal v-model:show="showAddModal" preset="card" title="添加标的到组合" style="width: 420px; max-width: 92vw;" :bordered="false">
+    <n-modal v-model:show="showAddModal" preset="card" title="临时添加标的（仅本次会话、无行情）" style="width: 420px; max-width: 92vw;" :bordered="false">
       <div style="display: flex; flex-direction: column; gap: 12px;">
         <div style="display: flex; flex-direction: column; gap: 4px;">
           <label style="font-size: 11px; font-weight: 700; color: var(--text-muted);">标的名称</label>
@@ -412,29 +494,11 @@ const convergenceChartOption = computed(() => ({
   color: var(--text-primary);
 }
 
-.maturity-badge {
-  display: inline-block;
-  padding: 2px 8px;
-  background: #ffdad6;
-  color: #93000a;
-  border-radius: 4px;
-  font-size: 10px;
-  font-weight: 700;
-}
-
-.perc-bar {
-  width: 60px;
-  height: 4px;
-  background: var(--border-default);
-  border-radius: 2px;
-  overflow: hidden;
-  margin: 0 auto;
-}
-.perc-fill {
-  height: 100%;
-  background: var(--color-primary);
-  border-radius: 2px;
-  transition: width 0.3s;
+/* h() 渲染的表格单元格不受 scoped 样式影响，分类标签放这里 */
+.category-tag {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
 </style>
 
@@ -472,13 +536,19 @@ const convergenceChartOption = computed(() => ({
 .panel-info .n-icon { font-size: 18px; cursor: pointer; }
 
 /* Bottom Grid */
-.bottom-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; height: 200px; }
+.bottom-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; min-height: 220px; }
 .risk-panel { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 10px; padding: 18px; display: flex; flex-direction: column; box-shadow: var(--shadow-card); }
 .risk-panel h4 { font-family: 'Work Sans', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 0.05em; color: var(--text-muted); margin: 0 0 12px; }
+.panel-sub { font-size: 10px; font-weight: 500; letter-spacing: 0; color: var(--text-muted); }
 
-.corr-grid { display: grid; grid-template-columns: 28px repeat(4, 1fr); gap: 2px; flex: 1; align-content: start; }
-.corr-label-sm { font-size: 9px; font-weight: 700; color: var(--text-muted); display: flex; align-items: center; justify-content: center; }
-.corr-cell { background: var(--color-primary); border-radius: 2px; aspect-ratio: 1; }
+.rank-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; flex: 1; min-height: 0; }
+.rank-col { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.rank-head { font-size: 10px; font-weight: 700; letter-spacing: 0.05em; margin-bottom: 4px; }
+.rank-row { display: flex; align-items: center; gap: 6px; font-size: 11px; padding-bottom: 3px; border-bottom: 1px dashed var(--border-default); }
+.rank-code { font-family: 'JetBrains Mono', monospace; color: var(--text-muted); flex-shrink: 0; }
+.rank-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
+.rank-pct { font-family: 'JetBrains Mono', monospace; font-weight: 700; flex-shrink: 0; }
+.rank-empty { font-size: 11px; color: var(--text-muted); padding: 8px 0; }
 
 /* Responsive: collapse multi-column grids on smaller screens */
 @media (max-width: 768px) {
