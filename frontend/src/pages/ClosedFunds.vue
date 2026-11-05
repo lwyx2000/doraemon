@@ -14,7 +14,7 @@ import {
 } from '../utils/signalDisplay'
 import type { FundItem } from '../types'
 import { exportToCSV } from '../utils/export'
-import { analyzeClosedFundBatch, parseRemainingDays } from '../utils/closedFund'
+import { analyzeClosedFundBatch } from '../utils/closedFund'
 import type { ClosedFundAnalysis } from '../utils/closedFund'
 import PageHeader from '../components/PageHeader.vue'
 import StatCard from '../components/StatCard.vue'
@@ -42,11 +42,32 @@ const pagination = ref<PaginationProps>({
   },
 })
 
-// 三维度分析映射 (code → ClosedFundAnalysis)
+// 三维度分析映射 (code → ClosedFundAnalysis)；数值全部来自后端，前端只做展示适配
 const analysisMap = computed(() => {
   if (!funds.value) return new Map<string, ClosedFundAnalysis>()
   return analyzeClosedFundBatch(funds.value)
 })
+
+// ---- 数据质量与口径工具 ----
+// 无有效场内报价的行 premium_pct=0 只是占位，不是「平价成交」，必须排除所有统计
+function isQuoted(f: FundItem): boolean {
+  return f.quote_missing !== true
+    && typeof f.premium_pct === 'number'
+    && Number.isFinite(f.premium_pct)
+    && (f.price ?? 0) > 0
+}
+const quotedFunds = computed(() => (funds.value ?? []).filter(isQuoted))
+// 仅折价品种参与折价统计：溢价是风险，不是「折价套利机会」
+const discountFunds = computed(() => quotedFunds.value.filter(f => f.premium_pct < 0))
+function discountOf(f: FundItem): number {
+  return f.discount_pct ?? Math.abs(f.premium_pct)
+}
+function fmtPct(v: number | null | undefined): string {
+  return typeof v === 'number' && Number.isFinite(v) ? `${v.toFixed(2)}%` : '—'
+}
+function fmtValue(v: number | null | undefined): string {
+  return typeof v === 'number' && Number.isFinite(v) ? `${v}%` : '—'
+}
 
 // 页面加载时获取数据
 onMounted(() => {
@@ -64,32 +85,36 @@ const sortedFunds = computed(() => {
   })
 })
 
-// 套利机会排名 (按评分降序, 取前5)
+// 套利机会排名：只排折价品种（溢价不是套利机会），按综合评分降序取前 5
 const arbitrageRanking = computed(() =>
-  sortedFunds.value.slice(0, 5).map(f => {
-    const a = analysisMap.value.get(f.code)!
-    return { name: f.name, score: a.score, convergenceYield: a.convergenceYield }
-  }),
+  sortedFunds.value
+    .filter(f => isQuoted(f) && f.premium_pct < 0)
+    .slice(0, 5)
+    .map(f => {
+      const a = analysisMap.value.get(f.code)!
+      return { name: f.name, score: a.score, convergenceYield: a.convergenceYield }
+    }),
 )
 
-// 风险预警列表 (有预警的基金)
+// 风险预警：只列真实风险；「信息未披露」属数据覆盖问题，不算风险结论
+const DATA_GAP_KEYWORDS = ['未披露', '缺少后端分析字段']
 const riskWarnings = computed(() =>
   sortedFunds.value
     .map(f => {
       const a = analysisMap.value.get(f.code)
-      if (!a || a.warnings.length === 0) return null
-      return { name: f.name, count: a.warnings.length, first: a.warnings[0] }
+      if (!a) return null
+      const real = a.warnings.filter(w => !DATA_GAP_KEYWORDS.some(k => w.includes(k)))
+      if (!real.length) return null
+      return { name: f.name, count: real.length, first: real[0] }
     })
     .filter((x): x is { name: string; count: number; first: string } => x !== null),
 )
 
-// 收敛收益率排名 (降序, 取前5)
+// 收敛收益率排名：无折价 / 无期限 / 期限<30天（年化失真）的不参与
 const convergenceYieldRanking = computed(() =>
-  [...sortedFunds.value]
-    .map(f => {
-      const a = analysisMap.value.get(f.code)!
-      return { name: f.name, yield: a.convergenceYield }
-    })
+  sortedFunds.value
+    .map(f => ({ name: f.name, yield: analysisMap.value.get(f.code)?.convergenceYield ?? null }))
+    .filter((x): x is { name: string; yield: number } => x.yield !== null)
     .sort((a, b) => b.yield - a.yield)
     .slice(0, 5),
 )
@@ -105,22 +130,25 @@ const liquidityBgMap: Record<string, string> = {
   moderate: 'var(--tag-orange-bg)',
   ample: 'var(--tag-green-bg)',
 }
-// 颜色映射 — 收敛确定性 (NTag type)
-const convergenceTypeMap: Record<string, 'success' | 'warning' | 'error'> = {
+// 颜色映射 — 收敛确定性 (NTag type)；unknown=无报价，属数据缺失而非风险
+const convergenceTypeMap: Record<string, 'success' | 'warning' | 'error' | 'default'> = {
   certain: 'success',
   likely: 'warning',
-  uncertain: 'error',
+  uncertain: 'warning',
+  unknown: 'default',
 }
-// 颜色映射 — 信用风险
+// 颜色映射 — 信用风险；unknown=未披露，用中性色，不能刷成红色高风险
 const creditColorMap: Record<string, string> = {
   safe: 'var(--tag-green-text)',
   watch: 'var(--tag-orange-text)',
   risky: 'var(--tag-red-text)',
+  unknown: 'var(--text-muted)',
 }
 const creditBgMap: Record<string, string> = {
   safe: 'var(--tag-green-bg)',
   watch: 'var(--tag-orange-bg)',
   risky: 'var(--tag-red-bg)',
+  unknown: 'var(--bg-subtle)',
 }
 
 function scoreColor(score: number): string {
@@ -130,8 +158,8 @@ function scoreColor(score: number): string {
 }
 
 // 折价率 · 剩余期限分布（真实横截面，替代原写死的「折价收敛趋势」假柱状图）
-// 后端只提供当日截面，没有逐日折价历史；这里按剩余期限分组展示平均折价，
-// 用于观察「越临近到期折价是否越浅」的收敛形态，属横截面而非时间序列。
+// 后端只提供当日截面，没有逐日折价历史；这里按后端补算的 term_days 分组展示
+// 折价品种的平均折价，用于观察「越临近到期折价是否越浅」，属横截面而非时间序列。
 interface DiscountBucket {
   label: string
   count: number
@@ -146,17 +174,18 @@ const DISCOUNT_BUCKETS = [
   { label: '>2年', min: 730, max: Infinity },
 ]
 const discountByMaturity = computed<DiscountBucket[]>(() => {
-  // 只统计后端明确给出剩余期限的基金；缺字段不猜，避免默认 365 天制造假样本
-  const list = (funds.value ?? []).filter(
-    f => !!f.remaining_term && typeof f.premium_pct === 'number' && Number.isFinite(f.premium_pct),
+  // 仅折价品种 + 有可靠剩余天数；后端缺 remaining_term 时已用 maturity 补算，
+  // 仍无期限则不计入（不再默认 365 天制造假样本），溢价品种不参与「折价」统计。
+  const list = discountFunds.value.filter(
+    f => typeof f.term_days === 'number' && f.term_days > 0,
   )
   const buckets = DISCOUNT_BUCKETS.map(b => {
     const items = list.filter(f => {
-      const d = parseRemainingDays(f.remaining_term ?? undefined)
+      const d = f.term_days!
       return d >= b.min && d < b.max
     })
     const avg = items.length
-      ? items.reduce((s, f) => s + Math.abs(f.premium_pct), 0) / items.length
+      ? items.reduce((s, f) => s + discountOf(f), 0) / items.length
       : 0
     return { label: b.label, count: items.length, avgDiscount: avg, height: 0 }
   })
@@ -175,8 +204,9 @@ const maxDiscountBucketLabel = computed(() => {
 function exportFunds() {
   if (!funds.value) return
   const headers = [
-    '基金名称', '代码', '剩余期限', '折价率', '年化收益', '预估到期收益', '到期日', '成交量',
-    '流动性', '收敛路径', '年化收敛收益率', '信用评级', '底层类型', '综合评分', '风险提示',
+    '基金名称', '代码', '剩余期限', '剩余天数', '溢折价率(%)', '折价率(%)',
+    '年化收益(%)', '预估到期收益(%)', '到期日', '成交额(元)',
+    '流动性', '收敛路径', '年化收敛收益率(%)', '信用评级', '底层类型', '综合评分', '风险提示',
   ]
   if (tacticalLoaded.value) {
     headers.push('MA20偏离度%', 'RSI14', '布林位置%', '当前信号')
@@ -190,8 +220,9 @@ function exportFunds() {
     const t = tacticalMap.value.get(f.code)
     const state = tacticalState(t)
     const base = [
-      f.name, f.code, f.remaining_term ?? '', f.premium_pct, f.annualized ?? '',
-      f.est_ytm ?? '', f.maturity ?? '', f.volume,
+      f.name, f.code, f.remaining_term ?? '', f.term_days ?? '',
+      isQuoted(f) ? f.premium_pct : '无报价', a?.discountPct ?? '',
+      f.annualized ?? '', f.est_ytm ?? '', f.maturity ?? '', f.volume ?? '',
       a?.liquidityLabel ?? '', a?.convergenceLabel ?? '', a?.convergenceYield ?? '',
       a?.creditRating ?? '', a?.underlyingType ?? '', a?.score ?? '',
       a?.warnings.join('; ') ?? '',
@@ -213,34 +244,35 @@ function exportFunds() {
   message.success(`已导出 ${rows.length} 条封闭基金数据`)
 }
 
-// 统计卡片：从实际基金数据动态计算（不再使用硬编码假数据）
+// 统计卡片：排除无报价行；折价口径只取 premium_pct < 0，绝不把溢价用 abs() 折进来
 const summaryStats = computed(() => {
   const list = funds.value ?? []
-  if (!list.length) {
-    return { avgDiscount: 0, avgDiscountStr: '—', avgAnnualized: 0, avgAnnualizedStr: '—', maxDiscount: 0, maxDiscountStr: '—', opportunityCount: 0, totalVolume: 0 }
-  }
-  // 折价率（premium_pct 负值=折价，取绝对值展示）
-  const discounts = list.map(f => Math.abs(f.premium_pct))
-  const avgDiscount = discounts.reduce((a, b) => a + b, 0) / list.length
-  const maxDiscount = Math.max(...discounts)
-  // 平均年化收益
-  const annualizedValues = list.map(f => f.annualized ?? 0).filter(v => v > 0)
+  const quoted = list.filter(isQuoted)
+  const discounts = quoted.filter(f => f.premium_pct < 0).map(f => discountOf(f))
+  const avgDiscount = discounts.length
+    ? discounts.reduce((a, b) => a + b, 0) / discounts.length
+    : null
+  const maxDiscount = discounts.length ? Math.max(...discounts) : null
+  // 年化收益源当前全部为 null：无样本显示 —，不能把 null 当 0 混入均值
+  const annualizedValues = list
+    .map(f => f.annualized)
+    .filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
   const avgAnnualized = annualizedValues.length
     ? annualizedValues.reduce((a, b) => a + b, 0) / annualizedValues.length
-    : 0
-  // 套利机会数（折价 > 5%）
-  const opportunityCount = list.filter(f => Math.abs(f.premium_pct) > 5).length
-  // 总成交额（万元）
-  const totalVolume = list.reduce((s, f) => s + (f.volume ?? 0), 0) / 10000
+    : null
+  const opportunityCount = discounts.filter(v => v > 5).length
+  const totalVolume = list.reduce((s, f) => s + (f.volume ?? 0), 0) / 10000 // 万元
   return {
-    avgDiscount,
-    avgDiscountStr: `${avgDiscount.toFixed(2)}%`,
-    avgAnnualized,
-    avgAnnualizedStr: `${avgAnnualized.toFixed(2)}%`,
-    maxDiscount,
-    maxDiscountStr: `${maxDiscount.toFixed(2)}%`,
+    avgDiscountStr: fmtPct(avgDiscount),
+    avgAnnualizedStr: fmtPct(avgAnnualized),
+    maxDiscountStr: fmtPct(maxDiscount),
     opportunityCount,
     totalVolume,
+    quotedCount: quoted.length,
+    discountCount: discounts.length,
+    premiumCount: quoted.filter(f => f.premium_pct > 0).length,
+    noQuoteCount: list.length - quoted.length,
+    undisclosedPath: list.filter(f => f.is_lof_convertible == null).length,
   }
 })
 
@@ -284,20 +316,24 @@ const columns = [
     title: '剩余期限',
     key: 'remaining_term',
     align: 'right' as const,
-    render: (row: FundItem) => row.remaining_term ?? '',
+    render: (row: FundItem) => row.remaining_term ?? '—',
   },
   {
-    title: titleWithHelp('折价率', 'premium_pct'),
+    title: titleWithHelp('溢折价率', 'discount_pct'),
     key: 'premium_pct',
     align: 'right' as const,
+    sorter: (a: FundItem, b: FundItem) => a.premium_pct - b.premium_pct,
     render: (row: FundItem) => {
-      // 折价越深=机会越大→绿色突出；溢价=危险→红色
-      const color = row.premium_pct < -15
+      // 无场内报价的行没有溢折价率，0 是占位而非「平价成交」
+      if (!isQuoted(row)) return h('span', { class: 'sub-info' }, '无报价')
+      const v = row.premium_pct
+      // 折价（负）= 机会色；溢价（正）= 风险色（红）
+      const color = v < -15
         ? 'var(--color-success)'
-        : row.premium_pct < 0
+        : v < 0
           ? 'var(--color-primary)'
           : 'var(--color-danger)'
-      return h('span', { style: { color, fontWeight: row.premium_pct < -15 ? 700 : 400 } }, `${row.premium_pct}%`)
+      return h('span', { style: { color, fontWeight: v < -15 ? 700 : 400 } }, `${v > 0 ? '+' : ''}${v}%`)
     },
   },
   {
@@ -315,28 +351,28 @@ const columns = [
     title: '年化收益',
     key: 'annualized',
     align: 'right' as const,
-    render: (row: FundItem) => `${row.annualized}%`,
+    render: (row: FundItem) => fmtValue(row.annualized),
   },
   {
     title: '预估到期收益',
     key: 'est_ytm',
     align: 'right' as const,
     render: (row: FundItem) =>
-      h('span', { style: { color: 'var(--color-primary)', fontWeight: 700 } }, `${row.est_ytm}%`),
+      h('span', { style: { color: 'var(--color-primary)', fontWeight: 700 } }, fmtValue(row.est_ytm)),
   },
   {
     title: '到期日',
     key: 'maturity',
     render: (row: FundItem) => {
-      // 按剩余天数阈值判断是否显示到期警告（< 60天）
-      const remainingDays = parseRemainingDays(row.remaining_term)
-      if (remainingDays < 60 && row.maturity) {
+      // 用后端补算好的剩余天数判断临近到期；无期限不做 365 天假设
+      const remainingDays = row.term_days
+      if (remainingDays != null && remainingDays < 60 && row.maturity) {
         return h('span', { class: 'maturity-warning' }, [
           h(NIcon, { component: TimerOutline, size: 14 }),
           row.maturity,
         ])
       }
-      return row.maturity ?? ''
+      return row.maturity ?? '—'
     },
   },
   {
@@ -354,7 +390,7 @@ const columns = [
             background: liquidityBgMap[a.liquidity],
           },
         }, a.liquidityLabel),
-        h('span', { class: 'sub-info' }, `${(a.volume / 10000).toFixed(1)}万手`),
+        h('span', { class: 'sub-info' }, `${a.volumeWan.toFixed(1)}万元`),
       ])
     },
   },
@@ -371,9 +407,13 @@ const columns = [
           type: convergenceTypeMap[a.convergence],
           bordered: false,
         }, { default: () => a.convergenceLabel }),
-        h('span', { class: 'sub-info' }, `年化${a.convergenceYield}%`),
+        // 无折价 / 无期限 / 期限<30天时后端给 null，显示 — 而不是 0%
+        h('span', { class: 'sub-info' }, a.convergenceYield == null
+          ? '年化 —'
+          : `年化${a.convergenceYield}%`),
       ]
-      if (a.isLofConvertible) {
+      // is_lof_convertible 为 null 表示数据源未披露，不能当成 false 后随便打标签
+      if (a.isLofConvertible === true) {
         children.push(h(NTag, {
           size: 'small',
           bordered: false,
@@ -398,7 +438,9 @@ const columns = [
             background: creditBgMap[a.creditRisk],
           },
         }, a.creditLabel),
-        h('span', { class: 'sub-info' }, `${a.creditRating} · ${a.underlyingType}`),
+        h('span', { class: 'sub-info' }, a.creditRisk === 'unknown'
+          ? '评级未披露'
+          : `${a.creditRating} · ${a.underlyingType}`),
       ])
     },
   },
@@ -424,16 +466,24 @@ const columns = [
     },
   },
   {
-    title: '收敛度',
+    // 折价深度：只按折价品种的折价幅度显示（10% 折价为满格），溢价不再被算成「收敛度」
+    title: '折价深度',
     key: 'conv',
     align: 'right' as const,
-    render: (row: FundItem) =>
-      h('div', { class: 'conv-bar' }, [
+    render: (row: FundItem) => {
+      const d = analysisMap.value.get(row.code)?.discountPct ?? null
+      return h('div', {
+        class: 'conv-bar',
+        title: d == null
+          ? '非折价品种或无报价，不参与折价深度'
+          : `折价 ${d.toFixed(2)}%，按 10% 折价为满格`,
+      }, [
         h('div', {
           class: 'conv-fill',
-          style: { width: `${Math.min(Math.abs(row.premium_pct) * 4, 100)}%` },
+          style: { width: `${d == null ? 0 : Math.min((d / 10) * 100, 100)}%` },
         }),
-      ]),
+      ])
+    },
   },
 ]
 </script>
@@ -457,17 +507,22 @@ const columns = [
 
     <GlossaryPanel page-key="closedFunds" />
 
-    <!-- 统计卡片（动态计算） -->
+    <!-- 统计卡片（动态计算，口径见下方说明） -->
     <div class="stat-grid">
-      <StatCard label="基金总数" :value="funds?.length ?? 0" />
-      <StatCard label="平均折价" :value="summaryStats.avgDiscountStr" color="#864f00" :sub="`最大: ${summaryStats.maxDiscountStr}`" tip="全部封闭基金的平均折价率，折价越深潜在收益越大但风险也越高" />
-      <StatCard label="平均年化" :value="summaryStats.avgAnnualizedStr" color="var(--color-primary)" sub="到期年化收益均值" tip="全部封闭基金的年化收益率均值" />
-      <StatCard label="套利机会" :value="summaryStats.opportunityCount" color="var(--color-danger)" sub="折价 > 5%" tip="折价率超过5%的封闭基金数量，折价越深套利空间越大" />
-      <StatCard label="总成交额" :value="`${summaryStats.totalVolume.toFixed(0)}万`" color="var(--color-success)" sub="全市场" tip="全部封闭基金的场内成交额合计" />
+      <StatCard label="基金总数" :value="funds?.length ?? 0" :sub="`有效报价 ${summaryStats.quotedCount} 只`" />
+      <StatCard label="平均折价" :value="summaryStats.avgDiscountStr" color="#864f00" :sub="`折价 ${summaryStats.discountCount} 只 · 最深 ${summaryStats.maxDiscountStr}`" tip="仅统计有有效报价且溢折价率为负的基金；溢价与无报价行不参与" />
+      <StatCard label="平均年化" :value="summaryStats.avgAnnualizedStr" color="var(--color-primary)" sub="数据源暂未提供" tip="仅在数据源提供 annualized 时计算；无样本显示 —，不把 null 当 0 求均值" />
+      <StatCard label="套利机会" :value="summaryStats.opportunityCount" color="var(--color-danger)" sub="折价 > 5%" tip="真实折价率超过 5% 的基金数量，溢价不算折价套利机会" />
+      <StatCard label="总成交额" :value="`${summaryStats.totalVolume.toFixed(0)}万`" color="var(--color-success)" sub="元，展示为万元" tip="全部封闭基金场内成交额合计（元），不是成交量手数" />
     </div>
+    <p class="data-note">
+      {{ summaryStats.quotedCount }}/{{ funds?.length ?? 0 }} 只有效报价 · 折价 {{ summaryStats.discountCount }} 只 · 溢价 {{ summaryStats.premiumCount }} 只<span v-if="summaryStats.noQuoteCount"> · 无报价 {{ summaryStats.noQuoteCount }} 只已排除统计</span>；
+      {{ summaryStats.undisclosedPath }} 只「到期是否转 LOF」及底层评级未披露，按中性处理、不等于高风险；
+      年化收益 / IOPV / 净套利收益当前无上游数据源，统一显示 —；剩余期限缺失时由到期日补算，仍缺失则不年化。
+    </p>
 
     <!-- Fund Table -->
-    <DataPanel title="封闭基金监控列表" meta="数据源：基金实时列表（当前截面）">
+    <DataPanel title="封闭基金监控列表" meta="数据源：封闭基金分析接口（集思录截面 + 腾讯场内价补全 · 当前截面）">
       <div class="tactical-toolbar">
         <n-select
           v-model="selectedStrategyId"
@@ -518,7 +573,7 @@ const columns = [
             <span class="rank-num" :class="{ top: idx < 3 }">{{ idx + 1 }}</span>
             <span class="rank-name">{{ item.name }}</span>
             <span class="rank-score">{{ item.score }}</span>
-            <span class="rank-yield">年化{{ item.convergenceYield }}%</span>
+            <span class="rank-yield">{{ item.convergenceYield == null ? '年化 —' : '年化' + item.convergenceYield + '%' }}</span>
           </div>
           <div v-if="arbitrageRanking.length === 0" class="empty-hint">暂无数据</div>
         </div>
@@ -552,7 +607,7 @@ const columns = [
       </div>
 
       <div class="bottom-panel">
-        <h4>折价率 · 剩余期限分布</h4>
+        <h4>折价率 · 剩余期限分布（仅折价）</h4>
         <div v-if="discountCovered > 0" class="sparkline-bars">
           <div v-for="b in discountByMaturity" :key="b.label" class="bar-col">
             <div class="bar-track">
@@ -567,8 +622,8 @@ const columns = [
             <span class="bar-label">{{ b.label }}</span>
           </div>
         </div>
-        <div v-else class="empty-hint">暂无剩余期限数据（后端未提供 remaining_term）</div>
-        <p class="panel-note">横截面：按剩余期限分组的平均折价率（{{ discountCovered }} 只），非时间序列</p>
+        <div v-else class="empty-hint">暂无可用样本（需同时具备折价率与剩余期限）</div>
+        <p class="panel-note">横截面：{{ discountCovered }} 只折价基金按剩余期限分组的平均折价率；溢价与无报价行不计入，非时间序列</p>
       </div>
     </div>
     </div>
@@ -695,6 +750,16 @@ const columns = [
   gap: 10px;
   flex-wrap: wrap;
   margin-bottom: 12px;
+}
+.data-note {
+  margin: -4px 0 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--color-primary);
+  background: var(--bg-subtle);
+  border-radius: 0 6px 6px 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-secondary);
 }
 .param-field { display: inline-flex; align-items: center; gap: 4px; }
 .param-label { font-size: 12px; color: var(--text-secondary); white-space: nowrap; }

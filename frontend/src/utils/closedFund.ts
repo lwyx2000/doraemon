@@ -1,255 +1,136 @@
 /**
- * 封闭基金套利分析工具
+ * 封闭基金分析 —— 前端展示适配层
  *
- * 三大维度:
- * 1. 流动性风险 — 成交量过低，想跑跑不掉
- * 2. 折价收敛路径 — 到期是否转LOF决定收敛确定性
- * 3. 底层持仓信用风险 — 信用评级 + 底层资产类型
+ * 2026-11-05 口径治理：流动性 / 收敛路径 / 信用 / 评分的**唯一计算源**
+ * 已收敛到后端 `backend/utils/closed_fund.py`（接口 /funds/closed/analysis）。
+ * 这里只把后端蛇形字段映射成表格用的驼峰视图，不再重复实现一遍启发式规则，
+ * 避免前后端算法漂移导致同一只基金在两个页面显示不同结论。
+ *
+ * 关键口径（与后端一致）：
+ * - premium_pct 为带符号溢折价率：负=折价、正=溢价；只有折价品种有 discountPct。
+ * - quoteMissing=true 的行没有有效场内报价，premium_pct=0 不是「平价」，一律排除统计。
+ * - 缺 remaining_term 时后端用 maturity 补算 termDays；仍无期限则为 null，
+ *   收敛收益率也为 null —— 绝不默认 365 天。
+ * - creditRating / isLofConvertible 在当前数据源里全部未披露，属中性状态，不是风险结论。
+ * - volume 是成交额(元)，不是「手」；无份额数据，因此不计算换手率。
  */
 
 import type { FundItem } from '../types'
 
-// ============================================================
-// 类型定义
-// ============================================================
-
 export type LiquidityLevel = 'ample' | 'moderate' | 'illiquid'
-export type ConvergenceCertainty = 'certain' | 'likely' | 'uncertain'
-export type CreditRiskLevel = 'safe' | 'watch' | 'risky'
+export type ConvergenceCertainty = 'certain' | 'likely' | 'uncertain' | 'unknown'
+export type CreditRiskLevel = 'safe' | 'watch' | 'risky' | 'unknown'
 
 export interface ClosedFundAnalysis {
+  /** 是否有有效场内报价 */
+  quoteMissing: boolean
   /** 流动性等级 */
   liquidity: LiquidityLevel
-  /** 流动性标签 */
   liquidityLabel: string
-  /** 日成交量(手) */
+  /** 日成交额(元) */
   volume: number
-  /** 换手估算 (成交量 / 假设份额) */
-  turnoverEstimate: number
+  /** 日成交额(万元)，表格展示用 */
+  volumeWan: number
 
   /** 折价收敛确定性 */
   convergence: ConvergenceCertainty
-  /** 收敛标签 */
   convergenceLabel: string
-  /** 是否到期转LOF */
-  isLofConvertible: boolean
-  /** 折价率(%) */
-  discountPct: number
-  /** 剩余期限解析(天) */
-  remainingDays: number
-  /** 年化折价收敛收益率(%) = |折价率| / 剩余年数 */
-  convergenceYield: number
+  /** null = 数据源未披露是否转LOF（不是 false） */
+  isLofConvertible: boolean | null
+  /** 仅折价品种为正数，溢价/无报价为 null */
+  discountPct: number | null
+  /** 剩余天数；null = 无可靠期限 */
+  remainingDays: number | null
+  termSource: string | null
+  /** 年化折价收敛收益率(%)，无折价/无期限/期限<30天时为 null */
+  convergenceYield: number | null
+  yieldCapped: boolean
 
-  /** 信用风险等级 */
   creditRisk: CreditRiskLevel
-  /** 信用标签 */
   creditLabel: string
-  /** 底层持仓评级 */
   creditRating: string
-  /** 底层资产类型 */
   underlyingType: string
 
-  /** 综合套利评分 (0-100, 越高越值得关注) */
   score: number
-  /** 风险提示列表 */
   warnings: string[]
 }
 
-// ============================================================
-// 辅助函数
-// ============================================================
-
 /**
- * 将 "28 Days" / "1.4 Years" / "312 Days" 解析为天数
+ * 将 "28 Days" / "1.4 Years" 解析为天数；无有效期限返回 null。
+ * 兼容旧调用，但页面应优先使用后端 `term_days`（已含 maturity 补算）。
  */
-export function parseRemainingDays(term?: string): number {
-  if (!term) return 365
-  const match = term.match(/([\d.]+)\s*(Day|Year)/i)
-  if (!match) return 365
+export function parseRemainingDays(term?: string): number | null {
+  if (!term) return null
+  const match = String(term).match(/([\d.]+)\s*(Day|Year)/i)
+  if (!match) return null
   const val = parseFloat(match[1])
-  return match[2].toLowerCase().startsWith('year') ? Math.round(val * 365) : Math.round(val)
+  if (!(val > 0)) return null
+  const days = match[2].toLowerCase().startsWith('year') ? Math.round(val * 365) : Math.round(val)
+  return days > 0 ? days : null
 }
 
-// ============================================================
-// 核心分析函数
-// ============================================================
-
-/**
- * 流动性风险评估
- *
- * 封闭基金日成交量 < 10万 → 极差，大资金无法退出
- * < 30万 → 一般，小额可进出
- * >= 30万 → 充足
- */
-function analyzeLiquidity(volume: number): {
-  level: LiquidityLevel
-  label: string
-  turnover: number
-} {
-  // 假设基金总份额约 5000万份 (典型封闭基金规模)
-  const totalShares = 50000000
-  const turnover = Math.round((volume / totalShares) * 10000) / 100
-
-  let level: LiquidityLevel
-  let label: string
-
-  if (volume < 100000) {
-    level = 'illiquid'
-    label = '极差'
-  } else if (volume < 300000) {
-    level = 'moderate'
-    label = '一般'
-  } else {
-    level = 'ample'
-    label = '充足'
-  }
-
-  return { level, label, turnover }
+function num(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
 }
 
 /**
- * 折价收敛路径分析
- *
- * 关键判断: 到期是否转LOF
- * - 转LOF: 到期后可按净值申赎，折价必然收敛 → 确定性高
- * - 不转LOF: 到期清盘结算，折价收敛取决于清算净值，存在不确定性
- *
- * 收敛收益率 = |折价率| / 剩余年数 (年化)
+ * 后端分析字段 → 展示视图。
+ * 若某行没有后端分析字段（例如旧版 mock 数据），给出中性占位而不是伪造结论。
  */
-function analyzeConvergence(fund: FundItem): {
-  certainty: ConvergenceCertainty
-  label: string
-  isLofConvertible: boolean
-  remainingDays: number
-  convergenceYield: number
-} {
-  const isLofConvertible = fund.is_lof_convertible ?? false
-  const remainingDays = parseRemainingDays(fund.remaining_term)
-  const remainingYears = remainingDays / 365
-  // 仅对折价品种(premium_pct < 0)计算收敛收益，溢价品种不存在折价收敛套利
-  const isDiscount = fund.premium_pct < 0
-  const discountPct = isDiscount ? Math.abs(fund.premium_pct) : 0
-  const convergenceYield = remainingYears > 0
-    ? Math.round((discountPct / remainingYears) * 100) / 100
-    : discountPct
-
-  let certainty: ConvergenceCertainty
-  let label: string
-
-  if (isLofConvertible) {
-    certainty = 'certain'
-    label = '确定收敛'
-  } else if (remainingDays < 180) {
-    // 不转LOF但即将到期，清算接近净值
-    certainty = 'likely'
-    label = '大概率收敛'
-  } else {
-    certainty = 'uncertain'
-    label = '不确定'
-  }
-
-  return { certainty, label, isLofConvertible, remainingDays, convergenceYield }
-}
-
-/**
- * 底层持仓信用风险
- *
- * 评级 AAA → 安全
- * 评级 AA+ / AA → 关注
- * 评级 AA- 以下 / 无评级 → 风险
- */
-function analyzeCredit(rating?: string): {
-  level: CreditRiskLevel
-  label: string
-} {
-  let level: CreditRiskLevel
-  let label: string
-
-  if (!rating || rating === '-') {
-    level = 'risky'
-    label = '无评级'
-  } else if (rating === 'AAA') {
-    level = 'safe'
-    label = '安全'
-  } else if (rating.startsWith('AA')) {
-    level = 'watch'
-    label = '关注'
-  } else {
-    level = 'risky'
-    label = '风险'
-  }
-
-  return { level, label }
-}
-
-/**
- * 综合评分 (0-100)
- *
- * 评分权重:
- * - 折价收敛收益率 × 3 (越高越好)
- * - 收敛确定性: certain=25, likely=15, uncertain=5
- * - 流动性: ample=20, moderate=10, illiquid=0
- * - 信用: safe=15, watch=8, risky=0
- */
-function calcScore(
-  convergenceYield: number,
-  certainty: ConvergenceCertainty,
-  liquidity: LiquidityLevel,
-  creditRisk: CreditRiskLevel,
-): number {
-  const yieldScore = Math.min(convergenceYield * 3, 40)
-  const certaintyScore = { certain: 25, likely: 15, uncertain: 5 }[certainty]
-  const liquidityScore = { ample: 20, moderate: 10, illiquid: 0 }[liquidity]
-  const creditScore = { safe: 15, watch: 8, risky: 0 }[creditRisk]
-  return Math.round(yieldScore + certaintyScore + liquidityScore + creditScore)
-}
-
-// ============================================================
-// 综合分析
-// ============================================================
-
 export function analyzeClosedFund(fund: FundItem): ClosedFundAnalysis {
-  const { level: liquidity, label: liquidityLabel, turnover: turnoverEstimate } =
-    analyzeLiquidity(fund.volume ?? 0)
-  const { certainty: convergence, label: convergenceLabel, isLofConvertible, remainingDays, convergenceYield } =
-    analyzeConvergence(fund)
-  const { level: creditRisk, label: creditLabel } =
-    analyzeCredit(fund.credit_rating)
+  const hasBackend = fund.score !== undefined && fund.warnings !== undefined
+  const volume = num(fund.volume) ?? 0
+  const premium = num(fund.premium_pct)
 
-  const warnings: string[] = []
+  if (!hasBackend) {
+    return {
+      quoteMissing: true,
+      liquidity: 'illiquid',
+      liquidityLabel: '数据缺失',
+      volume,
+      volumeWan: Math.round(volume / 100) / 100,
+      convergence: 'unknown',
+      convergenceLabel: '数据缺失',
+      isLofConvertible: null,
+      discountPct: null,
+      remainingDays: parseRemainingDays(fund.remaining_term ?? undefined),
+      termSource: null,
+      convergenceYield: null,
+      yieldCapped: false,
+      creditRisk: 'unknown',
+      creditLabel: '未披露',
+      creditRating: '未披露',
+      underlyingType: '未披露',
+      score: 0,
+      warnings: ['缺少后端分析字段，本行不参与统计'],
+    }
+  }
 
-  if (liquidity === 'illiquid') {
-    warnings.push('成交量极低，大资金无法退出')
-  }
-  if (convergence === 'uncertain') {
-    warnings.push('不转LOF且期限较长，折价收敛不确定')
-  }
-  if (creditRisk === 'risky') {
-    warnings.push('底层持仓信用风险较高')
-  }
-  if (convergenceYield < 3) {
-    warnings.push('年化收敛收益率偏低')
-  }
-
-  const score = calcScore(convergenceYield, convergence, liquidity, creditRisk)
-
+  const quoteMissing = fund.quote_missing === true
+  const discountPct = num(fund.discount_pct)
   return {
-    liquidity,
-    liquidityLabel,
-    volume: fund.volume ?? 0,
-    turnoverEstimate,
-    convergence,
-    convergenceLabel,
-    isLofConvertible,
-    discountPct: fund.premium_pct,
-    remainingDays,
-    convergenceYield,
-    creditRisk,
-    creditLabel,
-    creditRating: fund.credit_rating ?? '-',
-    underlyingType: fund.underlying_type ?? '-',
-    score,
-    warnings,
+    quoteMissing,
+    liquidity: fund.liquidity ?? 'illiquid',
+    liquidityLabel: fund.liquidity_label ?? '—',
+    volume,
+    volumeWan: num(fund.volume_wan) ?? Math.round(volume / 100) / 100,
+    convergence: fund.convergence ?? 'unknown',
+    convergenceLabel: fund.convergence_label ?? '路径未披露',
+    isLofConvertible: fund.is_lof_convertible ?? null,
+    // 兼容旧后端（无 discount_pct 字段）：仅折价品种按 -premium_pct 推出
+    discountPct: quoteMissing
+      ? null
+      : discountPct ?? (premium !== null && premium < 0 ? Math.abs(premium) : null),
+    remainingDays: num(fund.term_days) ?? parseRemainingDays(fund.remaining_term ?? undefined),
+    termSource: fund.term_source ?? (fund.term_from_maturity ? 'maturity' : null),
+    convergenceYield: num(fund.convergence_yield),
+    yieldCapped: fund.yield_capped === true,
+    creditRisk: fund.credit_risk ?? 'unknown',
+    creditLabel: fund.credit_label ?? '未披露',
+    creditRating: fund.credit_rating || '未披露',
+    underlyingType: fund.underlying_type || '未披露',
+    score: num(fund.score) ?? 0,
+    warnings: fund.warnings ?? [],
   }
 }
 
@@ -263,11 +144,9 @@ export function analyzeClosedFundBatch(
   return map
 }
 
-/**
- * 收敛确定性排序权重
- */
 export const CONVERGENCE_ORDER: Record<ConvergenceCertainty, number> = {
   certain: 0,
   likely: 1,
   uncertain: 2,
+  unknown: 3,
 }

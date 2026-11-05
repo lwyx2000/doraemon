@@ -844,6 +844,8 @@ def _build_closed_funds_from_jisilu() -> list[dict]:
             "code": code,
             "type": "closed",
             "price": price or 0,
+            # 集思录已给权威折价率时，归一化阶段不得用补到的场内价覆盖它
+            "_discount_from_source": bool(disc),
             "iopv": 0,
             "premium_pct": premium,
             "premium_percentile": None,
@@ -977,6 +979,74 @@ def get_closed_funds_real() -> list[dict]:
     return _build_closed_funds_from_rank()
 
 
+def _normalize_closed_funds(funds: list[dict]) -> list[dict]:
+    """封闭基金分析专用归一化（仅 /funds/closed/analysis 使用）。
+
+    集思录封基列表对部分定开债基只给净值与成交额、不给场内价，导致
+    price=0 / premium_pct=0 被误当成「平价成交」。这里：
+      1. 用腾讯行情补全场内价；补到后按 (价-净值)/净值 重算溢折价率；
+      2. 仍无报价的行标记 quote_missing=True，下游显示「无报价」并排除统计；
+      3. remaining_term 缺失时由 maturity(YYYY-MM-DD) 按自然日补算；
+      4. iopv / net_arbitrage_yield 无上游源，显式置 None（不是 0、也不是
+         premium_pct 的复制品）。
+
+    注意：不作用于 get_funds(type="closed")——那个端点的 FundItem 模型里
+    iopv/net_arbitrage_yield 仍是非空 float，置 None 会让响应校验失败。
+    """
+    if not funds:
+        return []
+    missing = [f["code"] for f in funds if float(f.get("price") or 0) <= 0]
+    quotes = _get_closed_quotes_tencent(missing) if missing else {}
+    today = date.today()
+    for f in funds:
+        q = quotes.get(f["code"])
+        if q and q.get("price", 0) > 0:
+            f["price"] = q["price"]
+            if not f.get("volume"):
+                f["volume"] = q.get("volume", 0)
+            # 集思录权威折价率优先；仅在源未给折价率时用真实场内价重算
+            nav = float(f.get("nav") or 0)
+            if nav > 0 and not f.get("_discount_from_source"):
+                f["premium_pct"] = round((q["price"] - nav) / nav * 100, 2)
+        f["quote_missing"] = float(f.get("price") or 0) <= 0
+        f["iopv"] = None
+        f["net_arbitrage_yield"] = None
+        if not f.get("remaining_term") and f.get("maturity"):
+            try:
+                end = date.fromisoformat(str(f["maturity"]).strip()[:10])
+                days = (end - today).days
+                if days > 0:
+                    f["remaining_term"] = f"{round(days / 365, 2)} Years"
+                    f["term_from_maturity"] = True
+            except (ValueError, TypeError):
+                pass
+    if missing:
+        print(f"[Closed Fund] 无报价补全 {sum(1 for f in funds if not f['quote_missing'] and f['code'] in missing)}/{len(missing)} 只")
+    return funds
+
+
+def _self_check_closed_funds(result: list[dict]) -> None:
+    """口径自检：发现上游/算法漂移时在日志点名，不静默吞掉。"""
+    if not result:
+        return
+    quoted = [f for f in result if not f.get("quote_missing")]
+    no_term = [f for f in quoted if f.get("term_days") is None]
+    bad_premium = []
+    for f in quoted:
+        nav, price, premium = f.get("nav"), f.get("price"), f.get("premium_pct")
+        if nav and price and not f.get("_discount_from_source") and premium is not None:
+            calc = (price - nav) / nav * 100
+            if abs(calc - premium) > 0.15:
+                bad_premium.append((f.get("code"), round(calc, 2), premium))
+    print(
+        f"[Closed Fund] 自检: 总数={len(result)} 有效报价={len(quoted)} "
+        f"无报价={len(result) - len(quoted)} 缺期限={len(no_term)} "
+        f"溢折价偏差>0.15pct={len(bad_premium)}"
+    )
+    if bad_premium:
+        print(f"[Closed Fund] 自检告警: {bad_premium[:8]}")
+
+
 def get_closed_fund_analysis(use_api: bool = True) -> tuple[list[dict], dict]:
     """Return (closed-end fund analysis, meta), sorted by score descending (真实数据优先)."""
     if USE_MOCK_DATA:
@@ -986,7 +1056,7 @@ def get_closed_fund_analysis(use_api: bool = True) -> tuple[list[dict], dict]:
             result.append(analyze_closed_fund(fund))
         result.sort(key=lambda x: x.get("score", 0), reverse=True)
         return result, mock_meta()
-    funds_data = get_closed_funds_real() if use_api else []
+    funds_data = _normalize_closed_funds(get_closed_funds_real()) if use_api else []
     gateway_empty = len(funds_data) == 0
 
     result: list[dict] = []
@@ -995,6 +1065,7 @@ def get_closed_fund_analysis(use_api: bool = True) -> tuple[list[dict], dict]:
         result.append(analysis)
 
     result.sort(key=lambda x: x.get("score", 0), reverse=True)
+    _self_check_closed_funds(result)
     if gateway_empty:
         return result, gateway_no_data_meta()
     return result, real_meta_base(AKSHARE_API_BASE)

@@ -36,21 +36,26 @@ const { data: alertRules, loading, error, refresh: refetch } = useAsyncData<Aler
 const { data: bonds, meta: bondsMeta, execute: executeBonds } = useAsyncData<ConvertibleBond[]>(() => api.getConvertibleBonds())
 const { data: funds, meta: fundsMeta, execute: executeFunds } = useAsyncData<FundItem[]>(() => api.getFunds())
 const { data: reits, meta: reitsMeta, execute: executeReits } = useAsyncData<ReitItem[]>(() => api.getReits())
+// 封闭基金必须走专用端点：/funds 不带 type 时 5000+ 只全被标成 etf，
+// 用 f.type === 'closed' 过滤永远拿不到数据，导致该类告警恒空。
+const { data: closedRows, meta: closedMeta, execute: executeClosed } = useAsyncData<FundItem[]>(() => api.getClosedFundAnalysis())
 // 实时信号依赖 53 网关数据；网关无数据时给出明确提示（不阻断本地预警规则/历史）
 const gatewayEmpty = computed(
-  () => isGatewayNoData(bondsMeta.value) || isGatewayNoData(fundsMeta.value) || isGatewayNoData(reitsMeta.value),
+  () => isGatewayNoData(bondsMeta.value) || isGatewayNoData(fundsMeta.value)
+    || isGatewayNoData(reitsMeta.value) || isGatewayNoData(closedMeta.value),
 )
 onMounted(() => {
   refetch()
   executeBonds()
   executeFunds()
   executeReits()
+  executeClosed()
   loadAlertEvents()
 })
 
-// 页面数据更新时间：可转债/基金/REITs 三个行情接口取较新者
+// 页面数据更新时间：可转债/基金/REITs/封闭基金四个行情接口取较新者
 const pageUpdatedAt = computed(() => {
-  const times = [bondsMeta.value, fundsMeta.value, reitsMeta.value]
+  const times = [bondsMeta.value, fundsMeta.value, reitsMeta.value, closedMeta.value]
     .map(m => m?.updateTime)
     .filter((t): t is string => !!t)
     .sort()
@@ -239,35 +244,31 @@ const realtimeSignals = computed<SignalItem[]>(() => {
     }
   })
 
-  // c) 封闭基金信号（折价收敛 / 流动性 / 信用风险）
-  const closedFunds = (funds.value ?? []).filter(f => f.type === 'closed')
+  // c) 封闭基金信号：数据源 /funds/closed/analysis（后端已算好流动性/收敛/信用/评分）
+  const closedFunds = closedRows.value ?? []
   const closedResults = analyzeClosedFundBatch(closedFunds)
   closedFunds.forEach(fund => {
     const c = closedResults.get(fund.code)
     if (!c) return
-    if (c.convergence === 'uncertain') {
-      add(
-        'convergence',
-        `${fund.name} 折价收敛不确定`,
-        `不转LOF且剩余${c.remainingDays}天，折价${c.discountPct}%`,
-        'high',
-      )
+    if (c.quoteMissing) {
+      add('liquidity', `${fund.name} 无有效场内报价`,
+        '当日无场内价，溢折价率未计算，已从统计中排除', 'medium')
+      return
+    }
+    // 只对有实际折价的品种提示收敛不确定，避免几十条重复的「未披露」噪音
+    if (c.convergence === 'uncertain' && c.discountPct != null && c.discountPct > 3) {
+      add('convergence', `${fund.name} 折价收敛不确定`,
+        `折价${c.discountPct}%，剩余${c.remainingDays ?? '未知'}天；到期是否转LOF未披露`,
+        'high')
     }
     if (c.liquidity === 'illiquid') {
-      add(
-        'liquidity',
-        `${fund.name} 流动性极差`,
-        `日成交${c.volume}手，换手${c.turnoverEstimate}%`,
-        'medium',
-      )
+      add('liquidity', `${fund.name} 流动性极差`,
+        `日成交${c.volumeWan}万元（成交额口径）`, 'medium')
     }
+    // 未披露=中性，不再把无评级刷成信用风险
     if (c.creditRisk === 'risky') {
-      add(
-        'credit',
-        `${fund.name} 信用风险`,
-        `评级${c.creditRating}，底层${c.underlyingType}`,
-        'high',
-      )
+      add('credit', `${fund.name} 信用风险`,
+        `评级${c.creditRating}，底层${c.underlyingType}`, 'high')
     }
   })
 

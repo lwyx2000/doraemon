@@ -460,7 +460,25 @@ export interface FundItem {
   nav?: number                   // 基金净值
   nav_date?: string              // 净值披露日期
   credit_rating?: string         // 底层持仓信用评级
-  is_lof_convertible?: boolean   // 到期是否转LOF (决定折价收敛路径)
+  is_lof_convertible?: boolean | null // 到期是否转LOF；null=数据源未披露（不等于 false）
+  // 封闭基金分析端点 /funds/closed/analysis 附加：数据质量标记 + 后端分析结论
+  // 注意：该端点的 iopv / net_arbitrage_yield 为 null（无上游源），封闭基金页不得使用这两个字段
+  quote_missing?: boolean        // true=无有效场内报价，其 premium_pct=0 不是真实平价，须排除统计
+  term_days?: number | null      // 剩余天数（remaining_term 优先、maturity 补算）；null=无期限，禁止默认 365 天
+  term_source?: string | null
+  term_from_maturity?: boolean | null
+  yield_capped?: boolean         // 剩余期限<30天，年化收敛收益率不具参考性
+  volume_wan?: number | null     // 成交额(万元)
+  discount_pct?: number | null   // 仅折价品种为正数；溢价/无报价为 null
+  convergence_yield?: number | null
+  convergence?: 'certain' | 'likely' | 'uncertain' | 'unknown'
+  convergence_label?: string
+  liquidity?: 'ample' | 'moderate' | 'illiquid'
+  liquidity_label?: string
+  credit_risk?: 'safe' | 'watch' | 'risky' | 'unknown'
+  credit_label?: string
+  score?: number
+  warnings?: string[]
   // 篮子自算估值（跨境 LOF/QDII，参考 lofarb basket_valuation；null=数据不足未估算）
   est_nav?: number | null        // 篮子自算预估净值
   est_premium_pct?: number | null // 自算溢价率(%)：(现价-自算净值)/自算净值

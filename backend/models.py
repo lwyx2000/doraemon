@@ -310,34 +310,43 @@ class FundItem(BaseModel):
 
 
 class ClosedFundAnalysis(BaseModel):
-    # 原始基金字段（前端 analyzeClosedFundBatch 分析与表格展示需要）
+    # 原始基金字段（前端表格展示需要）
     name: str = ""
     code: str = ""
     type: str = "closed"
     price: float = 0
-    iopv: float = 0
-    premium_pct: float = 0          # 折价率(%)：负值=折价
-    premium_percentile: Optional[float] = None  # 需历史溢价率序列，无源时为 None（前端显示 -）
-    net_arbitrage_yield: float = 0
-    remaining_term: Optional[str] = None   # 剩余期限(如 "312 Days")，源缺失时为 None
-    annualized: Optional[float] = None     # 年化收益
-    est_ytm: Optional[float] = None        # 预估到期收益
-    maturity: Optional[str] = None         # 到期日
-    volume: int = 0                        # 成交额(元)
+    # 封闭基金无 IOPV / 净套利收益上游源：显式置 None，不伪装成 0 或复制 premium_pct
+    iopv: Optional[float] = None
+    premium_pct: float = 0          # 溢折价率(%)：负值=折价、正值=溢价；无报价时为 0，须结合 quote_missing 判读
+    premium_percentile: Optional[float] = None
+    net_arbitrage_yield: Optional[float] = None
+    remaining_term: Optional[str] = None   # 剩余期限(如 "1.39 Years")，由 maturity 补算后一般都有值
+    annualized: Optional[float] = None     # 年化收益（源未提供时为 None，前端显示 —）
+    est_ytm: Optional[float] = None        # 预估到期收益（源未提供时为 None，前端显示 —）
+    maturity: Optional[str] = None         # 到期日 YYYY-MM-DD
+    volume: int = 0                        # 成交额(元)，不是「手」
     nav: Optional[float] = None            # 基金净值
     nav_date: Optional[str] = None         # 净值披露日期
     credit_rating: Optional[str] = None
     underlying_type: Optional[str] = None
     is_lof_convertible: Optional[bool] = None
     change_pct: float = 0
-    # 后端分析字段（前端不依赖，保留以兼容旧调用）
+    # ---- 数据质量标记（前端据此排除无报价行、缺期限行，不再默认 365 天）----
+    quote_missing: bool = False             # price<=0：无有效场内报价，其 premium_pct=0 不是真实平价
+    term_days: Optional[int] = None         # 剩余天数；remaining_term 优先、maturity 补算
+    term_source: Optional[str] = None       # remaining_term / maturity / None
+    term_from_maturity: Optional[bool] = None
+    yield_capped: bool = False              # 剩余期限<30天，年化收敛收益率不具参考性
+    # ---- 后端分析字段（前端只做展示适配，不再重复计算）----
+    volume_wan: Optional[float] = None      # 成交额(万元)
+    discount_pct: Optional[float] = None    # 仅折价品种为正数，溢价/无报价为 None
     liquidity: str = "illiquid"
     liquidity_label: str = "极差"
-    convergence: str = "uncertain"
-    convergence_label: str = "不确定"
-    convergence_yield: float = 0
-    credit_risk: str = "risky"
-    credit_label: str = "无评级"
+    convergence: str = "unknown"
+    convergence_label: str = "路径未披露"
+    convergence_yield: Optional[float] = None
+    credit_risk: str = "unknown"
+    credit_label: str = "未披露"
     score: int = 0
     warnings: list[str] = []
 
