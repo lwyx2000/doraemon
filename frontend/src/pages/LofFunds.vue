@@ -1,7 +1,7 @@
 <script setup lang="ts">
 defineOptions({ name: 'LofFunds' })
 import { ref, computed, h, onMounted, watch } from 'vue'
-import { NDataTable, NButton, NIcon, NSelect, NInputNumber, useMessage } from 'naive-ui'
+import { NDataTable, NButton, NIcon, NSelect, NInput, NInputNumber, useMessage } from 'naive-ui'
 import type { PaginationProps } from 'naive-ui'
 import {
   TrendingUp,
@@ -10,6 +10,7 @@ import {
   PulseOutline,
   FlashOutline,
   StatsChartOutline,
+  SearchOutline,
 } from '@vicons/ionicons5'
 import { api, useAsyncData, isGatewayNoData } from '../composables/useApi'
 import { pctColor } from '../utils/percentile'
@@ -43,6 +44,8 @@ const gatewayEmpty = computed(() => isGatewayNoData(meta.value))
 const activeTab = ref<string>('lof')
 const selectedCode = ref<string | null>(null)
 const scanning = ref(false)
+// 基金搜索：同时匹配 6 位代码与基金名称（含中文/英文简称），作用于当前 Tab
+const searchQuery = ref('')
 
 // 表格分页：每页默认 20 行，客户端分页（参考可转债页面）
 const pagination = ref<PaginationProps>({
@@ -59,6 +62,8 @@ const pagination = ref<PaginationProps>({
 
 // 切换 tab 时回到第一页
 watch(activeTab, () => { pagination.value.page = 1 })
+// 搜索条件变化同样回到第一页，避免停在第 8 页却只显示 1 条结果
+watch(searchQuery, () => { pagination.value.page = 1 })
 
 function scan() {
   scanning.value = true
@@ -66,17 +71,17 @@ function scan() {
   setTimeout(() => {
     scanning.value = false
     if (activeTab.value === 'qdii') {
-      const feasible = filteredFunds.value.filter(f => {
+      const feasible = displayFunds.value.filter(f => {
         const a = qdiiAnalysisMap.value.get(f.code)
         return a && a.feasibility === 'feasible'
       }).length
-      const infeasible = filteredFunds.value.filter(f => {
+      const infeasible = displayFunds.value.filter(f => {
         const a = qdiiAnalysisMap.value.get(f.code)
         return a && a.feasibility === 'infeasible'
       }).length
       message.success(`扫描完成：${feasible} 个可行套利，${infeasible} 个不可行(限购/资金不足)`)
     } else {
-      const opportunities = filteredFunds.value.filter(f => Math.abs(f.premium_pct) > 3).length
+      const opportunities = displayFunds.value.filter(f => Math.abs(f.premium_pct) > 3).length
       message.success(`扫描完成：发现 ${opportunities} 个套利机会`)
     }
   }, 1500)
@@ -91,7 +96,7 @@ function exportFunds() {
     headers.push('触发次数', '5日胜率%', '10日胜率%', '20日胜率%', '赔率(10日)', '半凯利%(10日)', '凯利%(10日)',
       '样本内胜率%(10日)', '样本外胜率%(10日)', '分年度胜率%(10日)')
   }
-  const rows = filteredFunds.value.map(f => {
+  const rows = displayFunds.value.map(f => {
     const t = tacticalMap.value.get(f.code)
     const state = tacticalState(t)
     const base = [
@@ -148,6 +153,34 @@ const filteredFunds = computed(() => {
   }
   // LOF（默认）：单独菜单「封闭基金」负责封基，本页不再重复承载
   return funds.value.filter(f => f.type === 'lof')
+})
+
+// ---- 基金搜索（代码 / 名称）----
+// filteredFunds 保持「当前 Tab 全量」语义，供底部口径说明与战术信号扫描使用；
+// 表格、导出、手动扫描改用 displayFunds（所见即所得），搜索不会污染全市场统计。
+// 兼容 clearable 清空时个别版本回传 null，统一转字符串避免 .trim() 报错
+const searchKeyword = computed(() => String(searchQuery.value ?? '').trim().toLowerCase())
+// 代码粘贴常带 .SH/.SZ 后缀或空格，取纯数字片段兜底匹配（至少 2 位，避免误命中一片）
+const searchDigits = computed(() => searchKeyword.value.replace(/[^0-9]/g, ''))
+const displayFunds = computed(() => {
+  const list = filteredFunds.value
+  const q = searchKeyword.value
+  if (!q) return list
+  const digits = searchDigits.value
+  const matched = list.filter(f => {
+    const code = (f.code ?? '').toLowerCase()
+    const name = (f.name ?? '').toLowerCase()
+    if (code.includes(q) || name.includes(q)) return true
+    return digits.length >= 2 && code.includes(digits)
+  })
+  // 代码精确匹配 > 代码前缀匹配 > 名称匹配；同级保持 Tab 原有排序（sort 稳定）
+  const rank = (f: FundItem) => {
+    const code = (f.code ?? '').toLowerCase()
+    if (code === q || (digits && code === digits)) return 0
+    if (code.startsWith(q) || (digits && code.startsWith(digits))) return 1
+    return 2
+  }
+  return matched.sort((a, b) => rank(a) - rank(b))
 })
 
 // 全量套利可行性分析映射 (LOF/QDII 均需 T+N 敞口分析)
@@ -580,6 +613,19 @@ const columns = computed(() => {
 
     <!-- 基金列表 -->
     <DataPanel title="实时基金估值">
+      <template #actions>
+        <n-input
+          v-model:value="searchQuery"
+          size="small"
+          clearable
+          placeholder="搜索基金代码 / 名称"
+          class="fund-search"
+        >
+          <template #prefix>
+            <n-icon :component="SearchOutline" size="14" />
+          </template>
+        </n-input>
+      </template>
       <div class="tactical-toolbar">
         <n-select
           v-model="selectedStrategyId"
@@ -611,7 +657,7 @@ const columns = computed(() => {
       </div>
       <n-data-table
         :columns="tableColumns"
-        :data="filteredFunds"
+        :data="displayFunds"
         :row-key="(row: any) => row.code"
         :bordered="false"
         :single-line="false"
@@ -629,8 +675,15 @@ const columns = computed(() => {
         }"
       />
       <!-- 表格底部 -->
+      <div v-if="searchQuery && displayFunds.length === 0" class="search-empty">
+        未找到匹配「{{ searchQuery }}」的基金，请检查代码或名称（搜索仅在当前 Tab 内生效）
+      </div>
       <div class="table-footer">
-        <span class="footer-info">当前 {{ filteredFunds.length }} 条基金数据</span>
+        <span class="footer-info">
+          当前 {{ displayFunds.length }} 条基金数据
+          <template v-if="searchQuery">（搜索「{{ searchQuery }}」· 本 Tab 共 {{ filteredFunds.length }} 条）</template>
+        </span>
+        <n-button v-if="searchQuery" size="tiny" quaternary @click="searchQuery = ''">清空搜索</n-button>
       </div>
     </DataPanel>
 
@@ -787,6 +840,15 @@ const columns = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.fund-search { width: 260px; }
+.search-empty {
+  padding: 10px 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  border-top: 1px solid var(--border-default);
 }
 
 .tactical-toolbar {
@@ -1013,6 +1075,7 @@ const columns = computed(() => {
 @media (max-width: 768px) {
   .bottom-bento { grid-template-columns: 1fr; height: auto; }
   .table-footer { flex-wrap: wrap; gap: 8px; }
+  .fund-search { width: 100%; }
   .insight-bar { flex-wrap: wrap; }
 }
 </style>
