@@ -176,7 +176,7 @@ export const pageHelpContent: Record<string, PageHelpContent> = {
       '集思录真实到期税前收益 ≥ 2% → 偏债防守池',
       '强赎进度 ≥ 80% 或已公告强赎 → 强赎风险预警',
     ],
-    dataFreq: '主源 /api/processed_data?category=jisilu&subtype=cb（登录态集思录全量存续转债，约 315 只）；条款来自 bond_cb_redeem_jsl，行情交叉校验用 bond_zh_hs_cov_spot；主源失败时降级为东财发行一览按存续性过滤 + 新浪行情（此时 YTM/剩余年限/条款进度无源显示 —）。战术信号与胜率扫描按需计算，样本按成交额降序取前 100 只。IV/HV、下修进度、Altman Z、质押率、ST 标记当前无上游源，统一显示 — / 未接入。',
+    dataFreq: '四源按代码合并：登录态集思录 /api/processed_data?category=jisilu&subtype=cb（含真实 YTM/双低/剩余年限/PB 等富字段；网关 cookie 失效时会退化为游客态 30 行）、东财 bond_zh_cov 按「转股价值>0 且已上市」过滤出的 315 行存续骨架、bond_zh_hs_cov_spot（新浪价格/涨跌幅/成交额）、bond_cb_redeem_jsl（转股起始日/强赎状态/到期日）。集思录登录态正常时富字段全覆盖；退化时仅该 30 只有富字段，其余存续债的 YTM/剩余年限显示 —，页面顶部会明示网关状态。战术信号与胜率扫描按需计算，样本按成交额降序取前 100 只。IV/HV、下修进度、Altman Z、质押率、ST 标记当前无上游源，统一显示 — / 未接入。',
   },
   etfFunds: {
     title: 'ETF基金策略',

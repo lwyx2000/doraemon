@@ -88,6 +88,16 @@ def akshare_request(
             print(f"[AkShare Client] {method} 成功，返回 {len(data) if isinstance(data, list) else '对象'} 数据")
             return data
 
+        except requests.exceptions.HTTPError as e:
+            # 网关多副本：某些副本缺路由/临时 502，keep-alive 会稳定命中坏副本。
+            # 丢弃连接池强制重新握手，下一次尝试才可能落到健康副本。
+            status = getattr(e.response, "status_code", None)
+            print(f"[AkShare Client] {method} HTTP {status} (attempt {attempt + 1}/{retries})")
+            if status in (404, 502, 503, 504):
+                try:
+                    get_session().close()
+                except Exception:
+                    pass
         except requests.exceptions.Timeout:
             print(f"[AkShare Client] {method} 超时 (attempt {attempt + 1}/{retries})")
         except requests.exceptions.ConnectionError as e:

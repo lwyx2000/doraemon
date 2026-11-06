@@ -84,7 +84,7 @@ def _fetch_jisilu_cb() -> list[dict] | None:
 
 def _fetch_redeem_terms() -> dict[str, dict]:
     """条款补充源：转股起始日 / 强赎状态 / 天计数 / 最后交易日 / 剩余规模。"""
-    rows = akshare_request("bond_cb_redeem_jsl", retries=1, timeout=15)
+    rows = akshare_request("bond_cb_redeem_jsl", retries=3, timeout=15)
     if not isinstance(rows, list) or not rows:
         return {}
     return {str(r.get("代码") or ""): r for r in rows if r.get("代码")}
@@ -92,7 +92,7 @@ def _fetch_redeem_terms() -> dict[str, dict]:
 
 def _fetch_sina_spot() -> dict[str, dict]:
     """新浪全量行情，用于降级源补涨跌幅与成交额。"""
-    rows = akshare_request("bond_zh_hs_cov_spot", retries=1, timeout=15)
+    rows = akshare_request("bond_zh_hs_cov_spot", retries=3, timeout=15)
     if not isinstance(rows, list) or not rows:
         return {}
     return {str(r.get("code") or ""): r for r in rows if r.get("code")}
@@ -114,7 +114,7 @@ def _fetch_eastmoney_valid() -> list[dict] | None:
     「债现价=100 面值占位 + 转股价值=0」的历史退市债。过滤条件：
     转股价值>0 且 上市时间有效且已上市 —— 实测约 315 行存续债。
     """
-    rows = akshare_request("bond_zh_cov", retries=1, timeout=15)
+    rows = akshare_request("bond_zh_cov", retries=3, timeout=15)
     if not isinstance(rows, list) or not rows:
         return None
     today = datetime.date.today().isoformat()
@@ -151,6 +151,10 @@ def _norm_from_jisilu(row: dict, terms: dict, spot: dict) -> dict | None:
     volume = _safe_float(row.get("成交额")) or 0
     term = terms.get(code, {})
     sp = spot.get(code, {})
+    # 游客态 30 行里部分债的集思录成交额为 0，用新浪成交额/非面值价兜底，
+    # 避免把正常交易债误标成「无成交」而排除出统计
+    spot_amount = _safe_float(sp.get("amount")) or 0
+    has_trade = volume > 0 or spot_amount > 0 or abs(price - 100.0) > 1e-6
 
     # 强赎天计数是 HTML 片段，只有明确出现 "n/m" 才解析为进度；否则留空
     days = total = None
@@ -180,8 +184,8 @@ def _norm_from_jisilu(row: dict, terms: dict, spot: dict) -> dict | None:
         "stock_pb": _safe_float(row.get("正股PB"), None),
         "remaining_size": _safe_float(row.get("剩余规模"), None),
         "turnover_rate": _safe_float(row.get("换手率"), None),
-        "volume_raw": volume,
-        "has_trade": volume > 0,
+        "volume_raw": volume or spot_amount,
+        "has_trade": has_trade,
         "maturity_date": _date_iso(row.get("到期时间")) or _date_iso(term.get("到期日")),
         "last_trade_date": _date_iso(term.get("最后交易日")),
         "conversion_start_date": conv_start,
@@ -222,11 +226,13 @@ def _norm_from_eastmoney(row: dict, terms: dict, spot: dict) -> dict | None:
         "change_pct": change,
         "conv_value": conv_value,
         "premium_pct": premium,
-        # 降级源没有真实 YTM/双低/剩余年限，绝不重算近似值
+        # 降级源没有真实 YTM / 剩余年限，绝不重算近似值。
+        # 双低是「价格 + 转股溢价率」的精确定义（集思录同口径），可由已有字段
+        # 精确得出，但必须用带符号的溢价率，绝不能取 abs（负溢价会被算成正数）。
         "ytm": None,
         "remaining_years": None,
         "rating": _safe_str(row.get("信用评级")) or "",
-        "double_low_score": round(price + abs(premium), 2),
+        "double_low_score": round(price + premium, 2),
         "stock_name": _safe_str(term.get("正股名称")),
         "stock_code": _safe_str(term.get("正股代码")),
         "stock_price": _safe_float(term.get("正股价"), None),
@@ -245,7 +251,7 @@ def _norm_from_eastmoney(row: dict, terms: dict, spot: dict) -> dict | None:
         "redemption_days": None,
         "total_redemption_days": None,
         "is_in_conversion_period": (conv_start <= today if conv_start else None),
-        "data_source": "eastmoney/degraded",
+        "data_source": "eastmoney+sina",
     }
 
 
@@ -337,27 +343,46 @@ def _load_all(use_cache: bool = True) -> tuple[list[dict], str | None]:
     if use_cache and _CB_ALL_CACHE and (time.time() - _CB_ALL_CACHE[0]) < _CB_LIST_TTL:
         return _CB_ALL_CACHE[1], _CB_ALL_CACHE[2]
 
-    primary = _fetch_jisilu_cb()
-    eastmoney = None if primary else _fetch_eastmoney_valid()
-    if not primary and not eastmoney:
+    # 四源始终全取：集思录登录态会退化（cookie 失效时只返回游客态 30 行），
+    # 单靠它会让页面从 315 只突然变成 30 只。以东财存续性过滤后的 315 行为
+    # universe 骨架，按代码合并其余三源，富字段有多少标多少、缺的一律 null。
+    jisilu = _fetch_jisilu_cb() or []
+    eastmoney = _fetch_eastmoney_valid() or []
+    if not jisilu and not eastmoney:
         return [], None
 
     terms = _fetch_redeem_terms()
     spot = _fetch_sina_spot()
 
+    jmap = {str(r.get("代码") or ""): r for r in jisilu if r.get("代码")}
+    cmap = {str(r.get("债券代码") or ""): r for r in eastmoney if r.get("债券代码")}
+    # 东财骨架优先（保证全量存续），再补集思录独有的可交换债(EB)等
+    codes = list(dict.fromkeys([*cmap.keys(), *jmap.keys()]))
+
     items: list[dict] = []
-    if primary:
-        for row in primary:
-            norm = _norm_from_jisilu(row, terms, spot)
-            if norm:
-                items.append(_build_bond(norm))
-        note = "集思录全量存续转债（登录态）+ 强赎条款 + 新浪行情交叉"
+    for code in codes:
+        j, c = jmap.get(code), cmap.get(code)
+        if j:
+            norm = _norm_from_jisilu(j, terms, spot)
+            if norm and c and not norm.get("rating"):
+                norm["rating"] = _safe_str(c.get("信用评级")) or ""
+        elif c:
+            norm = _norm_from_eastmoney(c, terms, spot)
+        else:
+            continue
+        if norm:
+            items.append(_build_bond(norm))
+
+    n_j = len(jisilu)
+    if n_j >= 100:
+        note = "集思录全量存续转债（登录态）+ 东财存续性校验 + 强赎条款 + 新浪行情交叉"
     else:
-        for row in eastmoney or []:
-            norm = _norm_from_eastmoney(row, terms, spot)
-            if norm:
-                items.append(_build_bond(norm))
-        note = "降级：东财发行一览存续债 + 新浪行情；YTM/剩余年限/条款进度无源显示 —"
+        note = (
+            f"集思录登录态失效，仅 {n_j} 只有 YTM/双低等富字段；"
+            "其余存续债由东财发行一览(存续性过滤) + 新浪行情 + 强赎条款合并，"
+            "无源字段显示 —（网关恢复登录后自动补齐）"
+        )
+    print(f"[CB] 四源合并：集思录 {n_j} / 东财存续 {len(eastmoney)} → 输出 {len(items)} 只")
 
     # 成交额降序：流动性优先，战术扫描取前 N 只时不再全是次新债
     items.sort(key=lambda x: (x.get("volume_raw") or 0), reverse=True)
