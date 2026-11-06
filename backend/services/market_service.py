@@ -94,16 +94,17 @@ def _check_akshare_reachable(timeout: int = _STATUS_CHECK_TIMEOUT) -> bool:
 
 
 def _fetch_jisilu_auth_detail(timeout: int = _STATUS_CHECK_TIMEOUT) -> dict | None:
-    """读取 53 侧 /api/jisilu/auth-status 的**完整**详情。
+    """读取网关 /api/jisilu/auth-status 的详情，仅作诊断交叉核对。
 
-    上游能区分三种状态（2026-10-08 实测）：
-      - ``no_cookie``      : 压根没配 cookie → 需从零配置
-      - ``cookie_invalid`` : 配了但已失效     → 只需刷新 cookie
-      - ``logged_in``      : 正常             → 不必打扰
-    ⚠️ 旧实现只取 ``logged_in`` 一个布尔值，丢掉 ``has_cookie`` /
-      ``can_dynamic_login`` / ``status`` / ``message``，导致前端只能显示
-      「失效/未配置」这种笼统提示，无法区分「没配」和「过期」，指引方向会错。
-    返回 None 表示该接口不可用（调用方回退到旧的推断方式）。
+    2026-11-06 上游已改为「按实测样本行数判定」：``status`` 值域为
+    ``ok / suspect_guest / no_cookie / unknown``，``data_mode`` 为
+    ``full / guest / unknown``，``logged_in`` 由 ``index_rows >= 80`` 决定，
+    并新增 ``index_rows``。旧版三态（``no_cookie / cookie_invalid / logged_in``）
+    与「样本=None 却判 ok」的乐观自报已废弃。
+
+    仍然保留 ``has_cookie / can_dynamic_login / status / message``，供前端区分
+    「没配凭据」「游客态」「尚未检测」。返回 None 表示接口不可用，
+    此时调用方仍以本站独立实测为准（不再有 closed_fund 错误兜底）。
     """
     try:
         r = get_session().get(
@@ -185,15 +186,15 @@ def _reuse_recent_jisilu_sample(ttl: int = 30) -> tuple[str, int] | None:
 def get_data_source_status() -> dict:
     """数据源连接状态：AkShare WebAPI 可达性 + 集思录登录态（以实测取数为准）。
 
-    ⚠️ 2026-11-06 修正：网关 ``/api/jisilu/auth-status`` 的 ``logged_in`` 只反映
-    「Cookie 是否配置 + 动态登录能否成功」，其 message 明确写着「样本=None」，
-    **不校验实际抓到的样本量**。生产实测过 auth-status 报 ``logged_in=true``、
-    而 ``processed_data?subtype=cb`` 只给 30 行游客态的情况：侧栏显示「已登录」，
-    可转债页同时提示「登录态失效」，两处互相矛盾。因此拆成三个字段：
+    ⚠️ 2026-11-06 治理：上游 auth-status 原先把「Cookie 是否配置 + 动态登录能否
+    成功」当 ``logged_in``（message 写着「样本=None」），出现过报已登录、
+    而 ``processed_data?subtype=cb`` 只给 30 行游客态的矛盾。上游现已改为按实测
+    样本量判定，并在游客态自动清缓存重登；但网关多副本各自持有 cookie 缓存，
+    本站仍独立实测一次，避免两个请求命中不同副本时结论打架。因此保留三个字段：
 
-      - ``jisiluAuthOk``   : 上游自报（仅用于诊断，不能当结论）
-      - ``jisiluDataMode`` : 实测取数模式 full / guest / unavailable
-      - ``jisiluLoggedIn`` : 只由实测决定（full 才为 True）
+      - ``jisiluAuthOk``   : 上游实测结论（可能来自另一副本，仅作交叉核对）
+      - ``jisiluDataMode`` : 本站实测模式 full / guest / unavailable
+      - ``jisiluLoggedIn`` : 只由本站实测决定（full 才为 True）
 
     若可转债页 30s 内刚抓过数，直接复用它的行数（单一事实来源）；否则
     三项探测并行执行，避免数据源不可达时长时间阻塞设置页。

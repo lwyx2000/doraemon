@@ -38,13 +38,13 @@ export interface DataSourceStatus {
   akshareConnected: boolean
   /** 只由「实测取数」决定：拿到集思录全量可转债才算登录态 */
   jisiluLoggedIn: boolean
-  /** 网关 auth-status 自报（只反映 cookie 配置/动态登录能力，不能当结论） */
+  /** 网关 auth-status 结论（上游已按实测样本量判定；可能来自另一副本，仅作交叉核对） */
   jisiluAuthOk?: boolean | null
   /** 实测取数模式：full 登录态全量 / guest 游客态 30 行 / unavailable 不可达 */
   jisiluDataMode?: 'full' | 'guest' | 'unavailable' | null
   /** 实测抓到的可转债行数（登录态约 315，游客态恒 30） */
   jisiluSampleRows?: number | null
-  /** 上游细分状态：no_cookie（未配置）/ cookie_invalid（已失效）/ logged_in */
+  /** 上游细分状态：ok / suspect_guest / no_cookie / unknown（2026-11-06 起） */
   jisiluStatus?: string | null
   /** 上游给的中文说明 */
   jisiluMessage?: string | null

@@ -63,8 +63,8 @@ const buildTimeDisplay = (() => {
 })()
 
 // 集思录状态：以「实测取数行数」为准。
-// 网关 auth-status 只检查 cookie 配置/动态登录能力（message 里写着「样本=None」），
-// 实测出现过它报已登录、processed_data 却只给 30 行游客态的情况，不能拿来当结论。
+// 上游 2026-11-06 起 auth-status 也改为按实测样本量判定；但网关多副本各自持有
+// cookie 缓存，本站仍独立实测一次，避免两个请求命中不同副本时结论打架。
 const jisiluLoggedIn = computed(() => dataSourceStatus.value?.jisiluLoggedIn === true)
 const jisiluLabel = computed(() => {
   const st = dataSourceStatus.value
@@ -79,7 +79,7 @@ const jisiluTitle = computed(() => {
   const rows = st.jisiluSampleRows ?? '?'
   if (st.jisiluDataMode === 'full') return `集思录登录态正常（实测全量 ${rows} 只可转债）`
   if (st.jisiluDataMode === 'guest') {
-    return `集思录取数为游客态：实测仅 ${rows} 只可转债（登录态约 315 只）；网关自报 ${st.jisiluAuthOk ? '已登录' : '未登录'}，不代表实际取到全量。可转债 YTM / 双低等富字段会缺失`
+    return `集思录取数为游客态：实测仅 ${rows} 只可转债（登录态约 315 只）。网关已按实测判定并自动尝试清缓存重登，仍未恢复；请检查集思录账号是否被风控或需要验证码。可转债 YTM / 双低等富字段会缺失`
   }
   return '集思录取数接口不可达'
 })

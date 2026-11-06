@@ -139,45 +139,41 @@ async function loadDataSourceStatus() {
   }
 }
 
-// 集思录未登录时，按上游细分状态给出**不同的**指引
-// （「没配」要从零配置，「已失效」只需刷新，两者不能混为一谈）
+// 集思录未登录时按实测状态给指引。上游 2026-11-06 起同样按实测样本量判定，
+// 且检出游客态会自动清 Cookie 缓存 + 重登 + 重取一次，指引重点转为排查账号/Cookie。
 const jisiluGuide = computed(() => {
   const st = dataSourceStatus.value
   if (!st || st.jisiluLoggedIn) return null
-  // 实测游客态 ≠ 没配 cookie：上游 auth-status 可能自报「已登录」（它只检查
-  // cookie 配置 / 动态登录能力，不校验抓到的样本量），必须单独给指引。
   if (st.jisiluDataMode === 'guest') {
     return {
       title: '集思录处于游客态（富字段缺失）',
-      desc: `网关 auth-status ${st.jisiluAuthOk ? '自报「已登录」' : '自报未登录'}，但实测只取到 ${st.jisiluSampleRows ?? '少量'} 只可转债（正常登录态约 315 只）。auth-status 的判定不含样本量校验，不能当结论。可转债页已自动降级为四源合并，YTM / 双低 / 剩余年限等富字段会显示「—」。`,
+      desc: `网关与本站均按实测判定为游客态：本次只取到 ${st.jisiluSampleRows ?? '少量'} 只可转债（登录态约 315 只）。上游检出游客态后已自动清 Cookie 缓存、重新登录并重取一次，仍未恢复；通常是集思录账号被风控/需要验证码，或动态登录拿到的 Cookie 不被认可。可转债页已降级为四源合并，YTM / 双低 / 剩余年限等富字段显示「—」。`,
       steps: [
-        '在网关服务器检查 /api/jisilu/status 的 has_static_cookie / auth_source，确认 cookie 是否真的生效',
-        '触发一次重新登录（网关 /api/jisilu/relogin），再查 /api/processed_data?category=jisilu&subtype=cb 是否返回约 315 行',
-        '若仍恒为 30 行，检查网关多副本间的 cookie 缓存是否不同步（部分副本仍是游客态）',
+        '在网关打开 /api/jisilu/status?probe=1，核对 index_rows / auth_status.message / login_message，区分「登录失败」与「登录成功但仍只有 30 行」',
+        '检查集思录账号是否触发验证码或风控；必要时在网关「集思录账号配置」页重新保存账号密码并点「立即重新登录」',
+        '再查 /api/processed_data?category=jisilu&subtype=cb 是否恢复到约 315 行；网关多副本各自缓存 Cookie，可多点几次「主动检测」',
         '恢复后回到本页点检测，应显示「已登录」',
       ],
     }
   }
-  const status = st.jisiluStatus ?? ''
-  if (status === 'cookie_invalid' || st.jisiluHasCookie) {
+  if (st.jisiluHasCookie) {
     return {
-      title: '集思录 Cookie 已失效',
-      desc: 'Cookie 是集思录的动态登录态，会定期过期，程序无法自动续期，需人工刷新一次：',
+      title: '集思录尚未取得有效登录态',
+      desc: '上游已支持账号密码动态登录与游客态自动重登；当前还没有实测结论，请确认凭据已配置且未被验证码拦截：',
       steps: [
-        '在服务器 192.168.3.53 上，用浏览器登录 jisilu.cn 并复制 Cookie',
-        '更新 akshareWebApi 的 Cookie 配置（akshareWebApi/.env 里的 JISILU_COOKIE）',
-        '重建 akshare-webapi 容器使配置生效',
-        '回到本页点检测，应显示「已登录」',
+        '在网关「集思录账号配置」页查看 configured / username_masked，确认账号密码已保存',
+        '点「主动检测」触发一次实测，再看 index_rows 与 login_message',
+        '若提示需要验证码或登录失败，重新保存账号密码后点「立即重新登录」',
+        '恢复后回到本页点检测，应显示「已登录」',
       ],
     }
   }
   return {
-    title: '集思录 Cookie 未配置',
-    desc: '当前尚未配置集思录 Cookie，只能拿到游客数据。若需要可转债 YTM / 溢价率等深度数据，请按下列步骤配置：',
+    title: '集思录账号未配置',
+    desc: '当前尚未配置集思录账号，只能拿到游客数据。若需要可转债 YTM / 双低等富字段，请按下列步骤配置：',
     steps: [
-      '在服务器 192.168.3.53 上，用浏览器登录 jisilu.cn 并复制 Cookie',
-      '写入 akshareWebApi 的 Cookie 配置（akshareWebApi/.env 里的 JISILU_COOKIE）',
-      '重建 akshare-webapi 容器使配置生效',
+      '在网关「集思录账号配置」页填写集思录账号密码并保存（凭据入库，容器重启仍生效）',
+      '点「主动检测」，确认 index_rows 恢复到约 315 行',
       '回到本页点检测，应显示「已登录」',
     ],
   }
@@ -543,8 +539,8 @@ onMounted(async () => {
                             ? '游客态'
                             : (dataSourceStatus?.jisiluDataMode === 'unavailable'
                                 ? '不可达'
-                                : (dataSourceStatus?.jisiluStatus === 'cookie_invalid' || dataSourceStatus?.jisiluHasCookie
-                                    ? '已失效'
+                                : (dataSourceStatus?.jisiluHasCookie
+                                    ? '待检测'
                                     : '未配置'))) }}
                       </n-tag>
                       <span class="ds-endpoint">实测 {{ dataSourceStatus?.jisiluSampleRows ?? '—' }} 只可转债 · YTM / 双低数据源</span>
