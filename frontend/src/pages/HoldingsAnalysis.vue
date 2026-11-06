@@ -20,6 +20,8 @@ import DataPanel from '../components/DataPanel.vue'
 import LoadingState from '../components/LoadingState.vue'
 import BaseChart from '../components/BaseChart.vue'
 import GlossaryPanel from '../components/GlossaryPanel.vue'
+import TradingLedgerPanel from './TradingLedgerPanel.vue'
+import TradeReviewPanel from './TradeReviewPanel.vue'
 
 const message = useMessage()
 const dialog = useDialog()
@@ -51,7 +53,7 @@ function typeColor(type: string) {
 const { data: view, loading, error, refresh } = useAsyncData<HoldingsView>(() => api.getHoldings())
 const { data: snapshots, refresh: refreshSnapshots } = useAsyncData<HoldingSnapshot[]>(() => api.getHoldingSnapshots())
 const { data: history, loading: historyLoading, refresh: refreshHistory } = useAsyncData<HoldingHistory[]>(() => api.getHoldingHistory())
-const activeTab = ref<'current' | 'history' | 'brokers' | 'imports'>('current')
+const activeTab = ref<'current' | 'history' | 'brokers' | 'imports' | 'ledger' | 'review'>('current')
 
 // 表格分页：每页默认 20 行，客户端分页
 const pagination = ref<PaginationProps>({
@@ -1520,6 +1522,9 @@ watch(activeTab, (tab) => {
             </div>
           </DataPanel>
         </n-tab-pane>
+
+        <n-tab-pane name="ledger" tab="交易台账"><TradingLedgerPanel /></n-tab-pane>
+        <n-tab-pane name="review" tab="交易分析"><TradeReviewPanel /></n-tab-pane>
       </n-tabs>
 
     </div>

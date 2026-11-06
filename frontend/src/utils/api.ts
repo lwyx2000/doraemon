@@ -506,6 +506,68 @@ export const api = {
     request<HoldingHistory[]>('/api/v1/holdings/history'),
 
   // ============================================================
+  // 交易台账 / 交易分析（TradingLedger / TradeReview）
+  // request<T> 第二个参数会过滤 undefined / null / '' 空值，query 直接传对象即可；
+  // FormData 请求不要设置 Content-Type，request 内部已按 body 类型处理。
+  // ============================================================
+  getSettlements: (params: {
+    from?: string; to?: string; code?: string; direction?: string; limit?: number
+  } = {}) =>
+    request<SettlementList>('/api/v1/trading/settlements', {
+      from: params.from,
+      to: params.to,
+      code: params.code,
+      direction: params.direction,
+      limit: params.limit,
+    }),
+
+  getDailyTrades: (params: { from?: string; to?: string; code?: string } = {}) =>
+    request<DailyTradeList>('/api/v1/trading/daily', {
+      from: params.from,
+      to: params.to,
+      code: params.code,
+    }),
+
+  getClosedRounds: () =>
+    request<ClosedRoundList>('/api/v1/trading/closed'),
+
+  getTradingAnalysis: (params: { from?: string; to?: string } = {}) =>
+    request<TradingAnalysis>('/api/v1/trading/analysis', {
+      from: params.from,
+      to: params.to,
+    }),
+
+  // multipart 上传交割单（.xlsx/.csv/.txt）
+  importSettlementFile: (file: File, broker?: string, account?: string, mode?: 'merge' | 'replace') => {
+    const form = new FormData()
+    form.append('file', file)
+    if (broker) form.append('broker', broker)
+    if (account) form.append('account', account)
+    if (mode) form.append('mode', mode)
+    return request<SettlementImportResult>('/api/v1/trading/import/settlement', undefined, {
+      method: 'POST',
+      body: form,
+    })
+  },
+
+  // 粘贴 JSON 导入每日成交（按 trade_date 覆盖）
+  importDailyTrades: (body: {
+    trade_date: string
+    items: Array<Record<string, unknown>>
+    source?: string
+  }) =>
+    request<DailyImportResult>('/api/v1/trading/import/daily', undefined, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  // 按日期清空交割单（用于重导）
+  clearSettlements: (tradeDate: string) =>
+    request<{ deleted: number }>('/api/v1/trading/settlements', { trade_date: tradeDate }, {
+      method: 'DELETE',
+    }),
+
+  // ============================================================
   // 系统设置（SystemSettings）
   // ============================================================
   // 缓存配置
@@ -1085,4 +1147,10 @@ import type {
   LqrHuazheng,
   LqrStatus,
   ImportLog,
+  SettlementList,
+  DailyTradeList,
+  ClosedRoundList,
+  TradingAnalysis,
+  SettlementImportResult,
+  DailyImportResult,
 } from '../types'

@@ -301,6 +301,36 @@ BIZ_TABLES = [
         updated_at    TEXT DEFAULT CURRENT_TIMESTAMP
     )
     """,
+    # 交易台账：券商交割单（成交编号 + 分项费用 + 资金流水），分析层唯一事实源
+    """
+    CREATE TABLE IF NOT EXISTS biz_settlements (
+        id            TEXT PRIMARY KEY,
+        fk_user       TEXT NOT NULL,
+        trade_date    TEXT NOT NULL,
+        settle_date   TEXT,
+        trade_id      TEXT,
+        code          TEXT DEFAULT '',
+        name          TEXT DEFAULT '',
+        type          TEXT DEFAULT 'stock',
+        broker        TEXT DEFAULT '',
+        account       TEXT DEFAULT '',
+        direction     TEXT NOT NULL,
+        entry_type    TEXT DEFAULT 'trade',
+        price         REAL,
+        quantity      REAL,
+        amount        REAL,
+        commission    REAL DEFAULT 0,
+        stamp_tax     REAL DEFAULT 0,
+        transfer_fee  REAL DEFAULT 0,
+        other_fee     REAL DEFAULT 0,
+        fee_total     REAL DEFAULT 0,
+        net_amount    REAL,
+        trade_time    TEXT,
+        currency      TEXT DEFAULT 'CNY',
+        source        TEXT DEFAULT '',
+        created_at    TEXT
+    )
+    """,
 ]
 
 BIZ_INDEXES = [
@@ -313,6 +343,9 @@ BIZ_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_biz_brokers_terminal ON biz_brokers(fk_terminal)",
     "CREATE INDEX IF NOT EXISTS idx_biz_acctname_users ON biz_account_names(fk_user)",
     "CREATE INDEX IF NOT EXISTS idx_biz_snap_users ON biz_holding_snapshots(fk_user)",
+    "CREATE INDEX IF NOT EXISTS idx_biz_settle_user_date ON biz_settlements(fk_user, trade_date)",
+    "CREATE INDEX IF NOT EXISTS idx_biz_settle_user_code ON biz_settlements(fk_user, code)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_biz_settle_user_tradeid ON biz_settlements(fk_user, trade_id)",
     "CREATE INDEX IF NOT EXISTS idx_biz_ar_users ON biz_alert_rules(fk_user)",
     "CREATE INDEX IF NOT EXISTS idx_biz_ae_rule_time ON biz_alert_events(fk_alert_rules, triggered_at)",
     "CREATE INDEX IF NOT EXISTS idx_biz_air_users_date ON biz_ai_reports(fk_user, report_date)",

@@ -1855,3 +1855,288 @@ export interface LqrStatus {
     manualCollect: { running: boolean }
   }
 }
+
+// ============================================================
+// 交易台账 + 交易分析（TradingLedger / TradeReview）
+// 数据源：用户导入的券商 Excel 交割单 / 每日成交
+// ============================================================
+
+/** 买卖/资金方向 */
+export type SettlementDirection =
+  | 'buy' | 'sell' | 'cash_in' | 'cash_out' | 'dividend' | 'interest' | 'other'
+
+/** 流水条目类别 */
+export type EntryType = 'trade' | 'cash' | 'other'
+
+/** 做T模式 */
+export type TradePattern = 'sell_then_buy' | 'buy_then_sell' | 'mixed'
+
+// ---- 交割单 ----
+export interface SettlementRow {
+  id: string
+  trade_date: string
+  settle_date: string | null
+  trade_id: string | null
+  code: string
+  name: string | null
+  type: string | null
+  broker: string | null
+  account: string | null
+  direction: SettlementDirection
+  entry_type: EntryType
+  price: number | null
+  quantity: number | null
+  amount: number | null
+  commission: number | null
+  stamp_tax: number | null
+  transfer_fee: number | null
+  other_fee: number | null
+  fee_total: number | null
+  net_amount: number | null
+  trade_time: string | null
+  currency: string | null
+  source: string | null
+}
+
+export interface SettlementList {
+  items: SettlementRow[]
+  total: number
+  date_from: string | null
+  date_to: string | null
+}
+
+// ---- 每日成交 ----
+export interface DailySummary {
+  trade_date: string
+  trade_count: number
+  buy_amount: number | null
+  sell_amount: number | null
+  net_amount: number | null
+  fee_total: number | null
+  code_count: number
+  t_net_pnl: number | null
+}
+
+export interface TradeRow {
+  trade_date: string
+  trade_time: string | null
+  code: string
+  name: string | null
+  direction: string
+  price: number | null
+  quantity: number | null
+  amount: number | null
+  fee_total: number | null
+  account: string | null
+  source: string | null
+}
+
+export interface DailyTradeList {
+  dates: string[]
+  days: DailySummary[]
+  items: TradeRow[]
+  settlement_rows: number
+  daily_rows: number
+}
+
+// ---- 已清仓（FIFO 回合）----
+export interface ClosedRound {
+  code: string
+  name: string | null
+  account: string | null
+  broker: string | null
+  quantity: number
+  buy_avg_price: number | null
+  sell_avg_price: number | null
+  buy_date: string | null
+  sell_date: string | null
+  holding_days: number | null
+  gross_pnl: number | null
+  fee_total: number | null
+  realized_pnl: number | null
+  return_pct: number | null
+  fee_estimated: boolean
+}
+
+/** 由流水重建的当前持仓 */
+export interface RebuiltPosition {
+  code: string
+  name: string | null
+  account: string | null
+  quantity: number
+  cost_price: number | null
+  first_buy_date: string | null
+  fee_in_cost: number | null
+}
+
+export interface ClosedRoundSummary {
+  round_count: number
+  win_count: number
+  win_rate: number | null
+  total_realized_pnl: number | null
+  total_fee: number | null
+  avg_holding_days: number | null
+}
+
+export interface ClosedRoundList {
+  items: ClosedRound[]
+  open_positions: RebuiltPosition[]
+  summary: ClosedRoundSummary
+}
+
+// ---- 交易分析 ----
+export interface TTrade {
+  trade_date: string
+  code: string
+  name: string | null
+  account: string | null
+  t_quantity: number | null
+  buy_avg: number | null
+  sell_avg: number | null
+  gross_pnl: number | null
+  fee_alloc: number | null
+  net_pnl: number | null
+  closed: boolean
+  pattern: TradePattern
+  trade_count: number
+}
+
+export interface TTradeSummary {
+  count: number
+  win_count: number
+  win_rate: number | null
+  total_gross: number | null
+  total_fee: number | null
+  total_net: number | null
+  avg_net: number | null
+  best_net: number | null
+  worst_net: number | null
+  fee_eroded_count: number
+  closed_count: number
+  sell_then_buy_count: number
+  buy_then_sell_count: number
+}
+
+export interface GroupStat {
+  key: string
+  label: string
+  count: number
+  net_pnl: number | null
+  win_count: number
+  win_rate: number | null
+  fee: number | null
+}
+
+export interface TTradesBlock {
+  items: TTrade[]
+  summary: TTradeSummary
+  by_code: GroupStat[]
+  by_month: GroupStat[]
+}
+
+export interface RoundSummary {
+  count: number
+  win_count: number
+  win_rate: number | null
+  total_pnl: number | null
+  avg_win: number | null
+  avg_loss: number | null
+  profit_factor: number | null
+  expectancy: number | null
+  best_pnl: number | null
+  worst_pnl: number | null
+  avg_holding_days: number | null
+}
+
+export interface RoundsBlock {
+  summary: RoundSummary
+  by_code: GroupStat[]
+  by_month: GroupStat[]
+  by_account: GroupStat[]
+}
+
+export interface AnalysisMeta {
+  settlement_rows: number
+  daily_rows: number
+  merged_rows: number
+  fee_estimated_rows: number
+  date_from: string | null
+  date_to: string | null
+}
+
+export interface FeesBlock {
+  total_fee: number | null
+  commission: number | null
+  stamp_tax: number | null
+  transfer_fee: number | null
+  other_fee: number | null
+  unallocated_fee: number | null
+  fee_to_gross_pct: number | null
+  small_order_count: number
+  estimated_fee_rows: number
+}
+
+export interface BehaviorBlock {
+  avg_hold_days_win: number | null
+  avg_hold_days_loss: number | null
+  disposition_gap: number | null
+  trade_days: number
+  avg_trades_per_day: number | null
+  most_traded_code: string | null
+  most_traded_count: number | null
+}
+
+export interface HoldingDiff {
+  code: string
+  account: string
+  ledger_qty: number
+  imported_qty: number
+  diff: number
+}
+
+export interface ReconciliationBlock {
+  settlement_rows: number
+  daily_rows: number
+  unmatched_daily: number
+  duplicate_ids: number
+  holding_diff: HoldingDiff[]
+  warnings: string[]
+}
+
+export interface TradingAnalysis {
+  meta: AnalysisMeta
+  t_trades: TTradesBlock
+  rounds: RoundsBlock
+  fees: FeesBlock
+  behavior: BehaviorBlock
+  reconciliation: ReconciliationBlock
+}
+
+// ---- 导入结果 ----
+export interface SettlementImportFailedRow {
+  row: number
+  code: string
+  reason: string
+}
+
+export interface SettlementImportResult {
+  total: number
+  inserted: number
+  duplicates: number
+  failed: SettlementImportFailedRow[]
+  date_from: string | null
+  date_to: string | null
+  brokers: string[]
+}
+
+export interface DailyImportFailedRow {
+  index: number
+  code: string
+  reason: string
+}
+
+export interface DailyImportResult {
+  deleted: number
+  inserted: number
+  failed: DailyImportFailedRow[]
+}

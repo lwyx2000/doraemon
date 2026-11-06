@@ -648,6 +648,17 @@ class TradeUploadRequest(BaseModel):
     items: list[TradeImportItem]
 
 
+class DailyTradeImportRequest(BaseModel):
+    """JWT 版每日成交导入（/trading/import/daily）：按 (用户, 交易日) 全量覆盖。
+
+    与无鉴权 /trades/import 写入同一张 biz_trades 表，供页面内手工补录 / 粘贴导入使用。
+    items 为自由字段字典，由 trades_service 逐行校验。
+    """
+    trade_date: str
+    items: list[dict]
+    source: Optional[str] = "web"
+
+
 # ============================================================
 # Strategy
 # ============================================================
