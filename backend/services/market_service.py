@@ -76,12 +76,17 @@ _STATUS_CHECK_TIMEOUT = 5
 
 
 def _check_akshare_reachable(timeout: int = _STATUS_CHECK_TIMEOUT) -> bool:
-    """AkShare WebAPI 可达性探测。"""
+    """网关可达性探测：只探轻量的 openapi.json。
+
+    ⚠️ 旧实现打 ``/api/processed_data?category=market_stats``：那是重计算接口
+    （网关侧超时预算 120s），且共享 Session 会粘到 404 副本，5s 超时后会把
+    「网关明明可达、集思录也拿到 315 行」误报成 ``akshareConnected=false``。
+    """
     try:
-        r = get_session().get(
-            f"{AKSHARE_API_BASE}/api/processed_data",
-            params={"category": "market_stats"},
+        r = requests.get(
+            f"{AKSHARE_API_BASE}/openapi.json",
             timeout=timeout,
+            headers={"Connection": "close"},
         )
         return r.status_code == 200
     except Exception:
