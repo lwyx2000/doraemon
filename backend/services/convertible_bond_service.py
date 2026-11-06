@@ -1,254 +1,369 @@
-"""Convertible bond service — real data from AkShare, with arbitrage & volatility analysis.
+"""Convertible bond service — 集思录全量存续转债为主源。
 
-数据来源：
-- 主源 `bond_zh_cov`（东方财富，全量 ~1000+ 只可转债），覆盖 债现价/转股价值/
-  转股溢价率/信用评级/申购日期 等核心字段；
-- 兜底 `bond_cb_jsl`（集思录，含 双低/到期收益/剩余年限，但需登录态、封顶 30 条）。
+数据来源（2026-11-06 更正，见工作日志）：
+- 主源 `/api/processed_data?category=jisilu&subtype=cb`：登录态集思录全量
+  存续转债（约 315 行 / 23 字段），含真实 到期税前收益(YTM)、双低、剩余年限、
+  涨跌幅、正股涨跌/PB、成交额、换手率、评级、强赎/回售触发价。
+  ⚠️ 不要改用 `/api/ak?method=bond_cb_jsl` —— 那是游客态，恒 30 行。
+- 条款补充 `/api/ak?method=bond_cb_redeem_jsl`（约 317 行）：转股起始日、
+  强赎状态、强赎天计数、最后交易日、到期日、剩余规模。
+- 降级 `/api/ak?method=bond_zh_cov`（东财发行一览 1066 行）+
+  `bond_zh_hs_cov_spot`（新浪全量行情）：主源失败时按「转股价值>0 且
+  上市时间非空」过滤出存续债，避免把 747 行历史退市/面值占位行当行情。
 
-字段补全策略（集思录 CB 接口封顶 30 行，无法全量，故本地推算）：
-- 双低：主源已含 债现价 + 转股溢价率，按 价格+|溢价率| 全量近似（即集思录定义）；
-- 剩余年限：由 申购日期 + 6 年 − 今天 全量估算（标准 6 年期限）；
-- 到期收益率(YTM)：东方财富无此字段，用教科书近似公式
-  YTM ≈ [年均票息 + (赎回价−现价)/剩余年限] / [(赎回价+现价)/2]，
-  赎回价优先取 bond_cov_comparison 真实值、否则回退 110，结果标记 `ytm_approx=True`。
-  近似误差典型 ±0.3~0.8pp，仅用于筛选用途，非精确估值。
+口径原则：不再使用近似 YTM / 估算剩余年限 / 写死的条款进度；
+无上游源的字段一律返回 None，由前端显示「— / 未接入」，不把数据缺失伪装成结论。
 
-取数失败时返回空列表，不使用 mock。
+取数全部失败时返回空列表 + gateway_no_data_meta，不使用 mock。
 """
 
 from __future__ import annotations
 
 import datetime
+import re
 import threading
 import time
 from typing import Any
 
-from services.akshare_client import akshare_request
-from utils.convertible_bond import (
-    analyze_conversion_arbitrage,
-    analyze_volatility,
-    CONVERSION_ORDER,
-    VOL_SIGNAL_ORDER,
-)
 from core.config import USE_MOCK_DATA, AKSHARE_API_BASE
+from services.akshare_client import akshare_request, processed_data_request
 from services.meta_utils import gateway_no_data_meta, real_meta_base, mock_meta
+from utils.convertible_bond import analyze_conversion_arbitrage, analyze_volatility
 import mock_data
 
 
-def _safe_float(value: Any, default: float = 0.0) -> float:
-    if value is None or value == "":
+# 集思录 YTM 也偶有极端脏值（实测 min -1135%），超出该区间视为无效值
+_YTM_SANE_MIN = -50.0
+_YTM_SANE_MAX = 50.0
+
+
+def _safe_float(value: Any, default: float | None = 0.0) -> float | None:
+    if value is None or value == "" or value == "-":
         return default
     try:
-        return float(value)
+        v = float(value)
     except (ValueError, TypeError):
         return default
+    # NaN / Inf 不应进入响应（JSON 序列化会炸）
+    if v != v or v in (float("inf"), float("-inf")):
+        return default
+    return v
 
 
-def _estimate_remaining_years(issue_date: Any) -> float:
-    """由发行/申购日期估算剩余年限。
+def _safe_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    s = str(value).strip()
+    return s if s and s not in ("-", "None", "nan") else None
 
-    标准可转债期限为 6 年（少数 5/5.5 年，6 年为市场主流），故以
-    `申购日期 + 6 年 - 今天` 近似剩余年限。东方财富 bond_zh_cov 提供申购日期，
-    可全量覆盖（集思录 CB 接口封顶 30 行无法全量，故本地估算更实用）。
-    无法解析日期时返回 0。
+
+def _sane_ytm(value: Any) -> float | None:
+    """集思录真实 YTM，超出合理区间返回 None（不伪造也不放极端值进统计）。"""
+    v = _safe_float(value, None)
+    if v is None or not (_YTM_SANE_MIN <= v <= _YTM_SANE_MAX):
+        return None
+    return round(v, 2)
+
+
+# ============================================================
+# 上游取数
+# ============================================================
+
+def _fetch_jisilu_cb() -> list[dict] | None:
+    """主源：登录态集思录全量存续转债（约 315 行 / 23 字段）。
+
+    复用 fund_service 同一套 processed_data 重试逻辑（网关多副本 404 换连接），
+    避免可转债链路单独写一份不抗抖动的实现。
     """
-    if issue_date is None:
-        return 0.0
-    d = None
-    if isinstance(issue_date, (datetime.date, datetime.datetime)):
-        d = issue_date
-    else:
-        s = str(issue_date).strip()
-        if not s or s in ("-", "None", "nan"):
-            return 0.0
-        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y%m%d"):
-            try:
-                d = datetime.datetime.strptime(s, fmt).date()
-                break
-            except ValueError:
-                continue
-    if d is None:
-        return 0.0
-    maturity = d + datetime.timedelta(days=int(365.25 * 6))
-    days = (maturity - datetime.date.today()).days
-    if days <= 0:
-        return 0.0
-    return round(days / 365.25, 3)
+    data = processed_data_request("jisilu", {"subtype": "cb"}, retries=3, timeout=30)
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        return data
+    print("[CB] jisilu/cb 主源不可用，准备降级")
+    return None
 
 
-# 标准可转债票息曲线（逐年，市场主流递增结构），用于近似 YTM 的年均票息估算
-_STD_CB_COUPON_CURVE = [0.3, 0.5, 1.0, 1.5, 2.0, 2.5]
-# 到期赎回价市场中位（100 + 末年票息），无源时回退
-_DEFAULT_REDEMPTION_PRICE = 110.0
-
-
-def _approx_ytm(
-    price: float,
-    redemption_price: float,
-    remaining_years: float,
-    avg_coupon: float | None = None,
-) -> float:
-    """教科书近似到期收益率：YTM ≈ [C + (F−P)/n] / [(F+P)/2]。
-
-    仅用于筛选用途（典型误差 ±0.3~0.8pp，对比集思录精确 IRR），非精确估值。
-    price/剩余年限缺失或非法时返回 0。
-    """
-    if not price or price <= 0 or not remaining_years or remaining_years <= 0:
-        return 0.0
-    if avg_coupon is None:
-        n = max(1, int(round(remaining_years)))
-        seg = (
-            _STD_CB_COUPON_CURVE[:n]
-            if n <= len(_STD_CB_COUPON_CURVE)
-            else _STD_CB_COUPON_CURVE
-        )
-        avg_coupon = sum(seg) / len(seg)
-    f = redemption_price or _DEFAULT_REDEMPTION_PRICE
-    numerator = avg_coupon + (f - price) / remaining_years
-    denominator = (f + price) / 2.0
-    if denominator <= 0:
-        return 0.0
-    # 返回百分点（与集思录 ytm_rt / _tag_for 中 ytm>2 的口径一致）
-    return round(numerator / denominator * 100, 2)
-
-
-def _fetch_redemption_prices() -> dict:
-    """东方财富比价表(bond_cov_comparison)的到期赎回价(code→价)，用于精确近似 YTM。
-
-    53 上 push2 接口可能受限，失败时返回空 dict，调用方回退到默认赎回价。
-    """
-    try:
-        df = akshare_request("bond_cov_comparison", retries=1, timeout=10)
-    except Exception as exc:  # noqa: BLE001
-        print(f"[CB] 到期赎回价获取失败，回退默认赎回价: {exc}")
+def _fetch_redeem_terms() -> dict[str, dict]:
+    """条款补充源：转股起始日 / 强赎状态 / 天计数 / 最后交易日 / 剩余规模。"""
+    rows = akshare_request("bond_cb_redeem_jsl", retries=1, timeout=15)
+    if not isinstance(rows, list) or not rows:
         return {}
-    mapping: dict = {}
-    if isinstance(df, list):
-        for r in df:
-            code = str(r.get("转债代码") or r.get("债券代码") or "")
-            rp = _safe_float(r.get("到期赎回价"))
-            if code and rp:
-                mapping[code] = rp
-    return mapping
+    return {str(r.get("代码") or ""): r for r in rows if r.get("代码")}
 
 
-def _fill_approx_ytm(items: list[dict], redemption_map: dict) -> list[dict]:
-    """为未携带真实 YTM 的转债补全近似 YTM（集思录兜底的真实值不被覆盖）。"""
-    for it in items:
-        if it.get("ytm"):
+def _fetch_sina_spot() -> dict[str, dict]:
+    """新浪全量行情，用于降级源补涨跌幅与成交额。"""
+    rows = akshare_request("bond_zh_hs_cov_spot", retries=1, timeout=15)
+    if not isinstance(rows, list) or not rows:
+        return {}
+    return {str(r.get("code") or ""): r for r in rows if r.get("code")}
+
+
+def _date_iso(value: Any) -> str | None:
+    """把上游日期归一化为 YYYY-MM-DD（兼容 datetime / YYYY/MM/DD / 带时分秒）。"""
+    s = _safe_str(value)
+    if not s:
+        return None
+    s = s.replace("/", "-")[:10]
+    return s if re.match(r"^\d{4}-\d{2}-\d{2}$", s) else None
+
+
+def _fetch_eastmoney_valid() -> list[dict] | None:
+    """降级源：东财发行一览，只保留真实存续行。
+
+    `bond_zh_cov` 覆盖 2007 年至今全部发行记录（1066 行），其中 747 行是
+    「债现价=100 面值占位 + 转股价值=0」的历史退市债。过滤条件：
+    转股价值>0 且 上市时间有效且已上市 —— 实测约 315 行存续债。
+    """
+    rows = akshare_request("bond_zh_cov", retries=1, timeout=15)
+    if not isinstance(rows, list) or not rows:
+        return None
+    today = datetime.date.today().isoformat()
+    valid: list[dict] = []
+    for r in rows:
+        conv = _safe_float(r.get("转股价值")) or 0
+        listed = _date_iso(r.get("上市时间"))
+        price = _safe_float(r.get("债现价")) or 0
+        if conv <= 0 or not listed or price <= 0:
             continue
-        rp = redemption_map.get(it.get("code")) or _DEFAULT_REDEMPTION_PRICE
-        ytm = _approx_ytm(it.get("price"), rp, it.get("remaining_years"))
-        it["ytm"] = ytm
-        it["ytm_approx"] = True
-    return items
+        # 上市时间晚于今天 = 待上市，其价格 100 是面值占位
+        if listed > today:
+            continue
+        valid.append(r)
+    print(f"[CB] 东财降级源：{len(rows)} 行发行记录 → {len(valid)} 行存续债")
+    return valid or None
 
 
-def _tag_for(double_low: float | None, ytm: float, premium_pct: float) -> tuple[str, str]:
-    if double_low is not None and double_low < 120:
+# ============================================================
+# 归一化
+# ============================================================
+
+_REDEEM_PROGRESS_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
+
+
+def _norm_from_jisilu(row: dict, terms: dict, spot: dict) -> dict | None:
+    """主源（集思录 23 字段）→ 统一中间结构。"""
+    code = _safe_str(row.get("代码"))
+    if not code:
+        return None
+    price = _safe_float(row.get("现价"))
+    if not price or price <= 0:
+        return None
+    volume = _safe_float(row.get("成交额")) or 0
+    term = terms.get(code, {})
+    sp = spot.get(code, {})
+
+    # 强赎天计数是 HTML 片段，只有明确出现 "n/m" 才解析为进度；否则留空
+    days = total = None
+    counter = _safe_str(term.get("强赎天计数"))
+    if counter:
+        m = _REDEEM_PROGRESS_RE.search(re.sub(r"<[^>]+>", " ", counter))
+        if m:
+            days, total = int(m.group(1)), int(m.group(2))
+
+    conv_start = _date_iso(term.get("转股起始日"))
+    today = datetime.date.today().isoformat()
+    return {
+        "code": code,
+        "name": _safe_str(row.get("转债名称")) or "",
+        "price": price,
+        "change_pct": _safe_float(row.get("涨跌幅"), None),
+        "conv_value": _safe_float(row.get("转股价值")) or 0,
+        "premium_pct": _safe_float(row.get("转股溢价率")) or 0,
+        "ytm": _sane_ytm(row.get("到期税前收益")),
+        "remaining_years": _safe_float(row.get("剩余年限"), None),
+        "rating": _safe_str(row.get("债券评级")) or "",
+        "double_low_score": _safe_float(row.get("双低"), None),
+        "stock_name": _safe_str(row.get("正股名称")),
+        "stock_code": _safe_str(row.get("正股代码")),
+        "stock_price": _safe_float(row.get("正股价"), None),
+        "stock_change_pct": _safe_float(row.get("正股涨跌"), None),
+        "stock_pb": _safe_float(row.get("正股PB"), None),
+        "remaining_size": _safe_float(row.get("剩余规模"), None),
+        "turnover_rate": _safe_float(row.get("换手率"), None),
+        "volume_raw": volume,
+        "has_trade": volume > 0,
+        "maturity_date": _date_iso(row.get("到期时间")) or _date_iso(term.get("到期日")),
+        "last_trade_date": _date_iso(term.get("最后交易日")),
+        "conversion_start_date": conv_start,
+        "redemption_trigger_price": _safe_float(row.get("强赎触发价"), None),
+        "putback_trigger_price": _safe_float(row.get("回售触发价"), None),
+        "redemption_status": _safe_str(term.get("强赎状态")),
+        "redemption_days": days,
+        "total_redemption_days": total,
+        "is_in_conversion_period": (conv_start <= today if conv_start else None),
+        "data_source": "jisilu/cb",
+    }
+
+
+def _norm_from_eastmoney(row: dict, terms: dict, spot: dict) -> dict | None:
+    """降级源（东财 + 新浪行情）→ 统一中间结构；无源字段一律 None。"""
+    code = _safe_str(row.get("债券代码"))
+    if not code:
+        return None
+    price = _safe_float(row.get("债现价"))
+    if not price or price <= 0:
+        return None
+    sp = spot.get(code, {})
+    term = terms.get(code, {})
+    change = _safe_float(sp.get("changepercent"), None)
+    amount = _safe_float(sp.get("amount")) or 0
+    conv_start = _date_iso(term.get("转股起始日"))
+    today = datetime.date.today().isoformat()
+    # 东财已按存续性过滤，价格非面值占位即视作可交易；
+    # 新浪成交额缺失不应把整批降级数据排除出统计
+    has_trade = amount > 0 or abs(price - 100.0) > 1e-6
+
+    premium = _safe_float(row.get("转股溢价率")) or 0
+    conv_value = _safe_float(row.get("转股价值")) or 0
+    return {
+        "code": code,
+        "name": _safe_str(row.get("债券简称")) or "",
+        "price": price,
+        "change_pct": change,
+        "conv_value": conv_value,
+        "premium_pct": premium,
+        # 降级源没有真实 YTM/双低/剩余年限，绝不重算近似值
+        "ytm": None,
+        "remaining_years": None,
+        "rating": _safe_str(row.get("信用评级")) or "",
+        "double_low_score": round(price + abs(premium), 2),
+        "stock_name": _safe_str(term.get("正股名称")),
+        "stock_code": _safe_str(term.get("正股代码")),
+        "stock_price": _safe_float(term.get("正股价"), None),
+        "stock_change_pct": None,
+        "stock_pb": None,
+        "remaining_size": _safe_float(term.get("剩余规模"), None),
+        "turnover_rate": None,
+        "volume_raw": amount,
+        "has_trade": has_trade,
+        "maturity_date": _date_iso(term.get("到期日")),
+        "last_trade_date": _date_iso(term.get("最后交易日")),
+        "conversion_start_date": conv_start,
+        "redemption_trigger_price": _safe_float(term.get("强赎触发价"), None),
+        "putback_trigger_price": None,
+        "redemption_status": _safe_str(term.get("强赎状态")),
+        "redemption_days": None,
+        "total_redemption_days": None,
+        "is_in_conversion_period": (conv_start <= today if conv_start else None),
+        "data_source": "eastmoney/degraded",
+    }
+
+
+# ============================================================
+# 标签 / 分析 / 自检
+# ============================================================
+
+def _tag_for(norm: dict) -> tuple[str, str]:
+    """只对有真实成交的存续债打标签；无成交/无源数据不打「双低」。"""
+    if not norm.get("has_trade"):
+        return "", ""
+    dl = norm.get("double_low_score")
+    ytm = norm.get("ytm")
+    premium = norm.get("premium_pct") or 0
+    if dl is not None and dl < 120:
         return "双低策略", "double_low"
-    if ytm > 2:
+    if ytm is not None and ytm > 2:
         return "稳健收息", "stable_yield"
-    if premium_pct > 30:
+    if premium > 30:
         return "高溢价", "high_risk"
     return "", ""
 
 
-def _norm_row(row: dict[str, Any]) -> dict[str, Any]:
-    """将任一数据源的行归一化为统一中间结构。"""
-    # 优先按东方财富列名读取
-    code = str(row.get("债券代码") or row.get("代码") or "")
-    name = str(row.get("债券简称") or row.get("转债名称") or "")
-    price = _safe_float(row.get("债现价") or row.get("现价"))
-    conv_value = _safe_float(row.get("转股价值"))
-    premium_pct = _safe_float(row.get("转股溢价率"))
-    rating = str(row.get("信用评级") or row.get("债券评级") or "")
-    ytm = _safe_float(row.get("到期税前收益"))
-    remaining_years = _safe_float(row.get("剩余年限"))
-    # 源未提供剩余年限时（东方财富 bond_zh_cov 无此列），由申购日期估算全量覆盖
-    if not remaining_years:
-        remaining_years = _estimate_remaining_years(
-            row.get("申购日期") or row.get("上市时间") or row.get("发行日期")
-        )
-    double_low = _safe_float(row.get("双低"), None) if row.get("双低") not in (None, "") else None
-    stock_code = str(row.get("正股代码") or "")
-    stock_name = str(row.get("正股简称") or row.get("正股名称") or "")
-    stock_price = _safe_float(row.get("正股价"))
-    stock_change = _safe_float(row.get("正股涨跌"))
-    # 集思录无双低时，按 转债价格+转股溢价率 近似（集思录双低定义）
-    if double_low is None:
-        double_low = round(price + abs(premium_pct), 2) if price else None
-    return {
-        "code": code,
-        "name": name,
-        "price": price,
-        "conv_value": conv_value,
-        "premium_pct": premium_pct,
-        "rating": rating,
-        "ytm": ytm,
-        "remaining_years": remaining_years,
-        "double_low_score": double_low,
-        "stock_code": stock_code or None,
-        "stock_name": stock_name or None,
-        "stock_price": stock_price or None,
-        "stock_change_pct": stock_change or None,
-    }
-
-
-def _map_bond(norm: dict[str, Any]) -> dict[str, Any]:
-    price = norm["price"]
-    premium_pct = norm["premium_pct"]
-    ytm = norm["ytm"]
-    double_low = norm["double_low_score"]
-    tag, tag_type = _tag_for(double_low, ytm, premium_pct)
-    return {
-        "name": norm["name"],
-        "code": norm["code"],
-        "price": price,
-        "change_pct": 0,  # 东方财富/集思录源未直接提供转债涨跌幅
-        "conv_value": norm["conv_value"],
-        "premium_pct": premium_pct,
-        "ytm": ytm,
-        "remaining_years": norm["remaining_years"],
-        "rating": norm["rating"],
-        "redemption_days": 0,
-        "total_redemption_days": 15,
+def _build_bond(norm: dict) -> dict:
+    tag, tag_type = _tag_for(norm)
+    item: dict[str, Any] = {
+        **norm,
+        "ytm_approx": False,  # 不再使用近似 YTM；保留字段兼容旧前端
         "tag": tag,
         "tag_type": tag_type,
-        "double_low_score": double_low,
-        "ytm_approx": False,
-        "stock_name": norm["stock_name"],
-        "stock_code": norm["stock_code"],
-        "stock_price": norm["stock_price"],
-        "stock_change_pct": norm["stock_change_pct"],
+        # 无上游源的字段：统一 None（不写 0 / false / 假天数）
+        "putback_days": None,
+        "total_putback_days": None,
+        "revision_days": None,
+        "total_revision_days": None,
+        "altman_z_score": None,
+        "pledge_rate": None,
+        "is_st_risk": None,
+        "iv": None,
+        "hv": None,
+        "stock_limit_up": None,
+        "stock_suspended": None,
     }
-
-
-def _attach_analyses(bond: dict[str, Any]) -> dict[str, Any]:
-    item = dict(bond)
-    item["conversion_analysis"] = analyze_conversion_arbitrage(bond)
-    item["volatility_analysis"] = analyze_volatility(bond)
+    item["conversion_analysis"] = analyze_conversion_arbitrage(item)
+    item["volatility_analysis"] = analyze_volatility(item)
     return item
 
 
-def _fetch_raw() -> list[dict] | None:
-    """拉取原始可转债数据：先东方财富全量，失败再集思录。"""
-    raw = akshare_request("bond_zh_cov", retries=1, timeout=10)
-    if raw and isinstance(raw, list) and len(raw):
-        return raw
-    raw = akshare_request("bond_cb_jsl", retries=1, timeout=10)
-    if raw and isinstance(raw, list) and len(raw):
-        return raw
-    return None
+def _self_check(items: list[dict]) -> None:
+    """口径自检：把数据质量问题打进日志，避免静默回归到 1066 行占位数据。"""
+    if not items:
+        print("[CB][self-check] 无数据")
+        return
+    n = len(items)
+    traded = sum(1 for x in items if x.get("has_trade"))
+    bad_premium = 0
+    for x in items:
+        cv, p, prem = x.get("conv_value") or 0, x.get("price") or 0, x.get("premium_pct") or 0
+        if cv > 0 and p > 0:
+            calc = (p - cv) / cv * 100
+            if abs(calc - prem) > 1.0:
+                bad_premium += 1
+    sources = sorted({str(x.get("data_source")) for x in items})
+    print(
+        f"[CB][self-check] 存续债 {n} 只 | 有成交 {traded} | "
+        f"YTM有效 {sum(1 for x in items if x.get('ytm') is not None)} | "
+        f"转股期已披露 {sum(1 for x in items if x.get('is_in_conversion_period') is not None)} | "
+        f"溢折价自洽偏差>1pct {bad_premium} | 源 {sources}"
+    )
+    if n > 400:
+        print(f"[CB][self-check][WARN] 行数 {n} 异常偏多，疑似退化到发行一览未过滤版本")
 
 
-# 列表级 TTL 缓存（2026-10-16）：可转债全市场扫描（东财/集思录双源 +
-# 赎回价/近似 YTM 补全）较重，AlertCenter 与 ConvertibleBonds 页每次冷加载
-# 都重扫。30s TTL + force 穿透；网关无数据不写缓存，故障恢复无延迟。
+# ============================================================
+# 对外接口
+# ============================================================
+
 _CB_LIST_TTL = 30
 _CB_LIST_MAX_KEYS = 64
 _CB_LIST_CACHE: dict[tuple, tuple[float, tuple[list[dict], dict]]] = {}
 _CB_LIST_LOCK = threading.Lock()
+# 未过滤全量快照：详情接口与告警引擎复用，避免为了一行重拉三个上游
+_CB_ALL_CACHE: tuple[float, list[dict], str | None] | None = None
+
+
+def _load_all(use_cache: bool = True) -> tuple[list[dict], str | None]:
+    """取数 + 归一化 + 分析，返回 (bonds, note)。全部失败返回 ([], None)。"""
+    global _CB_ALL_CACHE
+    if use_cache and _CB_ALL_CACHE and (time.time() - _CB_ALL_CACHE[0]) < _CB_LIST_TTL:
+        return _CB_ALL_CACHE[1], _CB_ALL_CACHE[2]
+
+    primary = _fetch_jisilu_cb()
+    eastmoney = None if primary else _fetch_eastmoney_valid()
+    if not primary and not eastmoney:
+        return [], None
+
+    terms = _fetch_redeem_terms()
+    spot = _fetch_sina_spot()
+
+    items: list[dict] = []
+    if primary:
+        for row in primary:
+            norm = _norm_from_jisilu(row, terms, spot)
+            if norm:
+                items.append(_build_bond(norm))
+        note = "集思录全量存续转债（登录态）+ 强赎条款 + 新浪行情交叉"
+    else:
+        for row in eastmoney or []:
+            norm = _norm_from_eastmoney(row, terms, spot)
+            if norm:
+                items.append(_build_bond(norm))
+        note = "降级：东财发行一览存续债 + 新浪行情；YTM/剩余年限/条款进度无源显示 —"
+
+    # 成交额降序：流动性优先，战术扫描取前 N 只时不再全是次新债
+    items.sort(key=lambda x: (x.get("volume_raw") or 0), reverse=True)
+    _self_check(items)
+    _CB_ALL_CACHE = (time.time(), items, note)
+    return items, note
 
 
 def get_convertible_bonds(
@@ -262,12 +377,9 @@ def get_convertible_bonds(
     vol_signal: str | None = None,
     force: bool = False,
 ) -> tuple[list[dict], dict]:
-    """Return (real convertible bonds, meta) filtered by the given criteria.
-
-    force=True 穿透 30s 列表缓存，强制重扫上游（前端刷新用）。
-    """
+    """Return (real listed convertible bonds, meta) filtered by criteria."""
     if USE_MOCK_DATA:
-        return [_attach_analyses(dict(b)) for b in mock_data.MOCK_CONVERTIBLE_BONDS], mock_meta()
+        return [dict(b) for b in mock_data.MOCK_CONVERTIBLE_BONDS], mock_meta()
 
     cache_key = (price_min, price_max, premium_max, rating, ytm_min, double_low_max, feasibility, vol_signal)
     if not force:
@@ -276,43 +388,34 @@ def get_convertible_bonds(
             if hit and (time.time() - hit[0]) < _CB_LIST_TTL:
                 return hit[1]
 
-    raw = _fetch_raw()
-    if not raw:
-        print("[CB Service] 取数失败，返回空列表")
+    items, note = _load_all(use_cache=not force)
+    if not items:
         return [], gateway_no_data_meta()
 
-    results = [_attach_analyses(_map_bond(_norm_row(row))) for row in raw]
-    # 补全近似 YTM（东方财富主源无此字段；集思录兜底的真实值已在 _norm_row 中保留）
-    redemption_map = _fetch_redemption_prices()
-    results = _fill_approx_ytm(results, redemption_map)
-
     filtered: list[dict] = []
-    for item in results:
-        if price_min is not None and item.get("price", 0) < price_min:
+    for it in items:
+        if price_min is not None and it["price"] < price_min:
             continue
-        if price_max is not None and item.get("price", 0) > price_max:
+        if price_max is not None and it["price"] > price_max:
             continue
-        if premium_max is not None and item.get("premium_pct", 0) > premium_max:
+        if premium_max is not None and (it["premium_pct"] or 0) > premium_max:
             continue
-        if rating is not None and item.get("rating", "") != rating:
+        if rating is not None and it.get("rating") != rating:
             continue
-        if ytm_min is not None and item.get("ytm", 0) < ytm_min:
+        # 无源字段不参与「≥/≤」筛选：缺值时直接排除，不能用 0 冒充满足条件
+        if ytm_min is not None and (it.get("ytm") is None or it["ytm"] < ytm_min):
             continue
-        if double_low_max is not None:
-            double_low_score = item.get("double_low_score")
-            if double_low_score is not None and double_low_score > double_low_max:
-                continue
-        if feasibility is not None:
-            conv = item.get("conversion_analysis") or {}
-            if conv.get("feasibility") != feasibility:
-                continue
-        if vol_signal is not None:
-            vol = item.get("volatility_analysis") or {}
-            if vol.get("signal") != vol_signal:
-                continue
-        filtered.append(item)
+        if double_low_max is not None and (
+            it.get("double_low_score") is None or it["double_low_score"] > double_low_max
+        ):
+            continue
+        if feasibility is not None and (it.get("conversion_analysis") or {}).get("feasibility") != feasibility:
+            continue
+        if vol_signal is not None and (it.get("volatility_analysis") or {}).get("signal") != vol_signal:
+            continue
+        filtered.append(it)
 
-    out = (filtered, real_meta_base(AKSHARE_API_BASE))
+    out = (filtered, real_meta_base(AKSHARE_API_BASE, note or ""))
     with _CB_LIST_LOCK:
         _CB_LIST_CACHE[cache_key] = (time.time(), out)
         if len(_CB_LIST_CACHE) > _CB_LIST_MAX_KEYS:
@@ -323,12 +426,5 @@ def get_convertible_bonds(
 
 
 def get_convertible_bond_detail(code: str) -> dict | None:
-    raw = _fetch_raw()
-    if not raw:
-        return None
-    for row in raw:
-        if str(row.get("债券代码") or row.get("代码") or "") == code:
-            item = _attach_analyses(_map_bond(_norm_row(row)))
-            _fill_approx_ytm([item], _fetch_redemption_prices())
-            return item
-    return None
+    items, _ = _load_all()
+    return next((x for x in items if x.get("code") == code), None)

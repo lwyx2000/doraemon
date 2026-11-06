@@ -161,3 +161,53 @@ def akshare_api_get(
 
     print(f"[AkShare Client] {path} 所有重试失败")
     return None
+
+
+def processed_data_request(
+    category: str,
+    params: dict | None = None,
+    retries: int = 3,
+    timeout: int = 30,
+) -> list[dict] | dict | None:
+    """调用网关加工数据入口 ``/api/processed_data``（登录态集思录等）。
+
+    ⚠️ 网关多副本已知问题（2026-11-03 实测）：部分副本对某些 ``subtype`` 返回 404，
+    而共享 Session 的 keep-alive 会「稳定命中」坏副本。因此第 2 次起强制
+    ``Connection: close`` 并丢弃连接池，绕开已绑定的坏副本。
+
+    基金、可转债两条链路共用本函数，避免各写一套不完整的重试逻辑。
+    """
+    url = f"{AKSHARE_API_BASE}/api/processed_data"
+    request_params: dict = {"category": category}
+    if params:
+        request_params.update(params)
+
+    for attempt in range(retries):
+        try:
+            headers = {"Connection": "close"} if attempt else None
+            response = get_session().get(url, params=request_params, timeout=timeout, headers=headers)
+            response.raise_for_status()
+            result = response.json()
+            if not isinstance(result, dict) or result.get("code") != 200:
+                msg = result.get("message") if isinstance(result, dict) else "响应格式异常"
+                print(f"[AkShare Client] processed_data/{category} 返回错误: {msg}")
+                return None
+            data = result.get("data")
+            print(f"[AkShare Client] processed_data/{category} 成功，返回 "
+                  f"{len(data) if isinstance(data, list) else '对象'} 条")
+            return data
+        except requests.exceptions.HTTPError as exc:
+            status = getattr(exc.response, "status_code", None)
+            print(f"[AkShare Client] processed_data/{category} HTTP {status} (attempt {attempt + 1}/{retries})")
+            if status == 404:
+                try:
+                    get_session().close()
+                except Exception:
+                    pass
+        except requests.exceptions.Timeout:
+            print(f"[AkShare Client] processed_data/{category} 超时 (attempt {attempt + 1}/{retries})")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[AkShare Client] processed_data/{category} 错误: {exc} (attempt {attempt + 1}/{retries})")
+        if attempt < retries - 1:
+            time.sleep(1)
+    return None

@@ -396,20 +396,22 @@ class EtfFund(BaseModel):
 class ConversionArbitrage(BaseModel):
     is_negative_premium: bool
     theoretical_yield: float
-    is_in_conversion_period: bool
-    is_stock_limit_up: bool
-    is_stock_suspended: bool
-    overnight_risk: float
+    # None = 上游未披露，不得默认 False/0 伪造成业务结论
+    is_in_conversion_period: Optional[bool] = None
+    is_stock_limit_up: Optional[bool] = None
+    is_stock_suspended: Optional[bool] = None
+    overnight_risk: Optional[float] = None
     feasibility: str
     feasibility_label: str
-    blockers: list[str]
+    blockers: list[str] = []
+    data_missing: list[str] = []
 
 
 class VolatilityAnalysis(BaseModel):
-    iv: float
-    hv: float
-    spread: float
-    ratio: float
+    iv: Optional[float] = None
+    hv: Optional[float] = None
+    spread: Optional[float] = None
+    ratio: Optional[float] = None
     signal: str
     signal_label: str
     suggestion: str
@@ -419,14 +421,17 @@ class ConvertibleBond(BaseModel):
     name: str
     code: str
     price: float
-    change_pct: float = 0
+    change_pct: Optional[float] = None
     conv_value: float = 0
     premium_pct: float = 0
-    ytm: float = 0
-    remaining_years: float = 0
+    # 集思录真实「到期税前收益」；异常值/unavailable 时为 None（绝不重算近似值）
+    ytm: Optional[float] = None
+    ytm_approx: bool = False  # 兼容旧前端；现恒为 False（近似逻辑已删除）
+    remaining_years: Optional[float] = None
     rating: str = ""
-    redemption_days: int = 0
-    total_redemption_days: int = 15
+    # 无源条款进度一律 None；旧版写死 0/15，会把「无数据」显示成「0/15天」
+    redemption_days: Optional[int] = None
+    total_redemption_days: Optional[int] = None
     tag: str = ""
     tag_type: str = ""
     double_low_score: Optional[float] = None
@@ -439,13 +444,26 @@ class ConvertibleBond(BaseModel):
     is_st_risk: Optional[bool] = None
     stock_name: Optional[str] = None
     stock_code: Optional[str] = None
+    stock_price: Optional[float] = None
+    stock_change_pct: Optional[float] = None
+    stock_pb: Optional[float] = None
     iv: Optional[float] = None
     hv: Optional[float] = None
     is_in_conversion_period: Optional[bool] = None
     stock_limit_up: Optional[bool] = None
-    stock_price: Optional[float] = None
-    stock_change_pct: Optional[float] = None
     stock_suspended: Optional[bool] = None
+    # 集思录存续债真实字段（2026-11-06 换主源后新增）
+    remaining_size: Optional[float] = None
+    turnover_rate: Optional[float] = None
+    volume_raw: Optional[float] = None     # 仅用于排序，单位未在上游标注，UI 不展示绝对值
+    has_trade: bool = False                # False=无成交/待上市，统计与策略须排除
+    maturity_date: Optional[str] = None
+    last_trade_date: Optional[str] = None
+    conversion_start_date: Optional[str] = None
+    redemption_trigger_price: Optional[float] = None
+    putback_trigger_price: Optional[float] = None
+    redemption_status: Optional[str] = None
+    data_source: Optional[str] = None
     conversion_analysis: Optional[ConversionArbitrage] = None
     volatility_analysis: Optional[VolatilityAnalysis] = None
 

@@ -21,11 +21,11 @@ def list_convertible_bonds(
     double_low_max: float | None = Query(None, description="Maximum double-low score"),
     feasibility: str | None = Query(
         None,
-        description="Conversion arbitrage feasibility: feasible, risky, infeasible, n/a",
+        description="转股套利可行性: feasible, risky, unknown(信息不全), infeasible, n/a",
     ),
     vol_signal: str | None = Query(
         None,
-        description="Volatility signal: undervalued, overvalued, fair, n/a",
+        description="波动率信号: undervalued, overvalued, fair, n/a(数据源未接入)",
     ),
     force: bool = Query(default=False, description="True 穿透 30s 列表缓存，强制重扫上游"),
 ):

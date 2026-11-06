@@ -203,9 +203,11 @@ const realtimeSignals = computed<SignalItem[]>(() => {
   })
 
   // b) 可转债信号（转股套利 + 波动率）
-  const convResults = analyzeConversionBatch(bonds.value ?? [])
-  const volResults = analyzeVolatilityBatch(bonds.value ?? [])
-  ;(bonds.value ?? []).forEach(bond => {
+  // 只评估有真实成交的存续债；待上市/无成交行的 100 元是面值占位，会引发误报
+  const activeCbBonds = (bonds.value ?? []).filter(b => b.has_trade)
+  const convResults = analyzeConversionBatch(activeCbBonds)
+  const volResults = analyzeVolatilityBatch(activeCbBonds)
+  activeCbBonds.forEach(bond => {
     const conv = convResults.get(bond.code)
     const vol = volResults.get(bond.code)
     if (conv) {
@@ -213,7 +215,7 @@ const realtimeSignals = computed<SignalItem[]>(() => {
         add(
           'conversion',
           `${bond.name} 转股套利可行`,
-          `理论收益率${conv.theoreticalYield}%，T+1敞口${conv.overnightRisk}%`,
+          `理论收益率${conv.theoreticalYield}%，${conv.overnightRisk === null ? 'T+1敞口未披露' : `T+1敞口${conv.overnightRisk}%`}`,
           'low',
         )
       } else if (conv.feasibility === 'infeasible') {

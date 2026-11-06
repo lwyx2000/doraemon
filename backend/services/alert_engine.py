@@ -195,11 +195,17 @@ def run_alert_scan(user_id: str = "demo-user") -> dict[str, Any]:
             elif rule_type == "ytm" or category == "cb":
                 # 可转债
                 bonds, _ = get_convertible_bonds()
+                # 只评估有真实成交的存续债：待上市/无成交行的 100 元是面值占位。
+                # YTM 规则另外排除无 YTM 的债（None 不能按 0 参与阈值比较），
+                # 但价格/溢价规则仍应能覆盖这些债。
+                valid_bonds = [b for b in (bonds or []) if b.get("has_trade")]
+                if rule_type == "ytm":
+                    valid_bonds = [b for b in valid_bonds if b.get("ytm") is not None]
                 cb_items = [
                     {"name": b.get("name", ""), "code": b.get("code", ""),
                      "price": b.get("price"), "ytm": b.get("ytm"),
                      "premium_pct": b.get("premium_pct")}
-                    for b in (bonds or [])
+                    for b in valid_bonds
                 ]
                 if rule_type == "ytm":
                     triggered = _evaluate_rule(rule, cb_items, "ytm")

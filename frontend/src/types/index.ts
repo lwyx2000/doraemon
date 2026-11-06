@@ -391,41 +391,83 @@ export interface ProjectInfo {
   [key: string]: any
 }
 
+/** 后端 utils/convertible_bond.py 的转股套利结论（前端不再重复实现） */
+export interface ConvertibleBondConversionAnalysis {
+  is_negative_premium: boolean
+  theoretical_yield: number
+  is_in_conversion_period: boolean | null
+  is_stock_limit_up: boolean | null
+  is_stock_suspended: boolean | null
+  overnight_risk: number | null
+  feasibility: 'feasible' | 'risky' | 'unknown' | 'infeasible' | 'n/a'
+  feasibility_label: string
+  blockers: string[]
+  data_missing: string[]
+}
+
+/** 后端波动率结论；IV/HV 无上游源时 signal='n/a' */
+export interface ConvertibleBondVolatilityAnalysis {
+  iv: number | null
+  hv: number | null
+  spread: number | null
+  ratio: number | null
+  signal: 'undervalued' | 'overvalued' | 'fair' | 'n/a'
+  signal_label: string
+  suggestion: string
+}
+
+/**
+ * 可转债：主源为登录态集思录全量存续债（/api/processed_data?category=jisilu&subtype=cb）。
+ * 无上游源的字段一律 null，前端须显示「— / 未接入」，不得用 0/false 伪装成业务结论。
+ */
 export interface ConvertibleBond {
   name: string
   code: string
   price: number
-  change_pct: number
+  change_pct: number | null
   conv_value: number
   premium_pct: number
-  ytm: number
-  ytm_approx?: boolean            // YTM 是否为本地近似估算(非集思录真实值)
-  remaining_years: number
+  ytm: number | null                 // 集思录真实「到期税前收益」；异常值→null，绝不重算近似
+  ytm_approx: boolean                // 恒 false（近似逻辑已删除，保留兼容）
+  remaining_years: number | null
   rating: string
-  redemption_days: number
-  total_redemption_days: number
+  redemption_days: number | null
+  total_redemption_days: number | null
   tag: string
-  tag_type: 'double_low' | 'undervalued' | 'high_risk' | 'stable_yield' | 'mean_reversion' | 'defensive'
-  double_low_score?: number
-  // 条款触发进度 (PRD 页面三)
-  putback_days?: number
-  total_putback_days?: number
-  revision_days?: number
-  total_revision_days?: number
-  // 正股风控指标 (PRD 页面三)
-  altman_z_score?: number
-  pledge_rate?: number
-  is_st_risk?: boolean
-  stock_name?: string
-  stock_code?: string
-  // 转股套利可行性分析
-  iv?: number                       // 隐含波动率(%)
-  hv?: number                       // 正股历史波动率(%)
-  is_in_conversion_period?: boolean // 是否处于转股期
-  stock_limit_up?: boolean          // 正股是否涨停
-  stock_price?: number              // 正股现价
-  stock_change_pct?: number         // 正股涨跌幅(%)
-  stock_suspended?: boolean         // 正股是否停牌
+  tag_type: string
+  double_low_score: number | null
+  // 无源条款进度 / 正股风控：恒 null
+  putback_days?: number | null
+  total_putback_days?: number | null
+  revision_days?: number | null
+  total_revision_days?: number | null
+  altman_z_score?: number | null
+  pledge_rate?: number | null
+  is_st_risk?: boolean | null
+  stock_name?: string | null
+  stock_code?: string | null
+  iv?: number | null
+  hv?: number | null
+  is_in_conversion_period?: boolean | null
+  stock_limit_up?: boolean | null
+  stock_price?: number | null
+  stock_change_pct?: number | null
+  stock_suspended?: boolean | null
+  stock_pb?: number | null
+  // 集思录存续债真实字段
+  remaining_size?: number | null
+  turnover_rate?: number | null
+  volume_raw?: number | null         // 仅用于排序，单位未标注，UI 不展示绝对值
+  has_trade: boolean                 // false=无成交/待上市，统计与策略须排除
+  maturity_date?: string | null
+  last_trade_date?: string | null
+  conversion_start_date?: string | null
+  redemption_trigger_price?: number | null
+  putback_trigger_price?: number | null
+  redemption_status?: string | null
+  data_source?: string | null
+  conversion_analysis?: ConvertibleBondConversionAnalysis | null
+  volatility_analysis?: ConvertibleBondVolatilityAnalysis | null
 }
 
 export interface FundItem {

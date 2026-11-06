@@ -28,7 +28,7 @@ import requests
 
 from core.config import AKSHARE_API_BASE, USE_MOCK_DATA
 from services.meta_utils import gateway_no_data_meta, real_meta_base, mock_meta
-from services.akshare_client import get_session
+from services.akshare_client import get_session, processed_data_request
 from services.cross_border_valuation import attach_estimated_valuations
 from services.est_nav_history_service import attach_valuation_errors
 from services.fund_premium_history_service import attach_premium_stats
@@ -39,58 +39,13 @@ import mock_data
 
 
 def _processed_data_request(category: str, params: dict | None = None, retries: int = 3) -> dict | list | None:
-    """调用加工数据统一入口 (/api/processed_data)
+    """兼容旧签名；重试/换连接实现统一收口到 akshare_client.processed_data_request。
 
-    ⚠️ 网关多副本已知问题（2026-11-03 实测）：`subtype=all` 在**部分副本上返回 404**
-    （22 字节错误体），命中率约 50%。共享 Session 的 keep-alive 一旦接到坏副本就会
-    「稳定 404」——同一 URL 用 curl 或新建连接却能 200。所以这里 404 后必须强制换连接
-    （Connection: close + 丢弃 Session），否则重试 3 次全打在同一台坏副本上白费。
+    网关多副本对部分 subtype 会「稳定 404」，共享 Session 必须强制换连接，
+    详见 akshare_client.processed_data_request 的说明。
     """
-    url = f"{AKSHARE_API_BASE}/api/processed_data"
-    request_params = {"category": category}
-    if params:
-        request_params.update(params)
+    return processed_data_request(category, params, retries=retries)
 
-    for attempt in range(retries):
-        try:
-            print(f"[Fund Service] 调用 {category} (尝试 {attempt + 1}/{retries})...")
-            # 第 2 次起强制不复用连接，绕开可能已绑定的坏副本
-            headers = {"Connection": "close"} if attempt else None
-            response = get_session().get(url, params=request_params, timeout=30, headers=headers)
-            response.raise_for_status()
-            result = response.json()
-
-            if result.get("code") != 200:
-                print(f"[Fund Service] {category} 返回错误: {result.get('message')}")
-                return None
-
-            data = result.get("data")
-            data_info = len(data) if isinstance(data, list) else '对象'
-            print(f"[Fund Service] {category} 成功，返回 {data_info} 数据")
-            return data
-
-        except requests.exceptions.HTTPError as e:
-            # 404/5xx 多半是命中缺路由的副本：把 Session 的连接池丢掉，下次重新握手
-            status = getattr(e.response, "status_code", None)
-            print(f"[Fund Service] {category} HTTP {status} (attempt {attempt + 1}/{retries})"
-                  + ("，疑似命中网关缺路由副本，已丢弃连接" if status == 404 else ""))
-            if status == 404:
-                try:
-                    get_session().close()
-                except Exception:
-                    pass
-        except requests.exceptions.Timeout:
-            print(f"[Fund Service] {category} 超时 (attempt {attempt + 1}/{retries})")
-        except requests.exceptions.ConnectionError as e:
-            print(f"[Fund Service] {category} 连接错误: {e} (attempt {attempt + 1}/{retries})")
-        except Exception as e:
-            print(f"[Fund Service] {category} 错误: {e} (attempt {attempt + 1}/{retries})")
-
-        if attempt < retries - 1:
-            time.sleep(1)
-
-    print(f"[Fund Service] {category} 所有重试失败")
-    return None
 
 
 def _pick(row: dict, *keys: str, default=None):
