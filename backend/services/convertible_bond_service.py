@@ -335,11 +335,19 @@ _CB_LIST_CACHE: dict[tuple, tuple[float, tuple[list[dict], dict]]] = {}
 _CB_LIST_LOCK = threading.Lock()
 # 未过滤全量快照：详情接口与告警引擎复用，避免为了一行重拉三个上游
 _CB_ALL_CACHE: tuple[float, list[dict], str | None] | None = None
+# 最近一次**实际抓到**的集思录行数 (时间戳, 行数)。数据源状态页复用它，
+# 保证「侧栏显示」与「可转债页顶部说明」来自同一次取数，不会因命中不同网关副本而打架。
+_CB_JISILU_SAMPLE: tuple[float, int] | None = None
+
+
+def get_last_jisilu_sample() -> tuple[float, int] | None:
+    """返回最近一次集思录取数的 (时间戳, 行数)；从未取过返回 None。"""
+    return _CB_JISILU_SAMPLE
 
 
 def _load_all(use_cache: bool = True) -> tuple[list[dict], str | None]:
     """取数 + 归一化 + 分析，返回 (bonds, note)。全部失败返回 ([], None)。"""
-    global _CB_ALL_CACHE
+    global _CB_ALL_CACHE, _CB_JISILU_SAMPLE
     if use_cache and _CB_ALL_CACHE and (time.time() - _CB_ALL_CACHE[0]) < _CB_LIST_TTL:
         return _CB_ALL_CACHE[1], _CB_ALL_CACHE[2]
 
@@ -374,13 +382,14 @@ def _load_all(use_cache: bool = True) -> tuple[list[dict], str | None]:
             items.append(_build_bond(norm))
 
     n_j = len(jisilu)
+    _CB_JISILU_SAMPLE = (time.time(), n_j)
     if n_j >= 100:
         note = "集思录全量存续转债（登录态）+ 东财存续性校验 + 强赎条款 + 新浪行情交叉"
     else:
         note = (
-            f"集思录登录态失效，仅 {n_j} 只有 YTM/双低等富字段；"
+            f"集思录本次取数为游客态，仅 {n_j} 只有 YTM/双低等富字段（cookie 失效或网关副本状态不同步）；"
             "其余存续债由东财发行一览(存续性过滤) + 新浪行情 + 强赎条款合并，"
-            "无源字段显示 —（网关恢复登录后自动补齐）"
+            "无源字段显示 —（网关恢复登录态后自动补齐）"
         )
     print(f"[CB] 四源合并：集思录 {n_j} / 东财存续 {len(eastmoney)} → 输出 {len(items)} 只")
 

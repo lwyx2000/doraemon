@@ -626,10 +626,10 @@ function exportBonds() {
     <SectionFallback v-if="gatewayEmpty" :gateway-empty="true" :min-height="480" @retry="refetch" />
     <div v-else-if="bonds" class="cb-page">
     <!-- Page Header -->
-    <PageHeader title="可转债扫描器" subtitle="集思录全量存续转债 - 双低 / 折价 / 到期收益 / 强赎状态扫描" helpKey="convertibleBonds" :updated-at="meta?.updateTime" />
+    <PageHeader title="可转债扫描器" subtitle="存续转债全量扫描 - 双低 / 折价 / 到期收益 / 强赎状态" helpKey="convertibleBonds" :updated-at="meta?.updateTime" />
     <GlossaryPanel page-key="convertibleBonds" />
     <div class="source-note">
-      数据源：登录态集思录存续转债（{{ bonds?.length ?? 0 }} 只，其中有成交 {{ tradedCount }} 只<span v-if="pendingCount">、待上市/无成交 {{ pendingCount }} 只</span>），条款来自强赎公告表。
+      数据源：四源按代码合并（东财存续骨架 + 集思录富字段 + 新浪行情 + 强赎条款），本次 {{ bonds?.length ?? 0 }} 只，其中有成交 {{ tradedCount }} 只<span v-if="pendingCount">、待上市/无成交 {{ pendingCount }} 只</span>。集思录当前是登录态还是游客态，以实测取数行数判定（见下方说明）。
       IV/HV、下修进度、Altman Z、质押率、ST 标记当前无上游源，统一显示「— / 未接入」，不以 0 或 false 代替。
       <span v-if="meta?.note">{{ meta.note }}</span>
     </div>

@@ -60,8 +60,8 @@ export const glossaryByPage: Record<string, GlossaryItem[]> = {
     { abbr: 'IS', full: 'In-Sample (样本内)', cn: '历史前70%时段，策略参数在此上调优；单独看IS高胜率可能是过拟合假象' },
   ],
   convertibleBonds: [
-    { abbr: 'IV', full: 'Implied Volatility', cn: '隐含波动率，由期权价格反推的市场波动预期（当前网关未提供，显示「未接入」）' },
-    { abbr: 'HV', full: 'Historical Volatility', cn: '历史波动率（当前网关未提供，显示「未接入」）' },
+    { abbr: 'IV', full: 'Implied Volatility', cn: '隐含波动率：由转债市价反解内嵌看涨期权的波动率预期（需 BS / 二叉树 / 蒙特卡洛定价模型 + 债底、无风险利率、剩余期限）。当前网关无此字段，显示「未接入」，不以估算值冒充' },
+    { abbr: 'HV', full: 'Historical Volatility', cn: '历史波动率：正股过去 N 日收益率标准差 × √252。原料是正股日线（网关可取），但当前链路未接入 HV 计算，显示「未接入」' },
     { abbr: 'YTM', full: 'Yield to Maturity', cn: '集思录真实到期税前收益；异常值与降级源无源时显示 —' },
     { abbr: 'BS', full: 'Black-Scholes Model', cn: '布莱克-斯科尔斯期权定价模型（本项目不据此伪造 IV 估算）' },
     { abbr: 'Delta', full: 'Delta (Hedge Ratio)', cn: '期权对冲比率；IV/HV 未接入时不生成 Delta 对冲信号' },

@@ -62,17 +62,27 @@ const buildTimeDisplay = (() => {
   return m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}` : buildTime
 })()
 
-// 集思录登录/可用态展示
-const jisiluLoggedIn = computed(() => dataSourceStatus.value?.jisiluLoggedIn ?? false)
+// 集思录状态：以「实测取数行数」为准。
+// 网关 auth-status 只检查 cookie 配置/动态登录能力（message 里写着「样本=None」），
+// 实测出现过它报已登录、processed_data 却只给 30 行游客态的情况，不能拿来当结论。
+const jisiluLoggedIn = computed(() => dataSourceStatus.value?.jisiluLoggedIn === true)
 const jisiluLabel = computed(() => {
-  if (dataSourceStatus.value === null) return '检测中'
-  return jisiluLoggedIn.value ? '已登录' : '未登录'
+  const st = dataSourceStatus.value
+  if (st === null) return '检测中'
+  if (st.jisiluDataMode === 'full') return '已登录'
+  if (st.jisiluDataMode === 'guest') return '游客态'
+  return '不可达'
 })
-const jisiluTitle = computed(() =>
-  jisiluLoggedIn.value
-    ? '集思录数据源可用（53 已配置 jisilu cookie）'
-    : '集思录数据源不可用或未配置登录 cookie'
-)
+const jisiluTitle = computed(() => {
+  const st = dataSourceStatus.value
+  if (st === null) return '正在检测集思录数据源'
+  const rows = st.jisiluSampleRows ?? '?'
+  if (st.jisiluDataMode === 'full') return `集思录登录态正常（实测全量 ${rows} 只可转债）`
+  if (st.jisiluDataMode === 'guest') {
+    return `集思录取数为游客态：实测仅 ${rows} 只可转债（登录态约 315 只）；网关自报 ${st.jisiluAuthOk ? '已登录' : '未登录'}，不代表实际取到全量。可转债 YTM / 双低等富字段会缺失`
+  }
+  return '集思录取数接口不可达'
+})
 
 interface NavItem {
   name: string

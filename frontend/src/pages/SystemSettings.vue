@@ -144,6 +144,20 @@ async function loadDataSourceStatus() {
 const jisiluGuide = computed(() => {
   const st = dataSourceStatus.value
   if (!st || st.jisiluLoggedIn) return null
+  // 实测游客态 ≠ 没配 cookie：上游 auth-status 可能自报「已登录」（它只检查
+  // cookie 配置 / 动态登录能力，不校验抓到的样本量），必须单独给指引。
+  if (st.jisiluDataMode === 'guest') {
+    return {
+      title: '集思录处于游客态（富字段缺失）',
+      desc: `网关 auth-status ${st.jisiluAuthOk ? '自报「已登录」' : '自报未登录'}，但实测只取到 ${st.jisiluSampleRows ?? '少量'} 只可转债（正常登录态约 315 只）。auth-status 的判定不含样本量校验，不能当结论。可转债页已自动降级为四源合并，YTM / 双低 / 剩余年限等富字段会显示「—」。`,
+      steps: [
+        '在网关服务器检查 /api/jisilu/status 的 has_static_cookie / auth_source，确认 cookie 是否真的生效',
+        '触发一次重新登录（网关 /api/jisilu/relogin），再查 /api/processed_data?category=jisilu&subtype=cb 是否返回约 315 行',
+        '若仍恒为 30 行，检查网关多副本间的 cookie 缓存是否不同步（部分副本仍是游客态）',
+        '恢复后回到本页点检测，应显示「已登录」',
+      ],
+    }
+  }
   const status = st.jisiluStatus ?? ''
   if (status === 'cookie_invalid' || st.jisiluHasCookie) {
     return {
@@ -525,11 +539,15 @@ onMounted(async () => {
                       >
                         {{ dataSourceStatus?.jisiluLoggedIn
                         ? '已登录'
-                        : (dataSourceStatus?.jisiluStatus === 'cookie_invalid' || dataSourceStatus?.jisiluHasCookie
-                            ? '已失效'
-                            : '未配置') }}
+                        : (dataSourceStatus?.jisiluDataMode === 'guest'
+                            ? '游客态'
+                            : (dataSourceStatus?.jisiluDataMode === 'unavailable'
+                                ? '不可达'
+                                : (dataSourceStatus?.jisiluStatus === 'cookie_invalid' || dataSourceStatus?.jisiluHasCookie
+                                    ? '已失效'
+                                    : '未配置'))) }}
                       </n-tag>
-                      <span class="ds-endpoint">可转债 YTM / 溢价率数据源</span>
+                      <span class="ds-endpoint">实测 {{ dataSourceStatus?.jisiluSampleRows ?? '—' }} 只可转债 · YTM / 双低数据源</span>
                     </div>
                   </div>
                 </div>

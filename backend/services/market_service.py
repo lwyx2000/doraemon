@@ -129,44 +129,90 @@ def _fetch_jisilu_login_status(timeout: int = _STATUS_CHECK_TIMEOUT) -> bool | N
     return None if d is None else d["loggedIn"]
 
 
-def get_data_source_status() -> dict:
-    """数据源连接状态：AkShare WebAPI 可达性 + 集思录登录态(严格)。
+# 登录态集思录可转债全量约 315 行；游客态恒 30 行。用行数判定「取数链路」是否
+# 真的登录态。不要用 closed_fund 兜底：游客态封基也有 36 行，区分不出来。
+_JISILU_FULL_ROWS = 100
 
-    - akshareConnected: 53 服务是否可达。
-    - jisiluLoggedIn: 是否真正登录集思录(严格)。
-      优先读取 53 侧新增的 /api/jisilu/auth-status（直接依据 Cookie 配置/动态登录
-      能力判定，而非"能否取到数据"——游客态也能取到部分数据，故旧推断不可靠）；
-      若该接口不可用则回退到旧推断(能否取到 jisilu 数据)。
-    - jisiluStatus / jisiluMessage: 上游给的具体状态与说明（供前端按状态给不同指引；
-      上游接口不可用时为 None）。
 
-    两项探测并行执行，超时均缩短为 5s，避免数据源不可达时长时间阻塞设置页。
+def _probe_jisilu_data_mode(timeout: int = 8) -> tuple[str, int | None]:
+    """实测抓一次集思录可转债全量表，返回 (data_mode, rows)。
+
+    ``full`` = 登录态全量（>=100 行）；``guest`` = 只拿到游客态 30 行；
+    ``unavailable`` = 接口不可达或响应异常。
+
+    用模块级 ``requests.get``（新连接 + Connection: close），不与探测
+    auth-status 的共享 Session 争用，也避免粘到网关的坏副本。
     """
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    for _ in range(2):
+        try:
+            r = requests.get(
+                f"{AKSHARE_API_BASE}/api/processed_data",
+                params={"category": "jisilu", "subtype": "cb"},
+                timeout=timeout,
+                headers={"Connection": "close"},
+            )
+            if r.status_code != 200:
+                continue
+            payload = r.json()
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(data, list):
+                continue
+            rows = len(data)
+            return ("full" if rows >= _JISILU_FULL_ROWS else "guest"), rows
+        except Exception:
+            continue
+    return "unavailable", None
+
+
+def _reuse_recent_jisilu_sample(ttl: int = 30) -> tuple[str, int] | None:
+    """复用可转债页最近一次实测的集思录行数（30s 内），避免两处探测打架。"""
+    try:
+        from services.convertible_bond_service import get_last_jisilu_sample
+        sample = get_last_jisilu_sample()
+        if sample and (time.time() - sample[0]) < ttl:
+            rows = sample[1]
+            return ("full" if rows >= _JISILU_FULL_ROWS else "guest"), rows
+    except Exception:
+        pass
+    return None
+
+
+def get_data_source_status() -> dict:
+    """数据源连接状态：AkShare WebAPI 可达性 + 集思录登录态（以实测取数为准）。
+
+    ⚠️ 2026-11-06 修正：网关 ``/api/jisilu/auth-status`` 的 ``logged_in`` 只反映
+    「Cookie 是否配置 + 动态登录能否成功」，其 message 明确写着「样本=None」，
+    **不校验实际抓到的样本量**。生产实测过 auth-status 报 ``logged_in=true``、
+    而 ``processed_data?subtype=cb`` 只给 30 行游客态的情况：侧栏显示「已登录」，
+    可转债页同时提示「登录态失效」，两处互相矛盾。因此拆成三个字段：
+
+      - ``jisiluAuthOk``   : 上游自报（仅用于诊断，不能当结论）
+      - ``jisiluDataMode`` : 实测取数模式 full / guest / unavailable
+      - ``jisiluLoggedIn`` : 只由实测决定（full 才为 True）
+
+    若可转债页 30s 内刚抓过数，直接复用它的行数（单一事实来源）；否则
+    三项探测并行执行，避免数据源不可达时长时间阻塞设置页。
+    """
+    reused = _reuse_recent_jisilu_sample()
+    with ThreadPoolExecutor(max_workers=3) as pool:
         akshare_future = pool.submit(_check_akshare_reachable)
         detail_future = pool.submit(_fetch_jisilu_auth_detail)
+        probe_future = None if reused else pool.submit(_probe_jisilu_data_mode)
         akshare_connected = akshare_future.result()
         detail = detail_future.result()
-
-    jisilu_logged_in = None if detail is None else detail["loggedIn"]
-
-    if jisilu_logged_in is None:
-        # 兜底：旧推断（能否取到 jisilu 数据）
-        try:
-            r = get_session().get(
-                f"{AKSHARE_API_BASE}/api/processed_data",
-                params={"category": "jisilu", "subtype": "closed_fund"},
-                timeout=_STATUS_CHECK_TIMEOUT,
-            )
-            if r.status_code == 200:
-                data = r.json().get("data")
-                jisilu_logged_in = isinstance(data, list) and len(data) > 0
-        except Exception:
-            jisilu_logged_in = False
+        if reused:
+            data_mode, sample_rows = reused
+        elif probe_future is not None:
+            data_mode, sample_rows = probe_future.result()
+        else:
+            data_mode, sample_rows = "unavailable", None
 
     return {
         "akshareConnected": akshare_connected,
-        "jisiluLoggedIn": bool(jisilu_logged_in),
+        "jisiluLoggedIn": data_mode == "full",
+        "jisiluAuthOk": None if detail is None else detail["loggedIn"],
+        "jisiluDataMode": data_mode,
+        "jisiluSampleRows": sample_rows,
         # 详情（上游不可用时为 None，前端据此退化为通用提示）
         "jisiluStatus": (detail or {}).get("status"),
         "jisiluMessage": (detail or {}).get("message"),
