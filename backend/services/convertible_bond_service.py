@@ -28,7 +28,7 @@ from typing import Any
 from core.config import USE_MOCK_DATA, AKSHARE_API_BASE
 from services.akshare_client import akshare_request, processed_data_request
 from services.meta_utils import gateway_no_data_meta, real_meta_base, mock_meta
-from utils.convertible_bond import analyze_conversion_arbitrage, analyze_volatility
+from utils.convertible_bond import analyze_conversion_arbitrage
 import mock_data
 
 
@@ -287,16 +287,11 @@ def _build_bond(norm: dict) -> dict:
         "total_putback_days": None,
         "revision_days": None,
         "total_revision_days": None,
-        "altman_z_score": None,
-        "pledge_rate": None,
         "is_st_risk": None,
-        "iv": None,
-        "hv": None,
         "stock_limit_up": None,
         "stock_suspended": None,
     }
     item["conversion_analysis"] = analyze_conversion_arbitrage(item)
-    item["volatility_analysis"] = analyze_volatility(item)
     return item
 
 
@@ -408,14 +403,13 @@ def get_convertible_bonds(
     ytm_min: float | None = None,
     double_low_max: float | None = None,
     feasibility: str | None = None,
-    vol_signal: str | None = None,
     force: bool = False,
 ) -> tuple[list[dict], dict]:
     """Return (real listed convertible bonds, meta) filtered by criteria."""
     if USE_MOCK_DATA:
         return [dict(b) for b in mock_data.MOCK_CONVERTIBLE_BONDS], mock_meta()
 
-    cache_key = (price_min, price_max, premium_max, rating, ytm_min, double_low_max, feasibility, vol_signal)
+    cache_key = (price_min, price_max, premium_max, rating, ytm_min, double_low_max, feasibility)
     if not force:
         with _CB_LIST_LOCK:
             hit = _CB_LIST_CACHE.get(cache_key)
@@ -444,8 +438,6 @@ def get_convertible_bonds(
         ):
             continue
         if feasibility is not None and (it.get("conversion_analysis") or {}).get("feasibility") != feasibility:
-            continue
-        if vol_signal is not None and (it.get("volatility_analysis") or {}).get("signal") != vol_signal:
             continue
         filtered.append(it)
 

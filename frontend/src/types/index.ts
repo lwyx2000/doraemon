@@ -398,7 +398,7 @@ export interface ProjectInfo {
   [key: string]: any
 }
 
-/** 后端 utils/convertible_bond.py 的转股套利结论（前端不再重复实现） */
+/** 后端转股套利结论；无源字段为 null，前端不再重复计算 */
 export interface ConvertibleBondConversionAnalysis {
   is_negative_premium: boolean
   theoretical_yield: number
@@ -412,20 +412,9 @@ export interface ConvertibleBondConversionAnalysis {
   data_missing: string[]
 }
 
-/** 后端波动率结论；IV/HV 无上游源时 signal='n/a' */
-export interface ConvertibleBondVolatilityAnalysis {
-  iv: number | null
-  hv: number | null
-  spread: number | null
-  ratio: number | null
-  signal: 'undervalued' | 'overvalued' | 'fair' | 'n/a'
-  signal_label: string
-  suggestion: string
-}
-
 /**
  * 可转债：主源为登录态集思录全量存续债（/api/processed_data?category=jisilu&subtype=cb）。
- * 无上游源的字段一律 null，前端须显示「— / 未接入」，不得用 0/false 伪装成业务结论。
+ * 无上游源的字段（IV/HV、质押率、Altman Z、下修进度）已整体移除，不再占位显示。
  */
 export interface ConvertibleBond {
   name: string
@@ -448,13 +437,9 @@ export interface ConvertibleBond {
   total_putback_days?: number | null
   revision_days?: number | null
   total_revision_days?: number | null
-  altman_z_score?: number | null
-  pledge_rate?: number | null
   is_st_risk?: boolean | null
   stock_name?: string | null
   stock_code?: string | null
-  iv?: number | null
-  hv?: number | null
   is_in_conversion_period?: boolean | null
   stock_limit_up?: boolean | null
   stock_price?: number | null
@@ -474,7 +459,6 @@ export interface ConvertibleBond {
   redemption_status?: string | null
   data_source?: string | null
   conversion_analysis?: ConvertibleBondConversionAnalysis | null
-  volatility_analysis?: ConvertibleBondVolatilityAnalysis | null
 }
 
 export interface FundItem {

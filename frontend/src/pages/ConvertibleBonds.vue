@@ -16,8 +16,8 @@ import {
 } from '../utils/signalDisplay'
 import type { ConvertibleBond } from '../types'
 import { exportToCSV } from '../utils/export'
-import { analyzeConversionBatch, analyzeVolatilityBatch, CONVERSION_ORDER, VOL_SIGNAL_ORDER } from '../utils/convertibleBond'
-import type { ConversionArbitrage, VolatilityAnalysis } from '../utils/convertibleBond'
+import { analyzeConversionBatch, CONVERSION_ORDER } from '../utils/convertibleBond'
+import type { ConversionArbitrage } from '../utils/convertibleBond'
 import PageHeader from '../components/PageHeader.vue'
 import DataPanel from '../components/DataPanel.vue'
 import LoadingState from '../components/LoadingState.vue'
@@ -44,12 +44,6 @@ const pendingCount = computed(() => (bonds.value ?? []).length - activeBonds.val
 const conversionMap = computed(() => {
   if (!bonds.value) return new Map<string, ConversionArbitrage>()
   return analyzeConversionBatch(bonds.value)
-})
-
-// IV/HV 波动率分析映射
-const volatilityMap = computed(() => {
-  if (!bonds.value) return new Map<string, VolatilityAnalysis>()
-  return analyzeVolatilityBatch(bonds.value)
 })
 
 // 市场统计：中位价格 / 中位溢价率（从实际数据计算，不使用硬编码数值）
@@ -258,35 +252,6 @@ const columns = [
           ? 'var(--color-danger)'
           : 'var(--text-primary)'
       return h('span', { style: { color } }, `${row.premium_pct}%`)
-    },
-  },
-  {
-    title: 'IV/HV',
-    key: 'volatility',
-    align: 'center' as const,
-    render: (row: ConvertibleBond) => {
-      const v = volatilityMap.value.get(row.code)
-      // 网关未提供 IV/HV：明确标「未接入」，不再把 0 显示成真实波动率
-      if (!v || v.iv === null || v.hv === null) {
-        return h('span', { class: 'na-text', title: v?.suggestion ?? '数据源未接入' }, '未接入')
-      }
-      const signalStyle: Record<string, { color: string; fontWeight: number }> = {
-        undervalued: { color: 'var(--color-success)', fontWeight: 700 },
-        overvalued: { color: 'var(--color-danger)', fontWeight: 700 },
-        fair: { color: 'var(--text-secondary)', fontWeight: 500 },
-      }
-      const s = signalStyle[v.signal] ?? signalStyle.fair
-      return h('div', { class: 'vol-cell' }, [
-        h('div', { class: 'vol-numbers' }, [
-          h('span', { style: { color: 'var(--text-muted)', fontSize: '9px' } }, 'IV'),
-          h('span', { style: { color: s.color, fontWeight: s.fontWeight } }, `${v.iv}%`),
-        ]),
-        h('div', { class: 'vol-numbers' }, [
-          h('span', { style: { color: 'var(--text-muted)', fontSize: '9px' } }, 'HV'),
-          h('span', { style: { color: 'var(--text-secondary)' } }, `${v.hv}%`),
-        ]),
-        h('span', { class: ['vol-signal', v.signal], title: v.suggestion }, v.signalLabel),
-      ])
     },
   },
   {
@@ -545,24 +510,9 @@ const pendingVerifyCount = computed(() =>
   activeBonds.value.filter(b => conversionMap.value.get(b.code)?.feasibility === 'unknown').length,
 )
 
-// 波动率套利信号：网关未提供 IV/HV，恒为空（面板明确标「数据源未接入」）
-const volArbSignals = computed(() =>
-  activeBonds.value
-    .filter(b => {
-      const v = volatilityMap.value.get(b.code)
-      return v && (v.signal === 'undervalued' || v.signal === 'overvalued')
-    })
-    .sort((a, b) => {
-      const va = volatilityMap.value.get(a.code)!
-      const vb = volatilityMap.value.get(b.code)!
-      return VOL_SIGNAL_ORDER[va.signal] - VOL_SIGNAL_ORDER[vb.signal]
-    }),
-)
-
 function exportBonds() {
   const headers = [
     '转债名称', '代码', '价格', '涨跌幅%', '转股价值', '溢价率%', '双低值',
-    'IV%', 'HV%', 'IV/HV信号',
     '转股套利收益%', '转股套利可行性', '阻碍因素', '未披露项',
     '到期税前收益%', '剩余年限', '评级', '强赎状态', '强赎进度',
     '强赎触发价', '回售触发价', '到期日', '最后交易日', '转股起始日',
@@ -577,14 +527,12 @@ function exportBonds() {
       '样本内胜率%(10日)', '样本外胜率%(10日)', '分年度胜率%(10日)')
   }
   const rows = filteredBonds.value.map(b => {
-    const v = volatilityMap.value.get(b.code)
     const a = conversionMap.value.get(b.code)
     const t = tacticalMap.value.get(b.code)
     const state = tacticalState(t)
     const base = [
       b.name, b.code, b.price.toFixed(3), b.change_pct ?? '', b.conv_value.toFixed(2),
       b.premium_pct, b.double_low_score ?? '',
-      v?.iv ?? '', v?.hv ?? '', v?.signalLabel ?? '',
       a?.theoreticalYield ?? '', a?.feasibilityLabel ?? '', a?.blockers.join('; ') ?? '',
       a?.dataMissing.join('; ') ?? '',
       b.ytm ?? '', b.remaining_years ?? '', b.rating,
@@ -629,8 +577,7 @@ function exportBonds() {
     <PageHeader title="可转债扫描器" subtitle="存续转债全量扫描 - 双低 / 折价 / 到期收益 / 强赎状态" helpKey="convertibleBonds" :updated-at="meta?.updateTime" />
     <GlossaryPanel page-key="convertibleBonds" />
     <div class="source-note">
-      数据源：四源按代码合并（东财存续骨架 + 集思录富字段 + 新浪行情 + 强赎条款），本次 {{ bonds?.length ?? 0 }} 只，其中有成交 {{ tradedCount }} 只<span v-if="pendingCount">、待上市/无成交 {{ pendingCount }} 只</span>。集思录当前是登录态还是游客态，以实测取数行数判定（见下方说明）。
-      IV/HV、下修进度、Altman Z、质押率、ST 标记当前无上游源，统一显示「— / 未接入」，不以 0 或 false 代替。
+      数据源：四源按代码合并（东财存续骨架 + 集思录富字段 + 新浪行情 + 强赎条款），本次 {{ bonds?.length ?? 0 }} 只，其中有成交 {{ tradedCount }} 只<span v-if="pendingCount">、待上市/无成交 {{ pendingCount }} 只</span>。集思录当前是登录态还是游客态，以实测取数行数判定（见下方说明）。无上游源的指标（IV/HV、质押率、Altman Z）已从页面移除，不以 0 或占位值冒充。
       <span v-if="meta?.note">{{ meta.note }}</span>
     </div>
 
@@ -803,26 +750,6 @@ function exportBonds() {
         </div>
       </div>
 
-      <!-- 波动率套利信号 (新增) -->
-      <div class="rank-panel">
-        <div class="rank-header vol">
-          <h4>波动率套利信号</h4>
-        </div>
-        <div class="rank-list">
-          <div v-for="bond in volArbSignals" :key="bond.code" class="rank-item vol-item">
-            <span class="rank-name" :title="volatilityMap.get(bond.code)?.suggestion">{{ bond.name }}</span>
-            <span class="vol-tags">
-              <span class="vol-iv">IV{{ volatilityMap.get(bond.code)?.iv }}%</span>
-              <span class="vol-hv">HV{{ volatilityMap.get(bond.code)?.hv }}%</span>
-              <span class="vol-signal-tag" :class="volatilityMap.get(bond.code)?.signal">
-                {{ volatilityMap.get(bond.code)?.signalLabel }}
-              </span>
-            </span>
-          </div>
-          <div v-if="volArbSignals.length === 0" class="empty-hint">IV / HV 数据源未接入，不生成波动率套利信号</div>
-        </div>
-      </div>
-
       <!-- Top Double Low -->
       <div class="rank-panel">
         <div class="rank-header">
@@ -871,7 +798,7 @@ function exportBonds() {
         </div>
       </div>
 
-      <!-- 高溢价风险（替代无数据源的 Z-Score/质押率预警） -->
+      <!-- 高溢价风险 -->
       <div class="rank-panel">
         <div class="rank-header danger">
           <h4>高溢价风险</h4>
@@ -882,7 +809,6 @@ function exportBonds() {
             <span class="rank-score" style="color: var(--color-danger); font-size: 12px;">{{ bond.premium_pct }}%</span>
           </div>
           <div v-if="highPremiumWarnings.length === 0" class="empty-hint">无溢价率 ≥ 50% 的存续债</div>
-          <div class="empty-hint muted">正股 Z-Score / 质押率 / ST 数据源未接入</div>
         </div>
       </div>
     </div>
@@ -910,7 +836,7 @@ function exportBonds() {
         <div class="adv-field">
           <label class="adv-label">正股 PB ≤</label>
           <n-input v-model:value="filterPbMax" placeholder="例如 3" size="small" />
-          <span class="adv-tip">Z-Score / 质押率无上游源，已移除该筛选；无 PB 数据的转债不会被此条件误纳入。</span>
+          <span class="adv-tip">无 PB 数据的转债不会被此条件误纳入。</span>
         </div>
       </div>
       <template #footer>
@@ -979,17 +905,6 @@ function exportBonds() {
 }
 
 .bond-tag { display: inline-block; padding: 2px 8px; border-radius: 2px; font-size: 10px; font-weight: 700; white-space: nowrap; }
-
-/* IV/HV 波动率 cell (table, h()-rendered) */
-.vol-cell { display: flex; flex-direction: column; gap: 2px; align-items: center; }
-.vol-numbers { display: flex; align-items: baseline; gap: 3px; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
-.vol-signal {
-  display: inline-block; padding: 1px 6px; border-radius: 2px;
-  font-size: 9px; font-weight: 700; letter-spacing: 0.02em; margin-top: 1px;
-}
-.vol-signal.undervalued { background: var(--tag-green-bg); color: var(--tag-green-text); }
-.vol-signal.overvalued { background: var(--tag-red-bg); color: var(--tag-red-text); }
-.vol-signal.fair { background: var(--bg-subtle); color: var(--text-muted); }
 
 /* 战术信号 + 胜率扫描工具栏（与 ETF 页一致） */
 .tactical-toolbar {
@@ -1193,8 +1108,6 @@ function exportBonds() {
 /* 转股套利机会排名面板 */
 .rank-header.arb { background: var(--tag-green-bg); }
 .rank-header.arb h4 { color: var(--tag-green-text); }
-.rank-header.vol { background: var(--tag-blue-bg); }
-.rank-header.vol h4 { color: var(--tag-blue-text); }
 
 .conv-item { flex-wrap: wrap; }
 .conv-tags { display: flex; gap: 4px; align-items: center; flex-shrink: 0; }
@@ -1211,18 +1124,4 @@ function exportBonds() {
 .conv-feas-tag.risky { background: var(--tag-orange-bg); color: var(--tag-orange-text); }
 .conv-feas-tag.infeasible { background: var(--tag-red-bg); color: var(--tag-red-text); }
 
-/* 波动率套利信号排名面板 */
-.vol-item { flex-wrap: wrap; }
-.vol-tags { display: flex; gap: 4px; align-items: center; flex-shrink: 0; }
-.vol-iv, .vol-hv {
-  font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600;
-  color: var(--text-secondary);
-}
-.vol-signal-tag {
-  display: inline-block; padding: 1px 6px; border-radius: 2px;
-  font-size: 9px; font-weight: 700;
-}
-.vol-signal-tag.undervalued { background: var(--tag-green-bg); color: var(--tag-green-text); }
-.vol-signal-tag.overvalued { background: var(--tag-red-bg); color: var(--tag-red-text); }
-.vol-signal-tag.fair { background: var(--bg-subtle); color: var(--text-muted); }
 </style>

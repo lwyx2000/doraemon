@@ -407,16 +407,6 @@ class ConversionArbitrage(BaseModel):
     data_missing: list[str] = []
 
 
-class VolatilityAnalysis(BaseModel):
-    iv: Optional[float] = None
-    hv: Optional[float] = None
-    spread: Optional[float] = None
-    ratio: Optional[float] = None
-    signal: str
-    signal_label: str
-    suggestion: str
-
-
 class ConvertibleBond(BaseModel):
     name: str
     code: str
@@ -439,16 +429,12 @@ class ConvertibleBond(BaseModel):
     total_putback_days: Optional[int] = None
     revision_days: Optional[int] = None
     total_revision_days: Optional[int] = None
-    altman_z_score: Optional[float] = None
-    pledge_rate: Optional[float] = None
     is_st_risk: Optional[bool] = None
     stock_name: Optional[str] = None
     stock_code: Optional[str] = None
     stock_price: Optional[float] = None
     stock_change_pct: Optional[float] = None
     stock_pb: Optional[float] = None
-    iv: Optional[float] = None
-    hv: Optional[float] = None
     is_in_conversion_period: Optional[bool] = None
     stock_limit_up: Optional[bool] = None
     stock_suspended: Optional[bool] = None
@@ -465,7 +451,6 @@ class ConvertibleBond(BaseModel):
     redemption_status: Optional[str] = None
     data_source: Optional[str] = None
     conversion_analysis: Optional[ConversionArbitrage] = None
-    volatility_analysis: Optional[VolatilityAnalysis] = None
 
 
 # ============================================================

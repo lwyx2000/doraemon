@@ -19,7 +19,7 @@ import type { ConvertibleBond, FundItem, ReitItem, AlertEvent } from '../types'
 import { useAsyncData } from '../composables/useApi'
 import { api, isGatewayNoData } from '../utils/api'
 import { analyzeArbitrageBatch } from '../utils/arbitrage'
-import { analyzeConversionBatch, analyzeVolatilityBatch } from '../utils/convertibleBond'
+import { analyzeConversionBatch } from '../utils/convertibleBond'
 import { analyzeClosedFundBatch } from '../utils/closedFund'
 import { analyzeReitsBatch } from '../utils/reits'
 import type { AlertRule } from '../types'
@@ -206,16 +206,14 @@ const realtimeSignals = computed<SignalItem[]>(() => {
   // 只评估有真实成交的存续债；待上市/无成交行的 100 元是面值占位，会引发误报
   const activeCbBonds = (bonds.value ?? []).filter(b => b.has_trade)
   const convResults = analyzeConversionBatch(activeCbBonds)
-  const volResults = analyzeVolatilityBatch(activeCbBonds)
   activeCbBonds.forEach(bond => {
     const conv = convResults.get(bond.code)
-    const vol = volResults.get(bond.code)
     if (conv) {
       if (conv.feasibility === 'feasible') {
         add(
           'conversion',
           `${bond.name} 转股套利可行`,
-          `理论收益率${conv.theoreticalYield}%，${conv.overnightRisk === null ? 'T+1敞口未披露' : `T+1敞口${conv.overnightRisk}%`}`,
+          `理论收益率${conv.theoreticalYield}%，负溢价但无已知阻碍`,
           'low',
         )
       } else if (conv.feasibility === 'infeasible') {
@@ -224,23 +222,6 @@ const realtimeSignals = computed<SignalItem[]>(() => {
           `${bond.name} 转股套利陷阱`,
           conv.blockers.length ? conv.blockers.join('；') : '负溢价但存在阻碍',
           'high',
-        )
-      }
-    }
-    if (vol) {
-      if (vol.signal === 'undervalued') {
-        add(
-          'volatility',
-          `${bond.name} IV低估`,
-          `IV=${vol.iv}% HV=${vol.hv}%，价差${vol.spread}%，Delta对冲买入信号`,
-          'medium',
-        )
-      } else if (vol.signal === 'overvalued') {
-        add(
-          'volatility',
-          `${bond.name} IV高估`,
-          `IV=${vol.iv}% HV=${vol.hv}%，价差${vol.spread}%，期权部分被高估`,
-          'medium',
         )
       }
     }

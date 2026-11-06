@@ -23,10 +23,6 @@ def list_convertible_bonds(
         None,
         description="转股套利可行性: feasible, risky, unknown(信息不全), infeasible, n/a",
     ),
-    vol_signal: str | None = Query(
-        None,
-        description="波动率信号: undervalued, overvalued, fair, n/a(数据源未接入)",
-    ),
     force: bool = Query(default=False, description="True 穿透 30s 列表缓存，强制重扫上游"),
 ):
     data, meta = get_convertible_bonds(
@@ -37,7 +33,6 @@ def list_convertible_bonds(
         ytm_min=ytm_min,
         double_low_max=double_low_max,
         feasibility=feasibility,
-        vol_signal=vol_signal,
         force=force,
     )
     return ApiResponse(data=data, meta=meta)

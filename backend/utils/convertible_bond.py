@@ -1,12 +1,11 @@
 """Convertible bond arbitrage analysis — 唯一口径来源（前端只做字段适配）。
 
-两个分析：
-1. 转股套利可行性 —— 负溢价 ≠ 可套利，需叠加正股停牌/涨停/转股期/T+1 敞口
-2. IV vs HV 波动率对比 —— IV < HV 是 Delta 对冲入场信号
+转股套利可行性 —— 负溢价 ≠ 可套利，需叠加正股停牌/涨停/转股期/T+1 敞口
 
 重要原则（2026-11-06）：上游未披露的字段一律为 None，分析必须把「数据缺失」
 与「业务结论」区分开。旧实现用 `?? false` / `?? 0` / `hv=2.0` 把未知当成
 「不在转股期」「隔夜风险 2%」，导致所有负溢价债恒判「不可行」。
+IV/HV / 质押率 / Altman Z 无上游源，字段已整体移除（不再占位显示）。
 """
 
 from typing import Any, Optional
@@ -30,7 +29,8 @@ def analyze_conversion_arbitrage(
     in_period = bond.get("is_in_conversion_period")
     limit_up = bond.get("stock_limit_up")
     suspended = bond.get("stock_suspended")
-    overnight = stock_volatility if stock_volatility is not None else bond.get("hv")
+    # 波动率无上游源时恒为 None，T+1 敞口判断自动跳过（不再用固定值伪造）
+    overnight = stock_volatility
 
     blockers: list[str] = []
     missing: list[str] = []
@@ -52,8 +52,6 @@ def analyze_conversion_arbitrage(
         missing.append("正股涨停状态未披露")
     if suspended is None:
         missing.append("正股停牌状态未披露")
-    if overnight is None:
-        missing.append("正股波动率(HV)未接入")
 
     if not is_negative_premium:
         feasibility, label = "n/a", "非负溢价"
@@ -81,37 +79,4 @@ def analyze_conversion_arbitrage(
     }
 
 
-def analyze_volatility(bond: dict[str, Any]) -> dict[str, Any]:
-    """IV vs HV 波动率分析；无上游源时明确返回「未接入」而非 0。"""
-    iv = bond.get("iv")
-    hv = bond.get("hv")
-    if iv is None or hv is None:
-        return {
-            "iv": iv,
-            "hv": hv,
-            "spread": None,
-            "ratio": None,
-            "signal": "n/a",
-            "signal_label": "数据源未接入",
-            "suggestion": "当前网关未提供 IV / HV，无法生成波动率套利信号",
-        }
-
-    spread = round(iv - hv, 2)
-    ratio = round(iv / hv, 2) if hv > 0 else 0
-    if ratio < 0.85:
-        signal, label = "undervalued", "IV低估"
-        suggestion = f"IV低于HV {abs(spread)}%，可买入转债+融券正股做Delta对冲"
-    elif ratio > 1.15:
-        signal, label = "overvalued", "IV高估"
-        suggestion = f"IV高于HV {spread}%，可考虑卖出转债"
-    else:
-        signal, label = "fair", "合理"
-        suggestion = f"IV/HV={ratio}，波动率处于合理区间，无套利信号"
-    return {
-        "iv": iv, "hv": hv, "spread": spread, "ratio": ratio,
-        "signal": signal, "signal_label": label, "suggestion": suggestion,
-    }
-
-
 CONVERSION_ORDER = {"feasible": 0, "risky": 1, "unknown": 2, "infeasible": 3, "n/a": 4}
-VOL_SIGNAL_ORDER = {"undervalued": 0, "overvalued": 1, "fair": 2, "n/a": 3}
