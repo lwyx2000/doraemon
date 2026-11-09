@@ -8,7 +8,7 @@ import type { DataTableColumns } from 'naive-ui'
 import { useAsyncData } from '../composables/useApi'
 import { api } from '../utils/api'
 import LoadingState from '../components/LoadingState.vue'
-import type { TradingAnalysis, TTrade, GroupStat, HoldingDiff } from '../types'
+import type { TradingAnalysis, TTrade, GroupStat, HoldingDiff, FeeRateGroup } from '../types'
 
 const message = useMessage()
 
@@ -131,6 +131,108 @@ const feeStats = computed(() => {
     { label: '小单笔数', value: String(f.small_order_count) },
     { label: '估算费用行数', value: String(f.estimated_fee_rows) },
   ]
+})
+
+function fmtBps(v: number | null | undefined): string {
+  return v === null || v === undefined || Number.isNaN(v) ? '—' : `${fmtNum(v, 2)} bp`
+}
+
+// ---------- 分品种 / 分标的费率 ----------
+const feeRateOverall = computed(() => analysis.value?.fee_rates?.summary.overall_fee_rate_bps ?? null)
+const feeRateStats = computed(() => {
+  const s = analysis.value?.fee_rates?.summary
+  if (!s) return []
+  return [
+    { label: '综合费率', value: fmtBps(s.overall_fee_rate_bps) },
+    { label: '买入费率', value: fmtBps(s.buy_fee_rate_bps) },
+    { label: '卖出费率', value: fmtBps(s.sell_fee_rate_bps) },
+    { label: '佣金费率', value: fmtBps(s.commission_bps) },
+    { label: '名义佣金率(反推)', value: fmtBps(s.nominal_commission_bps) },
+    { label: '计费成交额', value: fmtMoney(s.total_amount) },
+    { label: '费用合计', value: fmtMoney(s.total_fee) },
+    { label: '最低佣金笔数', value: String(s.min_commission_count) },
+    { label: '最低佣金多付(估)', value: fmtMoney(s.min_commission_extra) },
+    { label: '费率最高品种', value: s.highest_fee_group ?? '—' },
+    { label: '费率最高标的', value: s.highest_fee_code ?? '—' },
+    { label: '费用缺失行', value: String(s.fee_missing_rows) },
+  ]
+})
+// 费率显著高于整体均值时标红警示（注意：这不是涨跌配色，红色仅代表「费率偏高」）
+function bpsCell(v: number | null | undefined, highlight = true) {
+  if (v === null || v === undefined || Number.isNaN(v)) return h('span', { class: 'mono' }, '—')
+  const base = feeRateOverall.value
+  const high = highlight && base !== null && base > 0 && v > base * 1.5
+  return h('span', {
+    class: 'mono',
+    style: high ? 'color:var(--color-danger);font-weight:700' : undefined,
+    title: high ? '显著高于整体综合费率' : undefined,
+  }, `${fmtNum(v, 2)} bp`)
+}
+const baseFeeRateColumns: DataTableColumns<FeeRateGroup> = [
+  {
+    title: '笔数', key: 'trade_count', width: 100, align: 'right',
+    sorter: (a, b) => a.trade_count - b.trade_count,
+    render: (row) => row.fee_missing_rows > 0
+      ? h('span', { class: 'mono', title: `${row.fee_missing_rows} 条无费用明细，未计入费率` }, `${row.rated_count}/${row.trade_count}`)
+      : numCell(row.trade_count, 0),
+  },
+  {
+    title: '成交额', key: 'total_amount', width: 130, align: 'right',
+    sorter: (a, b) => a.total_amount - b.total_amount,
+    render: (row) => moneyCell(row.total_amount),
+  },
+  {
+    title: '总费用', key: 'total_fee', width: 120, align: 'right',
+    sorter: (a, b) => a.total_fee - b.total_fee,
+    render: (row) => moneyCell(row.total_fee),
+  },
+  {
+    title: '综合费率', key: 'fee_rate_bps', width: 120, align: 'right',
+    sorter: (a, b) => (a.fee_rate_bps ?? -1) - (b.fee_rate_bps ?? -1),
+    render: (row) => bpsCell(row.fee_rate_bps),
+  },
+  { title: '买入费率', key: 'buy_fee_rate_bps', width: 120, align: 'right', render: (row) => bpsCell(row.buy_fee_rate_bps, false) },
+  { title: '卖出费率', key: 'sell_fee_rate_bps', width: 120, align: 'right', render: (row) => bpsCell(row.sell_fee_rate_bps, false) },
+  { title: '佣金费率', key: 'commission_bps', width: 120, align: 'right', render: (row) => bpsCell(row.commission_bps, false) },
+  { title: '印花税(卖出额)', key: 'stamp_tax_bps', width: 140, align: 'right', render: (row) => bpsCell(row.stamp_tax_bps, false) },
+  { title: '过户费', key: 'transfer_fee_bps', width: 110, align: 'right', render: (row) => bpsCell(row.transfer_fee_bps, false) },
+  { title: '单笔均费', key: 'avg_fee_per_trade', width: 120, align: 'right', render: (row) => moneyCell(row.avg_fee_per_trade) },
+  {
+    title: '最低佣金', key: 'min_commission_count', width: 120, align: 'right',
+    render: (row) => h('span', {
+      class: 'mono',
+      title: row.min_commission_extra === null ? '' : `按名义佣金率估算多付 ${fmtMoney(row.min_commission_extra)}`,
+    }, `${row.min_commission_count} 笔${row.min_commission_extra ? ` / ${fmtMoney(row.min_commission_extra)}` : ''}`),
+  },
+  { title: '未拆分费用', key: 'unallocated_fee', width: 130, align: 'right', render: (row) => moneyCell(row.unallocated_fee) },
+]
+const feeRateTypeColumns: DataTableColumns<FeeRateGroup> = [
+  { title: '品种', key: 'label', width: 150, fixed: 'left', render: (row) => textCell(row.label) },
+  ...baseFeeRateColumns,
+]
+const feeRateCodeColumns: DataTableColumns<FeeRateGroup> = [
+  { title: '代码', key: 'key', width: 110, fixed: 'left', render: (row) => textCell(row.key) },
+  { title: '标的', key: 'label', width: 150, fixed: 'left', render: (row) => textCell(row.label) },
+  { title: '品种', key: 'asset_label', width: 130, render: (row) => textCell(row.asset_label) },
+  ...baseFeeRateColumns,
+]
+const feeRateWarnings = computed<string[]>(() => {
+  const fr = analysis.value?.fee_rates
+  if (!fr) return []
+  const out: string[] = []
+  for (const g of fr.by_asset_type) {
+    if (g.stamp_tax_bps === null) continue
+    if (['fund', 'cb', 'bond'].includes(g.key) && g.stamp_tax_bps > 0.5) {
+      out.push(`${g.label} 出现印花税 ${fmtNum(g.stamp_tax_bps)} bp：ETF / 可转债 / 债券通常免印花税，请核对品种分类或券商计费口径`)
+    }
+    if (g.key === 'stock_a' && g.sell_amount > 0 && (g.stamp_tax_bps < 8 || g.stamp_tax_bps > 12)) {
+      out.push(`沪深A股卖出印花税率 ${fmtNum(g.stamp_tax_bps)} bp，偏离常见 10 bp（千一）较多，请核对费率`)
+    }
+  }
+  if (fr.summary.fee_missing_rows > 0) {
+    out.push(`${fr.summary.fee_missing_rows} 条交割单成交费用列全空，已从费率统计中剔除，不按 0 费率计入`)
+  }
+  return out
 })
 
 // ---------- 已平仓回合 ----------
@@ -259,6 +361,47 @@ const diffColumns: DataTableColumns<HoldingDiff> = [
         >
           有 {{ analysis?.fees.small_order_count }} 笔小单成交额偏低，可能被「最低佣金」放大费用摩擦；估算费用行数 {{ analysis?.fees.estimated_fee_rows }} 行。
         </n-alert>
+
+        <div class="section-title">不同标的费率</div>
+        <div class="meta-line">{{ analysis?.fee_rates?.note }}</div>
+        <div class="stat-grid">
+          <n-card v-for="s in feeRateStats" :key="s.label" size="small">
+            <n-statistic :label="s.label" :value="s.value" />
+          </n-card>
+        </div>
+        <template v-if="feeRateWarnings.length > 0">
+          <n-alert
+            v-for="(w, i) in feeRateWarnings"
+            :key="i"
+            type="warning"
+            :bordered="false"
+            class="tip-alert"
+          >{{ w }}</n-alert>
+        </template>
+        <div class="sub-title">按品种（大类口径对比）</div>
+        <n-data-table
+          :columns="feeRateTypeColumns"
+          :data="analysis?.fee_rates?.by_asset_type ?? []"
+          :bordered="false"
+          :single-line="false"
+          size="small"
+          :scroll-x="1600"
+          max-height="260"
+        />
+        <div class="sub-title">按标的（单只券种，默认按成交额降序；表头可排序）</div>
+        <n-data-table
+          :columns="feeRateCodeColumns"
+          :data="analysis?.fee_rates?.by_code ?? []"
+          :bordered="false"
+          :single-line="false"
+          size="small"
+          :scroll-x="1800"
+          max-height="440"
+        />
+        <div class="meta-line">
+          参考：A股卖出印花税约 10 bp，ETF / 可转债应为 0 bp；佣金常见 2.5~3 bp，最低 5 元佣金会显著推高小单费率。
+          费率单位 bp（1 bp = 万分之一），买入 / 卖出分开计算，印花税率以卖出额为分母。
+        </div>
 
         <div class="section-title">已平仓回合</div>
         <div class="stat-grid">

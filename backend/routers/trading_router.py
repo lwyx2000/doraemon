@@ -115,5 +115,5 @@ def trading_analysis(
     date_to: Optional[str] = Query(None, alias="to"),
     user_id: str = Depends(get_current_user),
 ):
-    """综合分析：做T / 已平仓胜率 / 费用摩擦 / 行为诊断 / 三方对账。"""
+    """综合分析：做T / 已平仓胜率 / 费用摩擦 / 分品种费率 / 行为诊断 / 三方对账。"""
     return ApiResponse(data=get_analysis(user_id, date_from, date_to))

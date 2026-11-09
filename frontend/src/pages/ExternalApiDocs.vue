@@ -8,6 +8,7 @@ import MdRenderer from '../components/MdRenderer.vue'
 import { api } from '../utils/api'
 // 直接引用项目 docs 目录下的权威文档（Vite ?raw 导入，无需额外依赖，单一信息源）
 import docSource from '../../../docs/external_upload_api.md?raw'
+import tradingDocSource from '../../../docs/trading_import_api.md?raw'
 
 defineOptions({ name: 'ExternalApiDocs' })
 
@@ -132,7 +133,7 @@ async function submitTrades() {
       <header class="ext-head">
         <div>
           <h1 class="ext-title">持仓 / 成交 外部上传接口</h1>
-          <p class="ext-sub">无鉴权（机器 / 程序）批量上传接口文档与在线试用页</p>
+          <p class="ext-sub">无鉴权批量上传接口、券商交割单导入与费率统计文档，附在线试用页</p>
         </div>
         <n-space>
           <n-button quaternary @click="router.push('/login')">前往登录</n-button>
@@ -140,9 +141,19 @@ async function submitTrades() {
       </header>
 
       <n-tabs type="line" animated>
-        <n-tab-pane name="docs" tab="接口文档">
+        <n-tab-pane name="docs" tab="外部上传接口文档">
           <n-card :bordered="false" class="doc-card">
             <MdRenderer :source="docSource" />
+          </n-card>
+        </n-tab-pane>
+
+        <n-tab-pane name="trading" tab="交易台账 / 交割单文档">
+          <n-card :bordered="false" class="doc-card">
+            <n-alert type="info" :show-icon="true" style="margin-bottom: 16px">
+              本组接口需登录（JWT）。请在「持仓分析 → 交易台账」里导入券商 Excel 交割单，
+              或按下方文档的 curl 示例调用；费率统计、做T与对账口径均以此为准。
+            </n-alert>
+            <MdRenderer :source="tradingDocSource" />
           </n-card>
         </n-tab-pane>
 

@@ -1727,6 +1727,7 @@ watch(activeTab, (tab) => {
               <li><b>无鉴权</b>：机器 / 程序直接调用，无需 JWT。请求体用 <span class="mono">user_id</span> 或 <span class="mono">username</span> 指明归属用户（缺失或不存在 → 400）。</li>
               <li><b>account 整批必传</b>：请求体<b>顶层</b>传一个 <span class="mono">account</span>（券商账号，由客户端自传作为主标识，如 <span class="mono">huatai-12345678</span>），整批统一归属该券商；逐条传的 <span class="mono">broker</span> 会被忽略，实际券商名由后端解析回填。首见该 account 时按 <span class="mono">broker_name</span> / <span class="mono">remark</span> 自动建券商（落默认终端或指定 <span class="mono">terminal</span>）。缺失 → 整批进入 failed，不入库。兼容旧字段 <span class="mono">broker_code</span>（等同于 account）。</li>
               <li><b>source</b>：来源标记（任意字符串），写入上传记录便于追溯，缺省 <span class="mono">"api"</span>。</li>
+              <li><b>交割单导入是另一套接口</b>：券商 Excel/CSV 交割单（含佣金 / 印花税 / 过户费）走 <span class="mono">POST /api/v1/trading/import/settlement</span>，<b>需登录 JWT</b>，在「交易台账」tab 里上传；表头别名、去重规则与费率口径见右上「接口文档」页的「交易台账 / 交割单文档」tab。</li>
               <li><b>响应结构</b>：<span class="mono">{ "code": 0, "message": "ok", "data": {...} }</span></li>
             </ul>
 
@@ -1739,6 +1740,8 @@ watch(activeTab, (tab) => {
                 <tr><td class="ft-desc">查询成交</td><td class="ft-field">GET /api/v1/trades</td><td class="ft-desc">按 user_id/username + 可选 trade_date 过滤</td></tr>
                 <tr><td class="ft-desc">成交交易日列表</td><td class="ft-field">GET /api/v1/trades/dates</td><td class="ft-desc">返回该用户所有有成交的交易日（升序）</td></tr>
                 <tr><td class="ft-desc">上传记录留痕（需登录）</td><td class="ft-field">GET /api/v1/import-logs</td><td class="ft-desc">本页「上传记录」tab 展示，可用于对账</td></tr>
+                <tr><td class="ft-desc">交割单导入（需登录）</td><td class="ft-field">POST /api/v1/trading/import/settlement</td><td class="ft-desc">券商 Excel/CSV，含分项费用；导入后可在「交易分析」查看分品种费率。详见接口文档页</td></tr>
+                <tr><td class="ft-desc">交易分析（需登录）</td><td class="ft-field">GET /api/v1/trading/analysis</td><td class="ft-desc">做T / 胜率 / 费用 / <b>fee_rates</b> 分品种费率 / 对账</td></tr>
               </tbody>
             </table>
 

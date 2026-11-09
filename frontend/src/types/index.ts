@@ -2076,6 +2076,65 @@ export interface FeesBlock {
   estimated_fee_rows: number
 }
 
+/** 分品种 / 分标的费率，单位 bp（1 bp = 0.01% = 万分之一） */
+export interface FeeRateGroup {
+  key: string
+  label: string
+  asset_type: string
+  asset_label: string
+  trade_count: number
+  rated_count: number
+  fee_missing_rows: number
+  buy_amount: number
+  sell_amount: number
+  total_amount: number
+  total_fee: number
+  commission: number
+  stamp_tax: number
+  transfer_fee: number
+  other_fee: number
+  unallocated_fee: number
+  fee_rate_bps: number | null
+  buy_fee_rate_bps: number | null
+  sell_fee_rate_bps: number | null
+  commission_bps: number | null
+  stamp_tax_bps: number | null
+  transfer_fee_bps: number | null
+  avg_fee_per_trade: number | null
+  min_commission_count: number
+  min_commission_extra: number | null
+  nominal_commission_bps: number | null
+}
+
+export interface FeeRateSummary {
+  overall_fee_rate_bps: number | null
+  buy_fee_rate_bps: number | null
+  sell_fee_rate_bps: number | null
+  commission_bps: number | null
+  stamp_tax_bps: number | null
+  total_amount: number
+  total_fee: number
+  trade_count: number
+  rated_count: number
+  fee_missing_rows: number
+  asset_type_count: number
+  code_count: number
+  min_commission_count: number
+  min_commission_extra: number | null
+  nominal_commission_bps: number | null
+  highest_fee_group: string | null
+  highest_fee_rate_bps: number | null
+  highest_fee_code: string | null
+  highest_fee_code_bps: number | null
+}
+
+export interface FeeRateAnalysis {
+  summary: FeeRateSummary
+  by_asset_type: FeeRateGroup[]
+  by_code: FeeRateGroup[]
+  note: string
+}
+
 export interface BehaviorBlock {
   avg_hold_days_win: number | null
   avg_hold_days_loss: number | null
@@ -2108,6 +2167,7 @@ export interface TradingAnalysis {
   t_trades: TTradesBlock
   rounds: RoundsBlock
   fees: FeesBlock
+  fee_rates: FeeRateAnalysis
   behavior: BehaviorBlock
   reconciliation: ReconciliationBlock
 }

@@ -3,6 +3,10 @@
 > 用途：供其它程序批量上传持仓与成交数据，无需 JWT 登录。
 > 服务端口：后端 `:8001`（`docker-compose` 映射视部署而定，前端经 nginx `:9080` 反代到 `/api/v1`）。
 > 完整前缀：`/api/v1`。
+>
+> **相关文档**：页面内使用的交割单导入（Excel/CSV，需 JWT）、交易台账查询与分品种费率统计见
+> [`trading_import_api.md`](./trading_import_api.md)。该组接口写入 `biz_settlements`，
+> 并会把本文件第 2 节的 `biz_trades` 每日成交作为补充源合并分析。两者的鉴权方式与用户定位方式不同，不要混用。
 
 ## 通用约定
 
@@ -173,11 +177,22 @@ curl -X POST 'http://192.168.3.53:9080/api/v1/trades/import' \
 ### 3.3 查看持仓覆盖历史（需登录）
 `GET /api/v1/holdings/history/archive?hold_id=<可选>` — 浏览器 / 带 JWT 调用，按归档时间倒序查看被覆盖的旧持仓快照（`biz_holdings_history`）。
 
+### 3.4 交易台账接口（需登录，见独立文档）
+`POST /api/v1/trading/import/settlement`（券商 Excel 交割单）、`POST /api/v1/trading/import/daily`（每日成交补录）、
+`GET /api/v1/trading/{settlements,daily,closed,analysis}`、`DELETE /api/v1/trading/settlements`。
+完整字段、表头别名与费率口径见 [`trading_import_api.md`](./trading_import_api.md)。
+
+> 注意：本文第 2 节 `/trades/import` 写入的 `biz_trades` 会被 `GET /api/v1/trading/daily` 与 `/analysis`
+> 合并消费（交割单优先、按成交编号 / 内容指纹去重）。由于该表没有分项费用列，来自它的成交在费率统计中
+> 会被排除，并在对账告警里标 `fee_estimated`。要统计真实费率，请改用交割单导入。
+
 ---
 
 ## 部署注意
 
-- 上线标准流程：
-  `commit → git bundle → scp 53 → 53 git fetch+ff → 代推 GitHub → 宿主 npm run build → docker compose build frontend && up -d --force-recreate frontend`（后端镜像一并重建以纳入新路由）。
+- 上线走 Jenkins `doraemon-deploy`（`DEPLOY_TARGET=all / DEPLOY_ACTION=deploy / FORCE_PULL=true`），
+  会重建前后端镜像并重启容器；旧的 `git bundle → scp 53 → 代推 GitHub` 手工流程已废弃。
 - `biz_trades` 与 `biz_holdings_history` 表均为 `CREATE TABLE IF NOT EXISTS` 幂等建表，首次请求自动落库，无需手动迁移。
 - 终端 / 券商表（`biz_terminals` / `biz_brokers`）为幂等建表；首个上传请求会自动建「默认终端」与对应券商。
+- `biz_settlements`（交割单）同样幂等建表，并有 `(fk_user, trade_id)` 唯一索引保证重复导入不产生重复行；
+  读取 `.xlsx` 依赖后端 `openpyxl`，新增依赖后需重建后端镜像。

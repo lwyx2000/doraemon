@@ -9,6 +9,8 @@
 - 做T口径：同日 + 同账户 + 同标的的买卖按 min(买量, 卖量) 配对，用当日买卖均价算毛利，
   按成交量占比分摊双边费用。A股 T+1 的「先卖后买」（用昨仓）与 T+0 品种的「先买后卖」分开标注。
 - 已清仓回合：按 (账户, 代码) FIFO 配对，费用摊入买卖两侧，得到含费用的真实已实现盈亏。
+- 分品种 / 分标的费率：按代码段识别品种，费用率统一用 bp（万分之一），买入卖出分开算；
+  费用列全空的成交行不进分母（避免把「未披露」算成 0 费率）。
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import io
 import uuid
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
+from statistics import median
 from typing import Any, Optional
 
 from core.config import USE_MOCK_DATA
@@ -930,6 +933,227 @@ def get_closed_rounds(user_id: str) -> dict[str, Any]:
     }
 
 
+# ============================================================
+# 分品种 / 分标的费率统计
+# ============================================================
+
+_ASSET_TYPE_LABELS = {
+    "stock_a": "沪深A股",
+    "stock_bj": "北交所",
+    "cb": "可转债",
+    "fund": "基金(ETF/LOF)",
+    "bond": "债券",
+    "hk": "港股通",
+    "other": "其他/未识别",
+}
+_FEE_PART_KEYS = ("commission", "stamp_tax", "transfer_fee", "other_fee")
+
+
+def _classify_asset(code: Any, name: str = "", sec_type: str = "") -> tuple[str, str]:
+    """按证券代码段判定品种；代码无法识别时用名称 / 券商类别兜底。
+
+    代码段口径与全站一致：15/16/50/51/52/56/58=基金，11/12 开头=转债或债券，
+    60/68/00/30=沪深A股，43/83/87/92/8/4=北交所，5 位数字=港股通。
+    """
+    digits = "".join(ch for ch in str(code or "") if ch.isdigit())
+    n = str(name or "")
+    t = str(sec_type or "").lower()
+    key = ""
+    if len(digits) == 6:
+        p3 = digits[:3]
+        if p3 in ("110", "111", "113", "118", "120", "121", "123", "127", "128"):
+            key = "cb"
+        elif digits.startswith("12"):
+            key = "bond"
+        elif digits.startswith(("15", "16", "50", "51", "52", "56", "58")):
+            key = "fund"
+        elif digits.startswith(("60", "68", "00", "30")):
+            key = "stock_a"
+        elif digits.startswith(("43", "83", "87", "92", "8", "4")):
+            key = "stock_bj"
+        elif digits.startswith(("01", "02", "10", "19")):
+            key = "bond"
+    elif len(digits) == 5:
+        key = "hk"
+    if not key:
+        if "转债" in n or "可交换" in n:
+            key = "cb"
+        elif any(k in n for k in ("ETF", "etf", "LOF", "基金")):
+            key = "fund"
+        elif "债" in n:
+            key = "bond"
+        elif any(k in t for k in ("stock", "股票", "a股")):
+            key = "stock_a"
+        elif any(k in t for k in ("fund", "etf", "基金")):
+            key = "fund"
+        elif any(k in t for k in ("bond", "cb", "转债")):
+            key = "cb"
+    key = key or "other"
+    return key, _ASSET_TYPE_LABELS[key]
+
+
+def _fee_bps(fee: float, base: float) -> Optional[float]:
+    """费用率，单位 bp（1 bp = 0.01% = 万分之一）；分母为 0 时返回 None 而不是 0。"""
+    return round(fee / base * 10000, 3) if base > 0 else None
+
+
+def _is_min_commission(r: dict[str, Any]) -> bool:
+    """命中「最低 5 元佣金」的小单：佣金恰为 5 元且成交额低于 2 万。"""
+    amount = abs(float(r.get("amount") or 0))
+    commission = float(r.get("commission") or 0)
+    return 4.99 <= commission <= 5.01 and 0 < amount < 20000
+
+
+def _nominal_commission_bps(rows: list[dict[str, Any]]) -> Optional[float]:
+    """反推名义佣金率：优先取 5 万以上大单的中位数，避免最低佣金干扰；不足则用其它非小单。"""
+    def rate(r: dict[str, Any]) -> Optional[float]:
+        amount = abs(float(r.get("amount") or 0))
+        commission = float(r.get("commission") or 0)
+        return commission / amount * 10000 if amount > 0 and commission > 0 else None
+
+    big, other = [], []
+    for r in rows:
+        v = rate(r)
+        if v is None:
+            continue
+        if abs(float(r.get("amount") or 0)) >= 50000:
+            big.append(v)
+        elif not _is_min_commission(r):
+            other.append(v)
+    pool = big if len(big) >= 3 else other
+    return round(float(median(pool)), 3) if pool else None
+
+
+def _fee_rate_group(
+    rows: list[dict[str, Any]],
+    key: str,
+    label: str,
+    asset_type: str = "",
+    asset_label: str = "",
+    nominal_bps: Optional[float] = None,
+) -> dict[str, Any]:
+    """单组费率。只统计「有费用明细」的成交行，费用全空的行不进分母（否则费率被拉低）。"""
+    trades = [r for r in rows if abs(float(r.get("amount") or 0)) > 0]
+    rated = [
+        r for r in trades
+        if any(float(r.get(k) or 0) != 0 for k in (*_FEE_PART_KEYS, "fee_total"))
+    ]
+    buy = [r for r in rated if r.get("direction") == "buy"]
+    sell = [r for r in rated if r.get("direction") == "sell"]
+
+    def amt(rs: list[dict[str, Any]]) -> float:
+        return round(sum(abs(float(r.get("amount") or 0)) for r in rs), 2)
+
+    def fee(rs: list[dict[str, Any]], k: str) -> float:
+        return round(sum(float(r.get(k) or 0) for r in rs), 2)
+
+    total_amount = amt(rated)
+    buy_amount, sell_amount = amt(buy), amt(sell)
+    total_fee = fee(rated, "fee_total")
+    parts = {k: fee(rated, k) for k in _FEE_PART_KEYS}
+    min_rows = [r for r in rated if _is_min_commission(r)]
+    extra = 0.0
+    if nominal_bps is not None:
+        for r in min_rows:
+            theoretical = abs(float(r.get("amount") or 0)) * nominal_bps / 10000
+            extra += max(0.0, float(r.get("commission") or 0) - theoretical)
+    return {
+        "key": key,
+        "label": label or key,
+        "asset_type": asset_type,
+        "asset_label": asset_label,
+        "trade_count": len(trades),
+        "rated_count": len(rated),
+        "fee_missing_rows": len(trades) - len(rated),
+        "buy_amount": buy_amount,
+        "sell_amount": sell_amount,
+        "total_amount": total_amount,
+        "total_fee": total_fee,
+        **parts,
+        "unallocated_fee": round(total_fee - sum(parts.values()), 2),
+        "fee_rate_bps": _fee_bps(total_fee, total_amount),
+        "buy_fee_rate_bps": _fee_bps(fee(buy, "fee_total"), buy_amount),
+        "sell_fee_rate_bps": _fee_bps(fee(sell, "fee_total"), sell_amount),
+        "commission_bps": _fee_bps(parts["commission"], total_amount),
+        "stamp_tax_bps": _fee_bps(parts["stamp_tax"], sell_amount),  # 印花税只对卖出额
+        "transfer_fee_bps": _fee_bps(parts["transfer_fee"], total_amount),
+        "avg_fee_per_trade": round(total_fee / len(rated), 2) if rated else None,
+        "min_commission_count": len(min_rows),
+        "min_commission_extra": round(extra, 2) if nominal_bps is not None else None,
+        "nominal_commission_bps": nominal_bps,
+    }
+
+
+def _compute_fee_rates(trade_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """按品种大类 + 按单只标的两层费率；数据只取交割单（每日成交无费用明细）。"""
+    trades = [
+        r for r in trade_rows
+        if (r.get("entry_type") or "trade") == "trade"
+        and r.get("direction") in ("buy", "sell")
+        and abs(float(r.get("amount") or 0)) > 0
+    ]
+    nominal = _nominal_commission_bps(trades)
+    by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    by_code: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for r in trades:
+        at, at_label = _classify_asset(r.get("code"), r.get("name", ""), r.get("type", ""))
+        tagged = {**r, "_asset_type": at, "_asset_label": at_label}
+        by_type[at].append(tagged)
+        by_code[str(r.get("code") or "")].append(tagged)
+
+    overall = _fee_rate_group(trades, "all", "全部成交", nominal_bps=nominal)
+    type_groups = [
+        _fee_rate_group(rs, k, _ASSET_TYPE_LABELS.get(k, k), nominal_bps=_nominal_commission_bps(rs))
+        for k, rs in by_type.items()
+    ]
+    code_groups = []
+    for code, rs in by_code.items():
+        code_groups.append(_fee_rate_group(
+            rs, code, rs[0].get("name") or code,
+            asset_type=rs[0]["_asset_type"], asset_label=rs[0]["_asset_label"],
+            nominal_bps=_nominal_commission_bps(rs),
+        ))
+    type_groups.sort(key=lambda g: g["total_amount"], reverse=True)
+    code_groups.sort(key=lambda g: g["total_amount"], reverse=True)
+
+    rated_groups = [g for g in type_groups if g["fee_rate_bps"] is not None]
+    highest = max(rated_groups, key=lambda g: g["fee_rate_bps"]) if rated_groups else None
+    # 单只标的里成交额过小的（多为最低佣金小单）不参与「最贵标的」提名
+    rated_codes = [g for g in code_groups if g["fee_rate_bps"] is not None and g["total_amount"] >= 10000]
+    highest_code = max(rated_codes, key=lambda g: g["fee_rate_bps"]) if rated_codes else None
+    return {
+        "summary": {
+            "overall_fee_rate_bps": overall["fee_rate_bps"],
+            "buy_fee_rate_bps": overall["buy_fee_rate_bps"],
+            "sell_fee_rate_bps": overall["sell_fee_rate_bps"],
+            "commission_bps": overall["commission_bps"],
+            "stamp_tax_bps": overall["stamp_tax_bps"],
+            "total_amount": overall["total_amount"],
+            "total_fee": overall["total_fee"],
+            "trade_count": overall["trade_count"],
+            "rated_count": overall["rated_count"],
+            "fee_missing_rows": overall["fee_missing_rows"],
+            "asset_type_count": len(type_groups),
+            "code_count": len(code_groups),
+            "min_commission_count": overall["min_commission_count"],
+            "min_commission_extra": overall["min_commission_extra"],
+            "nominal_commission_bps": nominal,
+            "highest_fee_group": highest["label"] if highest else None,
+            "highest_fee_rate_bps": highest["fee_rate_bps"] if highest else None,
+            "highest_fee_code": highest_code["label"] if highest_code else None,
+            "highest_fee_code_bps": highest_code["fee_rate_bps"] if highest_code else None,
+        },
+        "by_asset_type": type_groups,
+        "by_code": code_groups,
+        "note": (
+            "费率 = 费用 / 成交额 × 10000（bp，1bp=万分之一）；买入、卖出分开计算，"
+            "印花税率以卖出额为分母。仅统计交割单中含费用明细的成交行，"
+            "费用列全空的行记为 fee_missing_rows 且不进分母。"
+            "最低佣金多付按组内大单反推的名义佣金率估算，仅供参考。"
+        ),
+    }
+
+
 def get_analysis(
     user_id: str, date_from: str | None = None, date_to: str | None = None
 ) -> dict[str, Any]:
@@ -961,6 +1185,7 @@ def get_analysis(
         ),
         "estimated_fee_rows": meta["fee_estimated_rows"],
     }
+    fee_rates = _compute_fee_rates(trade_rows)
 
     trade_days = sorted({r["trade_date"] for r in records})
     code_counts: dict[str, int] = defaultdict(int)
@@ -1007,6 +1232,11 @@ def get_analysis(
         warnings.append("尚未导入券商交割单；当前分析仅基于每日成交，费用与成交编号可能缺失")
     if meta["fee_estimated_rows"]:
         warnings.append(f"{meta['fee_estimated_rows']} 条成交来自每日成交且无费用明细，净收益不含这部分费用")
+    if fee_rates["summary"]["fee_missing_rows"]:
+        warnings.append(
+            f"{fee_rates['summary']['fee_missing_rows']} 条交割单成交费用列全空，"
+            "已从费率统计中剔除（不按 0 费率计入）"
+        )
     if holding_diff:
         warnings.append(f"{len(holding_diff)} 个标的的持仓数量与流水重建结果不一致，请核对是否漏导成交或持仓未更新")
     if dup:
@@ -1046,6 +1276,7 @@ def get_analysis(
             "by_account": _group_stats(rounds, "account", label_from_key=True),
         },
         "fees": fees,
+        "fee_rates": fee_rates,
         "behavior": behavior,
         "reconciliation": {
             "settlement_rows": meta["settlement_rows"],
