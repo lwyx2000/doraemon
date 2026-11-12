@@ -2,8 +2,12 @@
 
 设计要点：
 - 真实优先：行情统一走 market_service.get_kline（东财 stock_zh_a_hist），绝不伪造。
-- 策略目录 STRATEGY_CATALOG 为内置可盈利技术策略（趋势/双均线/MACD/布林/RSI/网格），
-  每个策略给出参数 schema 与一段 evaluate 逻辑。
+- 策略目录 STRATEGY_CATALOG 为内置技术策略（趋势/双均线/MACD/布林/RSI/BIAS/网格
+  + 动量突破类：海龟/旗形/放量上涨/回踩均线/区间放大），每项给出参数 schema 与
+  一段 evaluate 逻辑；EVALUATORS 注册后 winrate_service 自动纳入胜率扫描。
+- 评估器契约：返回 (position, signals)，position 是逐日 flat/long 状态序列，长度必须
+  等于 klines；所有计算只引用 ≤ i 的数据（无未来函数）。行情层字段仅
+  {date,open,close,high,low,volume}，无成交额，禁止估算金额冒充真实字段。
 - generate_signal(symbol, strategy_id, params) 拉取日 K 线 → 计算指标 → 检测买卖点
   （仓位状态序列 flat/long 的翻转即信号）→ 返回当前信号 + 历史信号点 + 价格走势。
 - 订阅（biz_signal_subscriptions）持久化用户“监控的 (标的物×策略)”组合，供系统持续跟踪表现。
@@ -324,6 +328,217 @@ def _eval_grid(klines, closes, params):
     return position, signals
 
 
+# ============================================================
+# 动量/突破类策略（源自 InStock 策略条件清单，按本项目 K 线字段与
+# 「状态型仓位 + 无未来函数」契约重写，不引入 TA-Lib / 成交额字段）
+# ============================================================
+
+def _series(klines, key: str) -> list[float]:
+    """把 K 线的 OHLCV 字段取成 float 序列，缺失字段记 0 由策略自行判有效性。
+
+    行情层只提供 {date, open, close, high, low, volume}，**没有成交额**。
+    股票与 ETF 的 volume 单位不统一，因此禁止用 close*volume 之类估算值
+    冒充成交额；需要金额门槛的策略一律改用相对量比并如实标注。
+    """
+    return [float(k.get(key) or 0.0) for k in klines]
+
+
+def _state_signals(klines, state, buy_reason, sell_reason):
+    """布尔状态序列 -> (position, signals)，统一走既有的翻转检测契约。"""
+    position = ["long" if s else "flat" for s in state]
+    return position, _transitions(klines, position, buy_reason, sell_reason)
+
+
+def _eval_turtle_breakout(klines, closes, params):
+    """唐奇安突破（海龟法则）：收盘价创「前 N 日」新高则持有。
+
+    参照上界取 closes[i-N:i]（不含当日），避免把当日自己算进最高价造成
+    自证突破；所有引用都 ≤ i，不触碰未来 K 线。
+    """
+    n = int(params.get("breakout_n", 60))
+    state = [False] * len(closes)
+    prev_high: list[Optional[float]] = [None] * len(closes)
+    if n > 0:
+        for i in range(n, len(closes)):
+            prev_high[i] = max(closes[i - n:i])
+            state[i] = closes[i] >= prev_high[i]
+
+    def buy_reason(i):
+        h = prev_high[i]
+        return (f"收盘 {closes[i]:.2f} 突破前 {n} 日最高收盘 {h:.2f}，"
+                f"通道突破，触发买入")
+
+    def sell_reason(i):
+        h = prev_high[i]
+        if h is None:
+            return "历史数据不足，突破状态解除，触发卖出"
+        return (f"收盘 {closes[i]:.2f} 未再刷新前 {n} 日高点 {h:.2f}，"
+                f"突破状态解除，触发卖出")
+
+    return _state_signals(klines, state, buy_reason, sell_reason)
+
+
+def _eval_high_tight_flag(klines, closes, params):
+    """高而窄旗形：前 24~10 日出现连续两日急涨，当前价站上旗杆基准 ratio 倍。"""
+    min_bars = int(params.get("flag_min_bars", 60))
+    far = int(params.get("flag_far", 24))
+    near = int(params.get("flag_near", 10))
+    ratio = float(params.get("flag_base_ratio", 1.9))
+    gain = float(params.get("flag_gain_pct", 9.5))
+    lows = _series(klines, "low")
+    state = [False] * len(closes)
+    # near ≥ 1 是硬约束：否则 b = i，下面的 j+1 会读到 i+1（未来数据/越界）
+    if far > near >= 1 and ratio > 0:
+        for i in range(len(closes)):
+            if i < max(min_bars, far):
+                continue
+            a, b = i - far, i - near
+            base_win = [x for x in lows[a:b + 1] if x > 0]   # b+1 ≤ i，不含当日
+            if not base_win or closes[i] < ratio * min(base_win):
+                continue
+            # 急涨只取 [a, b] 窗口内相邻两日；j+1 ≤ b ≤ i-near < i，无未来函数
+            for j in range(a, b):
+                if j < 1 or closes[j - 1] <= 0 or closes[j] <= 0:
+                    continue
+                g1 = (closes[j] / closes[j - 1] - 1) * 100
+                g2 = (closes[j + 1] / closes[j] - 1) * 100
+                if g1 >= gain and g2 >= gain:
+                    state[i] = True
+                    break
+
+    def buy_reason(i):
+        return (f"旗形确认：收盘 {closes[i]:.2f} ≥ 基准低点 ×{ratio}，"
+                f"且前 {far}~{near} 日出现连续两日涨幅 ≥{gain}%，触发买入")
+
+    def sell_reason(i):
+        return "旗形条件不再满足，形态失效，触发卖出"
+
+    return _state_signals(klines, state, buy_reason, sell_reason)
+
+
+def _eval_volume_breakout(klines, closes, params):
+    """放量上涨：涨幅达标 + 收阳 + 相对量比放大。
+
+    InStock 原版另有「成交额 ≥ 2 亿」的绝对门槛；本系统 K 线不含成交额，
+    且股票/ETF 的 volume 单位不统一，故改为「相对前 N 日均量」的量比条件，
+    **不估算、不伪造绝对金额**（项目设计要点：真实优先、绝不伪造）。
+    """
+    gain = float(params.get("vol_gain_pct", 2.0))
+    ratio = float(params.get("vol_ratio", 2.0))
+    ma_n = int(params.get("vol_ma", 5))
+    opens = _series(klines, "open")
+    vols = _series(klines, "volume")
+    state = [False] * len(closes)
+    if ma_n > 0 and ratio > 0:
+        for i in range(1, len(closes)):
+            if i < ma_n or closes[i - 1] <= 0:
+                continue
+            avg = sum(vols[i - ma_n:i]) / ma_n   # 前 ma_n 根均量，不含当日
+            if avg <= 0:
+                continue
+            if (closes[i] / closes[i - 1] - 1) * 100 < gain:
+                continue
+            if opens[i] > 0 and closes[i] <= opens[i]:   # 收阳；open 缺失时不判
+                continue
+            if vols[i] < ratio * avg:
+                continue
+            state[i] = True
+
+    def buy_reason(i):
+        return (f"放量上涨：涨幅 ≥{gain}%、收阳、量比 ≥{ratio}×"
+                f"前 {ma_n} 日均量，触发买入")
+
+    def sell_reason(i):
+        return "放量上涨条件不再满足，触发卖出"
+
+    return _state_signals(klines, state, buy_reason, sell_reason)
+
+
+def _eval_pullback_ma(klines, closes, params):
+    """回踩长期均线：上穿均线后回踩不破 + 缩量，典型的 continuation setup。
+
+    原版用 250 日年线并含「后段最低/最高 < 0.8」等 A 股个股口径；本系统
+    胜率扫描窗口约 1 年（~242 根），故默认降到 120 日并全部参数化，ETF
+    波动小的时候需自行下调回撤/缩量阈值，不做隐式口径漂移。
+    """
+    ma_n = int(params.get("pullback_ma", 120))
+    lookback = int(params.get("pullback_lookback", 60))
+    min_gap = int(params.get("pullback_min_gap", 10))
+    max_gap = int(params.get("pullback_max_gap", 50))
+    shrink = float(params.get("pullback_shrink", 2.0))
+    retrace = float(params.get("pullback_retrace", 0.8))
+    ma = _sma(closes, ma_n) if ma_n > 0 else [None] * len(closes)
+    vols = _series(klines, "volume")
+    state = [False] * len(closes)
+    for i in range(len(closes)):
+        if ma[i] is None:
+            continue
+        start = max(0, i - lookback + 1)
+        if i - start < min_gap:
+            continue
+        h = max(range(start, i + 1), key=lambda j: closes[j])
+        # 前段（上穿点至高点）必须出现过由均线下方上穿
+        crossed = any(
+            ma[j] is not None and ma[j - 1] is not None
+            and closes[j - 1] <= ma[j - 1] and closes[j] > ma[j]
+            for j in range(start + 1, h + 1)
+        )
+        if not crossed:
+            continue
+        after = list(range(h, i + 1))       # 后段：高点当日及之后，全在均线上
+        if any(ma[j] is None or closes[j] < ma[j] for j in after):
+            continue
+        low_i = min(after, key=lambda j: closes[j])
+        gap = low_i - h
+        if gap < min_gap or gap > max_gap:
+            continue
+        if closes[h] <= 0 or vols[low_i] <= 0:
+            continue
+        if closes[low_i] / closes[h] >= retrace:     # 回撤够深
+            continue
+        if vols[h] / vols[low_i] <= shrink:          # 回踩缩量
+            continue
+        state[i] = True
+
+    def buy_reason(i):
+        return (f"回踩 MA{ma_n} 确认：上穿后缩量回踩不破均线，"
+                f"回撤 <{retrace}、缩量 >{shrink}×，触发买入")
+
+    def sell_reason(i):
+        return "回踩形态条件不再满足，触发卖出"
+
+    return _state_signals(klines, state, buy_reason, sell_reason)
+
+
+def _eval_tight_range(klines, closes, params):
+    """N 日收盘区间放大（对应 InStock「低 ATR 成长」的实际条件）。
+
+    原版名为「低ATR成长」，但条件里并未使用 ATR，只是「最高收盘 / 最低收盘
+    ≥ ratio」且要求标的已上市足够久。这里按原义实现并保留映射说明，不擅自
+    塞入 ATR 公式改变策略语义。
+    """
+    n = int(params.get("tight_window", 10))
+    ratio = float(params.get("tight_ratio", 1.1))
+    min_bars = int(params.get("tight_min_bars", 60))
+    state = [False] * len(closes)
+    if n > 0 and ratio > 0:
+        for i in range(len(closes)):
+            if i < max(min_bars, n - 1):
+                continue
+            w = closes[i - n + 1:i + 1]
+            lo = min(w)
+            if lo > 0 and max(w) / lo >= ratio:
+                state[i] = True
+
+    def buy_reason(i):
+        return (f"近 {n} 日最高/最低收盘 ≥{ratio}，区间放大确认，触发买入")
+
+    def sell_reason(i):
+        return f"近 {n} 日收盘区间比回落至 {ratio} 以下，触发卖出"
+
+    return _state_signals(klines, state, buy_reason, sell_reason)
+
+
 EVALUATORS = {
     "trend": _eval_trend,
     "ma_cross": _eval_ma_cross,
@@ -332,6 +547,12 @@ EVALUATORS = {
     "rsi": _eval_rsi,
     "bias": _eval_bias,
     "grid": _eval_grid,
+    # 动量/突破类（winrate_service 直接按本字典取评估器，注册即自动纳入扫描）
+    "turtle_breakout": _eval_turtle_breakout,
+    "high_tight_flag": _eval_high_tight_flag,
+    "volume_breakout": _eval_volume_breakout,
+    "pullback_ma": _eval_pullback_ma,
+    "tight_range": _eval_tight_range,
 }
 
 
@@ -390,6 +611,66 @@ STRATEGY_CATALOG = [
             {"key": "grid_lower", "label": "网格下限", "type": "number", "default": 0, "step": 0.01},
             {"key": "grid_upper", "label": "网格上限", "type": "number", "default": 0, "step": 0.01},
             {"key": "grid_step", "label": "网格间距", "type": "number", "default": 0, "step": 0.01},
+        ],
+    },
+    {
+        "id": "turtle_breakout", "name": "海龟突破（N日新高）", "category": "动量/突破",
+        "desc": "收盘价创前 N 日新高时持有（唐奇安通道）。参照高点不含当日，避免自证突破。"
+                "注意：信号实验室默认只取 50 根 K 线，N>40 时需调小周期再看；"
+                "胜率扫描用近 1 年约 242 根，N=60 可正常使用。",
+        "params": [
+            {"key": "breakout_n", "label": "突破回看周期", "type": "number", "default": 60, "min": 5, "max": 120},
+        ],
+    },
+    {
+        "id": "high_tight_flag", "name": "高而窄旗形", "category": "动量/突破",
+        "desc": "前 24~10 日出现连续两日急涨，当前价站上基准低点的指定倍数。"
+                "原版按 A 股个股设 9.5% 涨停口径，ETF 波动小、样本极少，"
+                "建议把涨幅阈值调到 3~5%、基准倍数调到 1.1~1.3。",
+        "params": [
+            {"key": "flag_min_bars", "label": "最少历史K线", "type": "number", "default": 60, "min": 30, "max": 250},
+            {"key": "flag_far", "label": "旗杆窗口远端(日前)", "type": "number", "default": 24, "min": 10, "max": 60},
+            {"key": "flag_near", "label": "旗杆窗口近端(日前)", "type": "number", "default": 10, "min": 2, "max": 40},
+            {"key": "flag_base_ratio", "label": "基准低点倍数", "type": "number", "default": 1.9, "step": 0.1, "min": 1.0, "max": 3.0},
+            {"key": "flag_gain_pct", "label": "连续两日涨幅阈值%", "type": "number", "default": 9.5, "step": 0.5, "min": 1.0, "max": 20.0},
+        ],
+    },
+    {
+        "id": "volume_breakout", "name": "放量上涨", "category": "动量/突破",
+        "desc": "涨幅达标 + 收阳 + 成交量放大到前 N 日均量的指定倍数。"
+                "原版的『成交额≥2亿』绝对门槛因本系统 K 线不含成交额字段，"
+                "已改为相对量比，绝不伪造金额；股票/ETF 通用。",
+        "params": [
+            {"key": "vol_gain_pct", "label": "最小涨幅%", "type": "number", "default": 2.0, "step": 0.5, "min": 0.0, "max": 10.0},
+            {"key": "vol_ratio", "label": "量比倍数", "type": "number", "default": 2.0, "step": 0.1, "min": 1.0, "max": 10.0},
+            {"key": "vol_ma", "label": "均量回看周期", "type": "number", "default": 5, "min": 2, "max": 60},
+        ],
+    },
+    {
+        "id": "pullback_ma", "name": "回踩长期均线", "category": "动量/突破",
+        "desc": "上穿长期均线后缩量回踩且不破均线，Qullamaggie 类 continuation setup。"
+                "原版用 250 日年线 + 20% 回撤（A 股个股口径）；本系统胜率扫描窗口约 1 年，"
+                "默认 120 日均线，ETF 需自行下调回撤与缩量阈值。"
+                "信号实验室仅 50 根 K 线，均线周期需调到 40 以内才可见。",
+        "params": [
+            {"key": "pullback_ma", "label": "长期均线周期", "type": "number", "default": 120, "min": 20, "max": 250},
+            {"key": "pullback_lookback", "label": "形态回看窗口", "type": "number", "default": 60, "min": 20, "max": 120},
+            {"key": "pullback_min_gap", "label": "高点至回踩点最少间隔", "type": "number", "default": 10, "min": 2, "max": 60},
+            {"key": "pullback_max_gap", "label": "高点至回踩点最多间隔", "type": "number", "default": 50, "min": 5, "max": 120},
+            {"key": "pullback_shrink", "label": "缩量倍数(高点量/低点量)", "type": "number", "default": 2.0, "step": 0.1, "min": 1.0, "max": 10.0},
+            {"key": "pullback_retrace", "label": "回撤上限(低点/高点)", "type": "number", "default": 0.8, "step": 0.05, "min": 0.3, "max": 0.99},
+        ],
+    },
+    {
+        "id": "tight_range", "name": "N日区间放大（原低ATR成长）", "category": "动量/突破",
+        "desc": "最近 N 日最高收盘 / 最低收盘 ≥ 指定倍数时持有。"
+                "InStock 原版名为『低ATR成长』，但条件里并未使用 ATR；"
+                "此处按原义实现并保留映射说明，不擅自改变策略语义。"
+                "原版要求上市满 250 日，本系统窗口约 1 年，默认降到 60 根。",
+        "params": [
+            {"key": "tight_window", "label": "区间回看周期", "type": "number", "default": 10, "min": 3, "max": 60},
+            {"key": "tight_ratio", "label": "最高/最低收盘倍数", "type": "number", "default": 1.1, "step": 0.02, "min": 1.0, "max": 2.0},
+            {"key": "tight_min_bars", "label": "最少历史K线", "type": "number", "default": 60, "min": 20, "max": 250},
         ],
     },
 ]
