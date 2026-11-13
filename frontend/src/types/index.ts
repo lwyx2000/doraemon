@@ -1434,6 +1434,21 @@ export interface WinrateGateSummary {
   note: string
 }
 
+/**
+ * 仓位口径摘要（v5；后端 winrate_service._exposure_summary）。
+ * 只说明本次扫描的撮合口径，不改变 results / pooled 结构与表格列。
+ */
+export interface WinrateExposureSummary {
+  /** full = 不管理仓位的既有策略，按满仓固定持有；ladder = 逐日目标仓位分级 */
+  mode: 'full' | 'ladder'
+  strategy_id: string
+  /** ladder 模式下本次全池实际出现的目标仓位档位（降序，0~1）；full 时为空数组 */
+  levels: number[]
+  /** 全池按 K 线根数加权的平均目标仓位（0~1）；无有效标的时为 null */
+  avg_exposure: number | null
+  note: string
+}
+
 /** 胜率扫描响应 */
 export interface WinrateScanResult {
   scan_date: string
@@ -1443,6 +1458,8 @@ export interface WinrateScanResult {
   pooled?: WinratePooledSummary | null
   /** v4 新增；未启用门禁或旧缓存为 null */
   gate?: WinrateGateSummary | null
+  /** v5 新增；旧后端 / 旧缓存无此字段时为 null，前端隐藏口径卡片 */
+  exposure?: WinrateExposureSummary | null
 }
 
 export interface TrackedSignal {

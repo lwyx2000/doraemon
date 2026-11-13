@@ -67,7 +67,7 @@ const {
   selectedStrategyId, selectedParams, strategyOptions, strategyParams, loadStrategies,
   tacticalMap, tacticalLoading, tacticalLoaded, loadTactical,
   winrateMap, winrateLoading, winrateLoaded, winrateMeta, winratePooled, scanWinrate, statsOf,
-  gateEnabled, gatePreset, winrateGate,
+  gateEnabled, gatePreset, winrateGate, winrateExposure,
 } = useSignalScan(
   // 按成交额取前 100 只（流动性优先），批量计算偏离度/RSI/布林位置
   () => [...(etfs.value ?? [])].sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0)).map(e => e.code),
@@ -130,6 +130,25 @@ const gateView = computed(() => {
       detail: `${x.bars} 根 · 满足 ${x.allowed_days} 天`,
     })),
     note: g.note,
+  }
+})
+
+// ---- 胜率扫描 v5：仓位口径说明（满仓 / 分级减仓）----
+// 分级策略收益按 T-1 目标仓位逐日复利、成本按 turnover 计，与满仓策略不是同一收益公式；
+// 此卡片只解释口径，不改表格列 / CSV / pooled 汇总结构。
+const exposureView = computed(() => {
+  const e = winrateExposure.value
+  if (!e) return null
+  const ladder = e.mode === 'ladder'
+  return {
+    ladder,
+    title: ladder ? '分级仓位 · 逐日账本撮合' : '满仓固定持有',
+    modeLabel: ladder ? '逐日复利 + turnover 成本' : '单笔往返成本',
+    levels: ladder && e.levels.length
+      ? e.levels.map(v => `${(v * 100).toFixed(1)}%`).join(' / ')
+      : '—',
+    avg: e.avg_exposure == null ? '—' : `${(e.avg_exposure * 100).toFixed(1)}%`,
+    note: e.note,
   }
 })
 
@@ -841,6 +860,21 @@ function exportEtf() {
           <div class="gate-note">{{ gateView.note }}</div>
         </div>
 
+        <!-- 仓位口径说明（v5）：避免把分级减仓的收益与满仓策略混读 -->
+        <div v-if="activeTab === 'tactical' && exposureView" class="exposure-card"
+             :class="exposureView.ladder ? 'is-ladder' : ''">
+          <div class="exposure-head">
+            <n-icon :component="StatsChartOutline" size="14" />
+            <span>仓位口径 · {{ exposureView.title }}</span>
+            <span class="exposure-mode">{{ exposureView.modeLabel }}</span>
+          </div>
+          <div class="exposure-metrics">
+            <span>实际档位：<b>{{ exposureView.levels }}</b></span>
+            <span>平均仓位：<b>{{ exposureView.avg }}</b></span>
+          </div>
+          <div class="exposure-note">{{ exposureView.note }}</div>
+        </div>
+
         <!-- 汇总可信度评估（v3）：单点胜率不可信，能否下结论看 CI 相对基线 + 独立信号日 -->
         <div v-if="pooledView" class="pooled-card" :class="`pooled-${pooledView.direction}`">
           <div class="pooled-head">
@@ -1111,6 +1145,44 @@ function exportEtf() {
 .gate-indices { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 6px; }
 .gate-index { font-size: 11px; color: var(--text-secondary); }
 .gate-note { font-size: 10px; color: var(--text-muted); margin-top: 6px; line-height: 1.5; }
+
+/* === 胜率扫描 v5 · 仓位口径卡片 === */
+.exposure-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-left: 3px solid var(--color-primary);
+  border-radius: 10px;
+  padding: 10px 16px;
+  margin: 0 0 12px;
+}
+.exposure-card.is-ladder { border-left-color: var(--color-warning, #f59e0b); }
+.exposure-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.exposure-mode {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+.exposure-metrics {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.exposure-metrics b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.exposure-note { font-size: 10px; color: var(--text-muted); margin-top: 6px; line-height: 1.5; }
 
 /* === 胜率扫描 v3 · 汇总可信度卡片 === */
 .pooled-card {

@@ -5,7 +5,7 @@
 // ============================================================
 import { ref, computed, watch } from 'vue'
 import { signalApi } from '../utils/api'
-import type { TacticalSignal, StrategyDef, WinrateScanItem, WinrateScanResult, WinrateStats, WinratePooledSummary, WinrateGateConfig, WinrateGateSummary } from '../types'
+import type { TacticalSignal, StrategyDef, WinrateScanItem, WinrateScanResult, WinrateStats, WinratePooledSummary, WinrateGateConfig, WinrateGateSummary, WinrateExposureSummary } from '../types'
 import { WINRATE_MIN_SAMPLES } from '../utils/signalDisplay'
 
 /** 单次批量计算的标的上限（后端路由硬上限 200） */
@@ -132,6 +132,10 @@ export function useSignalScan(getSymbols: () => string[], opts: SignalScanOption
   /** 本次扫描的门禁执行摘要；未启用 / 旧缓存为 null */
   const winrateGate = ref<WinrateGateSummary | null>(null)
 
+  // ---- v5 仓位口径：分级减仓策略走逐日账本，既有策略仍为满仓固定持有 ----
+  /** 旧后端 / 旧缓存无 exposure 字段时为 null，未展示卡片的复用页面行为不变 */
+  const winrateExposure = ref<WinrateExposureSummary | null>(null)
+
   async function scanWinrate() {
     if (winrateLoading.value) return
     const codes = getSymbols().slice(0, limit)
@@ -140,6 +144,7 @@ export function useSignalScan(getSymbols: () => string[], opts: SignalScanOption
     // 换策略/换参数/换门禁重扫时先清掉上次的汇总，避免新旧口径混读
     winratePooled.value = null
     winrateGate.value = null
+    winrateExposure.value = null
     try {
       const res = await signalApi.winrateScan(codes, selectedStrategyId.value, collectParams(), gateConfig.value)
       const data: WinrateScanResult = Array.isArray(res)
@@ -148,13 +153,16 @@ export function useSignalScan(getSymbols: () => string[], opts: SignalScanOption
       const map = new Map<string, WinrateScanItem>()
       ;(data.results ?? []).forEach(r => map.set(r.symbol, r))
       winrateMap.value = map
-      // 旧缓存可能是裸数组（v2 之前），没有 pooled / gate；页面据此隐藏汇总卡片
+      // 旧缓存可能是裸数组（v2 之前），没有 pooled / gate / exposure；页面据此隐藏汇总卡片
       winratePooled.value = Array.isArray(res) ? null : (data.pooled ?? null)
       winrateGate.value = Array.isArray(res) ? null : (data.gate ?? null)
+      winrateExposure.value = Array.isArray(res) ? null : (data.exposure ?? null)
       winrateLoaded.value = true
       const sName = strategies.value.find(s => s.id === selectedStrategyId.value)?.name ?? selectedStrategyId.value
       const gateTag = gateEnabled.value ? ' · 大盘门禁开' : ''
-      winrateMeta.value = `${sName} · ${data.scan_date} ${data.from_cache ? '（当日缓存）' : '（首次计算）'}${gateTag}`
+      // 口径标签跟到 meta，四个复用页面都能看出本次是满仓还是分级仓位
+      const exposureTag = winrateExposure.value?.mode === 'ladder' ? ' · 分级仓位' : ''
+      winrateMeta.value = `${sName} · ${data.scan_date} ${data.from_cache ? '（当日缓存）' : '（首次计算）'}${gateTag}${exposureTag}`
       opts.notify?.(`胜率扫描完成：${map.size} 只（次日收盘买入、扣成本口径${gateEnabled.value ? '、大盘门禁' : ''}）`)
     } catch (e: any) {
       opts.onError('胜率扫描失败：' + (e.message || e))
@@ -183,6 +191,8 @@ export function useSignalScan(getSymbols: () => string[], opts: SignalScanOption
     winrateMap, winrateLoading, winrateLoaded, winrateMeta, winratePooled, scanWinrate,
     // 大盘门禁（v4，默认关闭）
     gateEnabled, gatePreset, gateConfig, winrateGate,
+    // 仓位口径摘要（v5，旧后端为 null）
+    winrateExposure,
     // 查询
     statsOf,
   }
