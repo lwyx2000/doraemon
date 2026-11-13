@@ -66,12 +66,50 @@ const TACTICAL_LIMIT = 100
 const {
   selectedStrategyId, selectedParams, strategyOptions, strategyParams, loadStrategies,
   tacticalMap, tacticalLoading, tacticalLoaded, loadTactical,
-  winrateMap, winrateLoading, winrateLoaded, winrateMeta, scanWinrate, statsOf,
+  winrateMap, winrateLoading, winrateLoaded, winrateMeta, winratePooled, scanWinrate, statsOf,
 } = useSignalScan(
   // 按成交额取前 100 只（流动性优先），批量计算偏离度/RSI/布林位置
   () => [...(etfs.value ?? [])].sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0)).map(e => e.code),
   { onError: msg => message.error(msg), notify: msg => message.success(msg), limit: TACTICAL_LIMIT },
 )
+
+// ---- 胜率扫描 v3：汇总可信度卡片（纯展示模型，避免模板里做类型收窄）----
+// 单标的点估计（如 n=20 / 60%）区间极宽，能否下结论由 CI 相对基线决定。
+const fmtPct = (v: number | null) => v == null ? '—' : `${v.toFixed(1)}%`
+const fmtPp = (v: number | null) => v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(1)}pp`
+const fmtCi = (v: [number, number] | null) => v ? `[${v[0].toFixed(1)}, ${v[1].toFixed(1)}]%` : '—'
+const wrTone = (v: number | null) => v == null ? '' : v >= 55 ? 'is-good' : v <= 45 ? 'is-bad' : ''
+
+const pooledView = computed(() => {
+  const p = winratePooled.value
+  if (!p) return null
+  return {
+    title: `${p.horizon}日持有`,
+    window: `${p.data_window.start} ~ ${p.data_window.end}（${p.data_window.years}年 / 中位 ${p.data_window.bars_median} 根）`,
+    verdict: p.verdict,
+    direction: p.direction,
+    strategyWr: fmtPct(p.strategy.win_rate),
+    strategyWrTone: wrTone(p.strategy.win_rate),
+    strategySub: `n=${p.strategy.n} · 95%CI ${fmtCi(p.strategy.ci95)}`,
+    baselineWr: fmtPct(p.baseline.win_rate),
+    baselineSub: `n=${p.baseline.n} · 95%CI ${fmtCi(p.baseline.ci95)}`,
+    excess: fmtPp(p.excess_pp),
+    excessTone: p.direction === 'above' ? 'is-good' : p.direction === 'below' ? 'is-bad' : '',
+    days: `${p.distinct_signal_days} 天`,
+    daysSub: p.cluster_ratio == null ? '共振比 —' : `共振比 ${p.cluster_ratio.toFixed(2)}（同日信号数）`,
+    split: `${fmtPct(p.is_oos.is.win_rate)} → ${fmtPct(p.is_oos.oos.win_rate)}`,
+    splitSub: p.is_oos.decay_pp == null
+      ? '样本内 → 样本外'
+      : `样本内 → 样本外，衰减 ${p.is_oos.decay_pp.toFixed(1)}pp`,
+    avgRet: p.strategy.avg_ret == null
+      ? '—'
+      : `${p.strategy.avg_ret >= 0 ? '+' : ''}${p.strategy.avg_ret.toFixed(3)}%`,
+    avgRetSub: '策略单笔平均净收益（已扣成本）',
+    coverage: `${p.symbols.valid}/${p.symbols.requested}`,
+    coverageSub: `有效标的 · 失败 ${p.symbols.failed} 只`,
+    caveats: p.caveats,
+  }
+})
 
 watch(activeTab, tab => {
   if (tab === 'tactical' && !tacticalLoaded.value) loadTactical()
@@ -753,6 +791,62 @@ function exportEtf() {
           </n-button>
           <span v-if="winrateMeta" class="scan-meta">{{ winrateMeta }}</span>
         </div>
+
+        <!-- 汇总可信度评估（v3）：单点胜率不可信，能否下结论看 CI 相对基线 + 独立信号日 -->
+        <div v-if="pooledView" class="pooled-card" :class="`pooled-${pooledView.direction}`">
+          <div class="pooled-head">
+            <div class="pooled-title">
+              <n-icon :component="StatsChartOutline" size="15" />
+              <span>汇总可信度评估 · {{ pooledView.title }}</span>
+              <span class="pooled-window">{{ pooledView.window }}</span>
+            </div>
+            <span class="pooled-verdict">{{ pooledView.verdict }}</span>
+          </div>
+          <div class="pooled-grid">
+            <div class="pooled-metric">
+              <span class="pooled-label">策略胜率</span>
+              <span class="pooled-value" :class="pooledView.strategyWrTone">{{ pooledView.strategyWr }}</span>
+              <span class="pooled-sub">{{ pooledView.strategySub }}</span>
+            </div>
+            <div class="pooled-metric">
+              <span class="pooled-label">市场基线</span>
+              <span class="pooled-value">{{ pooledView.baselineWr }}</span>
+              <span class="pooled-sub">{{ pooledView.baselineSub }}</span>
+            </div>
+            <div class="pooled-metric">
+              <span class="pooled-label">超额（相对基线）</span>
+              <span class="pooled-value" :class="pooledView.excessTone">{{ pooledView.excess }}</span>
+              <span class="pooled-sub">CI 整体在基线之上/之下才算显著</span>
+            </div>
+            <div class="pooled-metric">
+              <span class="pooled-label">独立信号日</span>
+              <span class="pooled-value">{{ pooledView.days }}</span>
+              <span class="pooled-sub">{{ pooledView.daysSub }}</span>
+            </div>
+            <div class="pooled-metric">
+              <span class="pooled-label">样本内 → 样本外</span>
+              <span class="pooled-value">{{ pooledView.split }}</span>
+              <span class="pooled-sub">{{ pooledView.splitSub }}</span>
+            </div>
+            <div class="pooled-metric">
+              <span class="pooled-label">平均净收益</span>
+              <span class="pooled-value">{{ pooledView.avgRet }}</span>
+              <span class="pooled-sub">{{ pooledView.avgRetSub }}</span>
+            </div>
+            <div class="pooled-metric">
+              <span class="pooled-label">标的覆盖</span>
+              <span class="pooled-value">{{ pooledView.coverage }}</span>
+              <span class="pooled-sub">{{ pooledView.coverageSub }}</span>
+            </div>
+          </div>
+          <details v-if="pooledView.caveats.length" class="pooled-caveats">
+            <summary>口径与局限（{{ pooledView.caveats.length }} 条）</summary>
+            <ul>
+              <li v-for="(c, i) in pooledView.caveats" :key="i">{{ c }}</li>
+            </ul>
+          </details>
+        </div>
+
         <n-data-table
           :columns="columns"
           :data="displayEtfs"
@@ -936,6 +1030,84 @@ function exportEtf() {
 .param-field { display: inline-flex; align-items: center; gap: 4px; }
 .param-label { font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
 .scan-meta { font-size: 11px; color: var(--text-muted); }
+
+/* === 胜率扫描 v3 · 汇总可信度卡片 === */
+.pooled-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-left: 3px solid var(--color-primary);
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+}
+.pooled-above { border-left-color: var(--color-success); }
+.pooled-below { border-left-color: var(--color-danger); }
+.pooled-none  { border-left-color: var(--text-muted); }
+
+.pooled-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.pooled-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.pooled-window {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+.pooled-verdict { font-size: 12px; font-weight: 700; }
+.pooled-above .pooled-verdict { color: var(--color-success); }
+.pooled-below .pooled-verdict { color: var(--color-danger); }
+.pooled-none  .pooled-verdict { color: var(--text-secondary); }
+
+.pooled-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px 16px;
+}
+.pooled-metric { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pooled-label { font-size: 11px; color: var(--text-muted); }
+.pooled-value {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.pooled-value.is-good { color: var(--color-success); }
+.pooled-value.is-bad  { color: var(--color-danger); }
+.pooled-sub { font-size: 10px; color: var(--text-muted); }
+
+.pooled-caveats {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-default);
+}
+.pooled-caveats summary {
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.pooled-caveats ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+@media (max-width: 768px) {
+  .pooled-grid { grid-template-columns: repeat(2, 1fr); }
+}
 
 .stat-grid {
   display: grid;

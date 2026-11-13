@@ -1358,11 +1358,61 @@ export interface WinrateScanItem {
   yearly_10d?: WinrateYearlyItem[] | null
 }
 
+/** 池化统计（胜率为 %；ci95 为 Wilson 95% 区间 [下界, 上界]，样本为空时全为 null） */
+export interface WinratePoolStats {
+  n: number
+  wins: number
+  win_rate: number | null
+  ci95: [number, number] | null
+  avg_ret: number | null
+}
+
+/**
+ * 胜率扫描 v3 汇总可信度评估（后端 winrate_service._pooled_summary）。
+ * 与 results 并列返回：单点胜率不可信时由 CI / 基线 / 独立信号日给出能否下结论。
+ */
+export interface WinratePooledSummary {
+  /** 汇总采用的主持有期（交易日） */
+  horizon: number
+  data_window: {
+    start: string
+    end: string
+    years: number
+    bars_median: number
+  }
+  symbols: {
+    requested: number
+    valid: number
+    failed: number
+  }
+  strategy: WinratePoolStats
+  /** 基线 = 同批标的全部交易日的同持有期前向净收益（同窗口、同成本） */
+  baseline: WinratePoolStats
+  /** 策略胜率 − 基线胜率（百分点） */
+  excess_pp: number | null
+  /** above/below = CI 整体在基线之上/之下（统计显著）；none = 区间跨过基线 */
+  direction: 'above' | 'below' | 'none'
+  significant: boolean
+  /** 去重后的信号交易日数；同日多只 ETF 共振会使汇总样本不独立 */
+  distinct_signal_days: number
+  /** 平均每日信号数 = n / distinct_signal_days，越大共振越强 */
+  cluster_ratio: number | null
+  is_oos: {
+    is: WinratePoolStats
+    oos: WinratePoolStats
+    decay_pp: number | null
+  }
+  verdict: string
+  caveats: string[]
+}
+
 /** 胜率扫描响应 */
 export interface WinrateScanResult {
   scan_date: string
   from_cache: boolean
   results: WinrateScanItem[]
+  /** v3 新增；旧缓存（裸数组或 v2 结构）时为 null，前端须优雅降级 */
+  pooled?: WinratePooledSummary | null
 }
 
 export interface TrackedSignal {

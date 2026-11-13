@@ -5,7 +5,7 @@
 // ============================================================
 import { ref, computed, watch } from 'vue'
 import { signalApi } from '../utils/api'
-import type { TacticalSignal, StrategyDef, WinrateScanItem, WinrateScanResult, WinrateStats } from '../types'
+import type { TacticalSignal, StrategyDef, WinrateScanItem, WinrateScanResult, WinrateStats, WinratePooledSummary } from '../types'
 import { WINRATE_MIN_SAMPLES } from '../utils/signalDisplay'
 
 /** 单次批量计算的标的上限（后端路由硬上限 200） */
@@ -96,12 +96,16 @@ export function useSignalScan(getSymbols: () => string[], opts: SignalScanOption
   const winrateLoading = ref(false)
   const winrateLoaded = ref(false)
   const winrateMeta = ref('')
+  /** v3 汇总可信度评估；旧缓存 / 旧后端无此字段时为 null */
+  const winratePooled = ref<WinratePooledSummary | null>(null)
 
   async function scanWinrate() {
     if (winrateLoading.value) return
     const codes = getSymbols().slice(0, limit)
     if (!codes.length) return
     winrateLoading.value = true
+    // 换策略/换参数重扫时先清掉上次的汇总，避免新旧口径混读
+    winratePooled.value = null
     try {
       const res = await signalApi.winrateScan(codes, selectedStrategyId.value, collectParams())
       const data: WinrateScanResult = Array.isArray(res)
@@ -110,6 +114,8 @@ export function useSignalScan(getSymbols: () => string[], opts: SignalScanOption
       const map = new Map<string, WinrateScanItem>()
       ;(data.results ?? []).forEach(r => map.set(r.symbol, r))
       winrateMap.value = map
+      // 旧缓存可能是裸数组（v2 之前），没有 pooled；页面据此隐藏汇总卡片
+      winratePooled.value = Array.isArray(res) ? null : (data.pooled ?? null)
       winrateLoaded.value = true
       const sName = strategies.value.find(s => s.id === selectedStrategyId.value)?.name ?? selectedStrategyId.value
       winrateMeta.value = `${sName} · ${data.scan_date} ${data.from_cache ? '（当日缓存）' : '（首次计算）'}`
@@ -138,7 +144,7 @@ export function useSignalScan(getSymbols: () => string[], opts: SignalScanOption
     // 战术信号
     tacticalMap, tacticalLoading, tacticalLoaded, loadTactical,
     // 胜率扫描
-    winrateMap, winrateLoading, winrateLoaded, winrateMeta, scanWinrate,
+    winrateMap, winrateLoading, winrateLoaded, winrateMeta, winratePooled, scanWinrate,
     // 查询
     statsOf,
   }
