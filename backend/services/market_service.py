@@ -323,18 +323,21 @@ def _quote_request(endpoint: str, params: dict | None = None, retries: int = 3) 
     return None
 
 
-def _fetch_real_kline(method: str, params: dict, count: int = 50) -> list[dict]:
-    """从 AkShare 获取真实 K 线并映射为 {date,open,close,high,low,volume}（兼容中英文列名）"""
-    df = _akshare_request(method, params)
-    if not df or not isinstance(df, list):
-        return []
+def _map_kline_rows(rows: list, count: int = 0) -> list[dict]:
+    """把上游 K 线映射为 {date,open,close,high,low,volume}（兼容中英文列名）。
+
+    /api/ak 返回中文列（日期/开盘/收盘/最高/最低/成交量），/api/quote/kline
+    返回英文列；两条链路共用本函数，保证下游拿到的字段口径完全一致。
+    上游的 amount/成交额 **刻意不映射**：部分源为 null，策略层不准依赖它，
+    放量类策略一律用相对量比，绝不估算金额冒充真实字段。
+    """
     out = []
-    for row in df:
+    for row in rows or []:
         date = row.get("date") or row.get("日期")
         o = row.get("open") or row.get("开盘")
         c = row.get("close") or row.get("收盘")
         h = row.get("high") or row.get("最高")
-        l = row.get("low") or row.get("最低")
+        low = row.get("low") or row.get("最低")
         v = row.get("volume") or row.get("成交量")
         if not date or c is None:
             continue
@@ -343,10 +346,85 @@ def _fetch_real_kline(method: str, params: dict, count: int = 50) -> list[dict]:
             "open": _safe_float(o, 0.0),
             "close": _safe_float(c, 0.0),
             "high": _safe_float(h, 0.0),
-            "low": _safe_float(l, 0.0),
+            "low": _safe_float(low, 0.0),
             "volume": _safe_int(v, 0),
         })
     return out[-count:] if count else out
+
+
+def _fetch_real_kline(method: str, params: dict, count: int = 50) -> list[dict]:
+    """从 /api/ak 获取真实 K 线并映射字段（转债等专用链路仍走这里）。"""
+    df = _akshare_request(method, params)
+    if not df or not isinstance(df, list):
+        return []
+    return _map_kline_rows(df, count=count)
+
+
+# /api/quote/kline 的 type 只接受 INDEX/STOCK/ETF；按代码段显式路由，
+# 不依赖网关默认值（未显式传 type 时会按 INDEX 拼代码前缀，是静默错口径）。
+# 场内基金代码段：上交所 50/51/56/58，深交所 15/16（16/50 含 LOF，
+# 实测容灾链 type=ETF 对 161725/501300 均返回完整日线）。
+_FUND_CODE_PREFIXES = frozenset({"50", "51", "15", "16", "56", "58"})
+_QUOTE_KLINE_TYPES = frozenset({"INDEX", "STOCK", "ETF"})
+
+
+def _kline_asset_type(code: str, type_hint: str | None = None) -> str:
+    """判定 /api/quote/kline 的 type。显式 type_hint 优先，其余按代码段推断。
+
+    指数代码（000300 等）与个股代码段重叠（000001 同时是平安银行），无法自动
+    区分；调用方需要指数时必须显式传 type="INDEX"，这里不做猜测。
+    """
+    hint = (type_hint or "").strip().upper()
+    if hint in _QUOTE_KLINE_TYPES:
+        return hint
+    c = (code or "").strip()
+    if len(c) == 6 and c.isdigit() and c[:2] in _FUND_CODE_PREFIXES:
+        return "ETF"
+    return "STOCK"
+
+
+def _fetch_kline_via_quote(code: str, type_: str, start: str, end: str) -> list[dict]:
+    """走网关 /api/quote/kline 四源容灾链取前复权日线。
+
+    为什么不走 /api/ak?method=stock_zh_a_hist：网关 service.py 会把日线透明
+    改道新浪 stock_zh_a_daily，对基金代码拼出 sh510300 这类非法标的而返 500；
+    fund_etf_hist_em 则是东财单点，冷代码常被反爬断连（实测 92s → 500）。
+
+    契约（LEAN/zipline 式 fail-fast）：
+    - 显式传 type 与日期窗口；网关默认窗口只有 90 天，不传会静默少给数据；
+    - 5xx/504/503 一律不重试（autoQuant 已踩过 Retry 放大），直接判失败；
+    - 仅对 meta.status == "no_data" 的上游偶发空结果重试一次；
+    - status != "ok" 或 data 为空一律返回 []，绝不把「上游失败」伪装成「标的无行情」。
+    """
+    url = f"{AKSHARE_API_BASE}/api/quote/kline"
+    params = {
+        "type": type_, "code": code,
+        "start_date": start, "end_date": end, "adjust": "qfq",
+    }
+    for attempt in range(2):
+        try:
+            response = get_session().get(url, params=params, timeout=30)
+            if response.status_code != 200:
+                print(f"[Kline] {code} 网关 HTTP {response.status_code}，不重试")
+                return []
+            payload = response.json()
+        except Exception as e:
+            print(f"[Kline] {code} 上游失败: {type(e).__name__}: {e}")
+            return []
+        if payload.get("code") != 200:
+            print(f"[Kline] {code} 网关返 {payload.get('code')}: {payload.get('message')}")
+            return []
+        meta = payload.get("meta") or {}
+        rows = payload.get("data") or []
+        status = meta.get("status")
+        if status == "ok" and rows:
+            return _map_kline_rows(rows)
+        if status == "no_data" and attempt == 0:
+            print(f"[Kline] {code} 上游偶发空({meta.get('reason')})，重试一次")
+            continue
+        print(f"[Kline] {code} status={status} reason={meta.get('reason')} rows={len(rows)}")
+        return []
+    return []
 
 
 def _filter_by_date_range(
@@ -2840,42 +2918,39 @@ def get_kline(
     end_date: str | None = None,
     count: int = 50,
 ) -> list[dict]:
-    """个股/ETF/可转债 K 线(真实数据)
+    """个股/ETF/LOF/可转债 K 线(真实数据，前复权 qfq)。
 
-    股票/ETF: 东财 stock_zh_a_hist, adjust="qfq" 前复权——分红除息造成的价格跳空
-    被平滑，技术指标(MA/RSI/布林)与历史胜率统计必须基于复权价，否则失真。
-    前复权以最新价为锚，当前价格显示不受影响。
+    股票/ETF/LOF：走网关 /api/quote/kline 四源容灾链（qq→sina→东财→futu），
+    按资产类型显式传 type、显式传日期窗口。分红除息造成的价格跳空被复权平滑，
+    技术指标(MA/RSI/布林)与历史胜率统计必须基于复权价，否则失真。
 
     可转债(代码 11/12 开头 6 位，或显式 type="cb")：东财股票接口不支持转债，
     走新浪 bond_zh_hs_daily 全量历史（转债不分红除息，价格序列天然连续无需复权），
     再按日期区间过滤。默认窗口与股票一致(近 365 天)。
 
-    count: 保留最近 N 根 K 线；传 0 返回区间内全部。
+    type 显式传 INDEX/STOCK/ETF 时覆盖自动判定（指数代码与个股代码段重叠，
+    需要指数时必须显式指定）。count: 保留最近 N 根；传 0 返回区间内全部。
     """
     today = datetime.now()
-    start = start_date.replace("-", "") if start_date else (today - timedelta(days=365)).strftime("%Y%m%d")
-    end = end_date.replace("-", "") if end_date else today.strftime("%Y%m%d")
+
+    def _norm(d: str | None, default: str) -> str:
+        """统一成 YYYY-MM-DD：网关与 _filter_by_date_range 都用这个格式。"""
+        raw = (d or default).replace("-", "").replace("/", "")
+        return f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}" if len(raw) >= 8 else default
+
+    start = _norm(start_date, (today - timedelta(days=365)).strftime("%Y-%m-%d"))
+    end = _norm(end_date, today.strftime("%Y-%m-%d"))
 
     # 转债路由：SH 转债 110/111/113/118，SZ 转债 123/127/128 → 前缀 11=sh / 12=sz
     if type == "cb" or (len(code) == 6 and code[:2] in {"11", "12"}):
         prefix = "sh" if code.startswith("11") else "sz"
         points = _fetch_real_kline("bond_zh_hs_daily", {"symbol": f"{prefix}{code}"}, count=0)
-        points = _filter_by_date_range(
-            points,
-            start_date or (today - timedelta(days=365)).strftime("%Y-%m-%d"),
-            end_date or today.strftime("%Y-%m-%d"),
-        )
+        points = _filter_by_date_range(points, start, end)
         return points[-count:] if count else points
 
-    params = {
-        "symbol": code,
-        "period": "daily",
-        "start_date": start,
-        "end_date": end,
-        "adjust": "qfq",
-    }
-    points = _fetch_real_kline("stock_zh_a_hist", params, count=count)
-    return _filter_by_date_range(points, start_date, end_date)
+    points = _fetch_kline_via_quote(code, _kline_asset_type(code, type), start, end)
+    points = _filter_by_date_range(points, start, end)
+    return points[-count:] if count else points
 
 
 # ============================================================
