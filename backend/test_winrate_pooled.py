@@ -133,8 +133,9 @@ class TestWindowAndSchema(_Base):
         self.assertEqual(len(s), 10)
         self.assertEqual(len(e), 10)
 
-    def test_schema_version_is_three(self):
-        self.assertEqual(WIN.SCAN_SCHEMA_VERSION, 3)
+    def test_schema_version_is_four(self):
+        # v4 = 可选大盘门禁；结构/语义升级必须升版本，否则 v3 旧缓存会串味
+        self.assertEqual(WIN.SCAN_SCHEMA_VERSION, 4)
         self.assertEqual(WIN.SCAN_LOOKBACK_YEARS, 5)
         self.assertEqual(WIN.MIN_SAMPLES, 20, "MIN_SAMPLES 仍为单标的显示阈值，不得改")
 
@@ -342,7 +343,8 @@ class TestResultsAndCache(_Base):
         self._scan()
         self.assertIsNotNone(self.db.insert_params)
         params_json = self.db.insert_params[3]
-        self.assertEqual(json.loads(params_json)["v"], 3)
+        self.assertEqual(json.loads(params_json)["v"], 4)
+        self.assertIn("g", json.loads(params_json), "门禁配置必须进缓存键，否则开/关会串味")
         payload = json.loads(self.db.insert_params[4])
         self.assertIn("results", payload)
         self.assertIn("pooled", payload)

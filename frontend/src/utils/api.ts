@@ -989,11 +989,15 @@ export const signalApi = {
       method: 'POST',
       body: JSON.stringify({ symbols }),
     }),
-  /** 胜率扫描：次日收盘买入、持有N日收盘卖出、扣成本；当日+同参数缓存 */
-  winrateScan: (symbols: string[], strategyId: string, params?: Record<string, any>) =>
+  /** 胜率扫描：次日收盘买入、持有N日收盘卖出、扣成本；当日+同参数+同门禁缓存 */
+  winrateScan: (symbols: string[], strategyId: string, params?: Record<string, any>,
+                gate?: WinrateGateConfig | null) =>
     request<WinrateScanResult>('/api/v1/signals/winrate/scan', undefined, {
       method: 'POST',
-      body: JSON.stringify({ symbols, strategy_id: strategyId, params: params || {} }),
+      body: JSON.stringify({
+        symbols, strategy_id: strategyId, params: params || {},
+        ...(gate ? { gate } : {}),
+      }),
     }),
 }
 
@@ -1127,6 +1131,7 @@ import type {
   SignalResult,
   TacticalSignal,
   WinrateScanResult,
+  WinrateGateConfig,
   TrackedSignal,
   LibraryStrategy,
   LibraryBacktestResult,

@@ -4,17 +4,17 @@
 - GET  /strategies          策略目录（前端下拉 + 动态参数）
 - POST /generate            {symbol, strategy_id, params?} → 买卖点信号
 - POST /tactical/batch      {symbols[]} → 批量战术信号快照（偏离度/RSI/布林）
-- POST /winrate/scan        {symbols[], strategy_id, params?} → 历史胜率扫描 + 凯利仓位
+- POST /winrate/scan        {symbols[], strategy_id, params?, gate?} → 历史胜率扫描 + 凯利仓位 + 大盘门禁
 - GET  /tracked            当前用户订阅的 (标的物×策略) 列表
 - POST /tracked            {symbol, name?, strategy_id, params?} → 新增监控
 - DELETE /tracked/{id}     取消监控
 - GET  /tracked/refresh    重算所有订阅组合的当前信号（系统持续跟踪表现）
 """
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from services import signal_service, winrate_service
 
@@ -41,10 +41,26 @@ class TacticalBatchRequest(BaseModel):
     symbols: list[str]
 
 
+class WinrateGateRequest(BaseModel):
+    """大盘门禁：门禁指数 fast SMA > slow SMA 的交易日才允许信号开仓。
+
+    独立于 params（策略参数），避免两套口径混进同一个缓存/参数空间。
+    """
+    enabled: bool = False
+    indices: list[str] = Field(
+        default_factory=lambda: list(winrate_service.DEFAULT_GATE_INDICES),
+        min_length=1, max_length=winrate_service.GATE_MAX_INDICES,
+    )
+    fast: int = Field(default=winrate_service.GATE_FAST, ge=1)
+    slow: int = Field(default=winrate_service.GATE_SLOW, ge=2)
+    require: Literal["any", "all"] = "any"
+
+
 class WinrateScanRequest(BaseModel):
     symbols: list[str]
     strategy_id: str
     params: Optional[dict[str, Any]] = None
+    gate: Optional[WinrateGateRequest] = None
 
 
 @router.get("/strategies", response_model=ApiResponse[list[dict]])
@@ -82,7 +98,16 @@ def winrate_scan(body: WinrateScanRequest, user_id: str = Depends(get_current_us
         return ApiResponse(code=400, message="单次最多扫描 200 只标的", data=None)
     if body.strategy_id not in {s["id"] for s in signal_service.STRATEGY_CATALOG}:
         return ApiResponse(code=400, message=f"未知策略 {body.strategy_id}", data=None)
-    return ApiResponse(data=winrate_service.scan_winrate(body.symbols, body.strategy_id, body.params or {}))
+    try:
+        data = winrate_service.scan_winrate(
+            body.symbols, body.strategy_id, body.params or {},
+            gate=body.gate.model_dump() if body.gate else None,
+        )
+    except ValueError as e:
+        # 门禁配置非法 / 门禁指数取数失败：fail-fast 明确报错，
+        # 绝不静默退化成「无门禁」返回一份看似正常、实则未过滤的结果。
+        return ApiResponse(code=400, message=str(e), data=None)
+    return ApiResponse(data=data)
 
 
 @router.get("/tracked", response_model=ApiResponse[list[dict]])

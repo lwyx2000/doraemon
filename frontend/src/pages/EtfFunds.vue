@@ -1,7 +1,7 @@
 <script setup lang="ts">
 defineOptions({ name: 'EtfFunds' })
 import { ref, computed, h, onMounted, watch } from 'vue'
-import { NDataTable, NButton, NIcon, NTag, NSelect, NInputNumber, useMessage } from 'naive-ui'
+import { NDataTable, NButton, NIcon, NTag, NSelect, NSwitch, NInputNumber, useMessage } from 'naive-ui'
 import type { PaginationProps } from 'naive-ui'
 import {
   SwapHorizontalOutline,
@@ -18,7 +18,7 @@ import {
 } from '@vicons/ionicons5'
 import { NCollapseTransition } from 'naive-ui'
 import { api, useAsyncData, isGatewayNoData } from '../composables/useApi'
-import { useSignalScan } from '../composables/useSignalScan'
+import { useSignalScan, GATE_PRESET_OPTIONS } from '../composables/useSignalScan'
 import {
   buildTacticalSignalColumns,
   buildWinrateColumns,
@@ -67,6 +67,7 @@ const {
   selectedStrategyId, selectedParams, strategyOptions, strategyParams, loadStrategies,
   tacticalMap, tacticalLoading, tacticalLoaded, loadTactical,
   winrateMap, winrateLoading, winrateLoaded, winrateMeta, winratePooled, scanWinrate, statsOf,
+  gateEnabled, gatePreset, winrateGate,
 } = useSignalScan(
   // 按成交额取前 100 只（流动性优先），批量计算偏离度/RSI/布林位置
   () => [...(etfs.value ?? [])].sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0)).map(e => e.code),
@@ -108,6 +109,27 @@ const pooledView = computed(() => {
     coverage: `${p.symbols.valid}/${p.symbols.requested}`,
     coverageSub: `有效标的 · 失败 ${p.symbols.failed} 只`,
     caveats: p.caveats,
+  }
+})
+
+// ---- 胜率扫描 v4：大盘门禁执行摘要（未启用 / 旧缓存时隐藏）----
+const GATE_INDEX_NAMES: Record<string, string> = {
+  '000300': '沪深300', '000852': '中证1000', '399006': '创业板指',
+}
+const gateView = computed(() => {
+  const g = winrateGate.value
+  if (!g) return null
+  const pct = g.total_days ? `${(g.allowed_days / g.total_days * 100).toFixed(1)}%` : '—'
+  return {
+    title: `${g.fast}SMA>${g.slow}SMA · ${g.require === 'all' ? '全部指数同时满足' : '任一指数满足'}`,
+    allowed: `${g.allowed_days} / ${g.total_days} 天`,
+    blocked: `拦截 ${g.blocked_days} 天`,
+    pct,
+    perIndex: g.per_index.map(x => ({
+      label: GATE_INDEX_NAMES[x.code] ?? x.code,
+      detail: `${x.bars} 根 · 满足 ${x.allowed_days} 天`,
+    })),
+    note: g.note,
   }
 })
 
@@ -792,6 +814,33 @@ function exportEtf() {
           <span v-if="winrateMeta" class="scan-meta">{{ winrateMeta }}</span>
         </div>
 
+        <!-- 大盘门禁开关（v4）：默认关闭；开启后门禁指数 10SMA>20SMA 才放行信号 -->
+        <div v-if="activeTab === 'tactical'" class="gate-toolbar">
+          <n-switch v-model:value="gateEnabled" size="small" />
+          <span class="gate-label">大盘门禁 10SMA &gt; 20SMA</span>
+          <n-select
+            v-if="gateEnabled"
+            v-model:value="gatePreset"
+            :options="GATE_PRESET_OPTIONS"
+            size="small"
+            style="width: 168px"
+          />
+          <span class="gate-hint">按交易日期对齐全池信号，基线不设门禁；切换后需重新扫描</span>
+        </div>
+
+        <!-- 大盘门禁执行摘要：放行/拦截交易日与各指数数据情况 -->
+        <div v-if="activeTab === 'tactical' && gateView" class="gate-card">
+          <div class="gate-head">
+            <n-icon :component="StatsChartOutline" size="14" />
+            <span>大盘门禁 · {{ gateView.title }}</span>
+            <span class="gate-stat">放行 {{ gateView.allowed }}（{{ gateView.pct }}） · {{ gateView.blocked }}</span>
+          </div>
+          <div class="gate-indices">
+            <span v-for="x in gateView.perIndex" :key="x.label" class="gate-index">{{ x.label }}：{{ x.detail }}</span>
+          </div>
+          <div class="gate-note">{{ gateView.note }}</div>
+        </div>
+
         <!-- 汇总可信度评估（v3）：单点胜率不可信，能否下结论看 CI 相对基线 + 独立信号日 -->
         <div v-if="pooledView" class="pooled-card" :class="`pooled-${pooledView.direction}`">
           <div class="pooled-head">
@@ -1030,6 +1079,38 @@ function exportEtf() {
 .param-field { display: inline-flex; align-items: center; gap: 4px; }
 .param-label { font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
 .scan-meta { font-size: 11px; color: var(--text-muted); }
+
+/* === 胜率扫描 v4 · 大盘门禁 === */
+.gate-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.gate-label { font-size: 12px; font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
+.gate-hint { font-size: 11px; color: var(--text-muted); }
+.gate-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-left: 3px solid var(--color-primary);
+  border-radius: 10px;
+  padding: 10px 16px;
+  margin: 10px 0 12px;
+}
+.gate-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.gate-stat { font-size: 11px; font-weight: 600; color: var(--text-secondary); }
+.gate-indices { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 6px; }
+.gate-index { font-size: 11px; color: var(--text-secondary); }
+.gate-note { font-size: 10px; color: var(--text-muted); margin-top: 6px; line-height: 1.5; }
 
 /* === 胜率扫描 v3 · 汇总可信度卡片 === */
 .pooled-card {

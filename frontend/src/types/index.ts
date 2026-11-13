@@ -1406,6 +1406,34 @@ export interface WinratePooledSummary {
   caveats: string[]
 }
 
+/** 大盘门禁请求配置（v4；POST /signals/winrate/scan 顶层 gate，不是策略参数） */
+export interface WinrateGateConfig {
+  enabled: boolean
+  /** 门禁指数代码，默认沪深300 / 中证1000 / 创业板指 */
+  indices: string[]
+  fast: number
+  slow: number
+  /** any = 任一指数满足即放行；all = 全部指数同时满足 */
+  require: 'any' | 'all'
+}
+
+/** 大盘门禁执行摘要（后端返回；未启用或旧缓存为 null） */
+export interface WinrateGateSummary {
+  enabled: boolean
+  indices: string[]
+  fast: number
+  slow: number
+  require: 'any' | 'all'
+  /** 全池放行的交易日数 */
+  allowed_days: number
+  /** 门禁指数覆盖的交易日总数 */
+  total_days: number
+  /** 被拦截的交易日数 */
+  blocked_days: number
+  per_index: { code: string; bars: number; allowed_days: number }[]
+  note: string
+}
+
 /** 胜率扫描响应 */
 export interface WinrateScanResult {
   scan_date: string
@@ -1413,6 +1441,8 @@ export interface WinrateScanResult {
   results: WinrateScanItem[]
   /** v3 新增；旧缓存（裸数组或 v2 结构）时为 null，前端须优雅降级 */
   pooled?: WinratePooledSummary | null
+  /** v4 新增；未启用门禁或旧缓存为 null */
+  gate?: WinrateGateSummary | null
 }
 
 export interface TrackedSignal {

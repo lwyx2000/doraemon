@@ -5,11 +5,32 @@
 // ============================================================
 import { ref, computed, watch } from 'vue'
 import { signalApi } from '../utils/api'
-import type { TacticalSignal, StrategyDef, WinrateScanItem, WinrateScanResult, WinrateStats, WinratePooledSummary } from '../types'
+import type { TacticalSignal, StrategyDef, WinrateScanItem, WinrateScanResult, WinrateStats, WinratePooledSummary, WinrateGateConfig, WinrateGateSummary } from '../types'
 import { WINRATE_MIN_SAMPLES } from '../utils/signalDisplay'
 
 /** 单次批量计算的标的上限（后端路由硬上限 200） */
 export const SIGNAL_SCAN_LIMIT = 100
+
+/**
+ * 大盘门禁预设（与后端 DEFAULT_GATE_INDICES 一致）。
+ * 单指数档位的 require 取 'all' 与 'any' 等价。
+ */
+export const GATE_PRESETS: Record<string, { indices: string[]; require: 'any' | 'all' }> = {
+  any3: { indices: ['000300', '000852', '399006'], require: 'any' },
+  all3: { indices: ['000300', '000852', '399006'], require: 'all' },
+  hs300: { indices: ['000300'], require: 'all' },
+  csi1000: { indices: ['000852'], require: 'all' },
+  gem: { indices: ['399006'], require: 'all' },
+}
+export const GATE_PRESET_OPTIONS = [
+  { label: '三指数任一满足', value: 'any3' },
+  { label: '三指数全部满足', value: 'all3' },
+  { label: '仅沪深300', value: 'hs300' },
+  { label: '仅中证1000', value: 'csi1000' },
+  { label: '仅创业板指', value: 'gem' },
+]
+export const GATE_FAST = 10
+export const GATE_SLOW = 20
 
 export interface SignalScanOptions {
   /** 计算失败提示（传入页面 message.error 的封装） */
@@ -99,27 +120,42 @@ export function useSignalScan(getSymbols: () => string[], opts: SignalScanOption
   /** v3 汇总可信度评估；旧缓存 / 旧后端无此字段时为 null */
   const winratePooled = ref<WinratePooledSummary | null>(null)
 
+  // ---- v4 大盘门禁：默认关闭，未展示开关的复用页面行为与 v3 完全一致 ----
+  const gateEnabled = ref(false)
+  const gatePreset = ref('any3')
+  /** enabled=false 时返回 null → API 不带 gate 字段 → 后端不做任何过滤 */
+  const gateConfig = computed<WinrateGateConfig | null>(() => {
+    if (!gateEnabled.value) return null
+    const preset = GATE_PRESETS[gatePreset.value] ?? GATE_PRESETS.any3
+    return { enabled: true, indices: [...preset.indices], require: preset.require, fast: GATE_FAST, slow: GATE_SLOW }
+  })
+  /** 本次扫描的门禁执行摘要；未启用 / 旧缓存为 null */
+  const winrateGate = ref<WinrateGateSummary | null>(null)
+
   async function scanWinrate() {
     if (winrateLoading.value) return
     const codes = getSymbols().slice(0, limit)
     if (!codes.length) return
     winrateLoading.value = true
-    // 换策略/换参数重扫时先清掉上次的汇总，避免新旧口径混读
+    // 换策略/换参数/换门禁重扫时先清掉上次的汇总，避免新旧口径混读
     winratePooled.value = null
+    winrateGate.value = null
     try {
-      const res = await signalApi.winrateScan(codes, selectedStrategyId.value, collectParams())
+      const res = await signalApi.winrateScan(codes, selectedStrategyId.value, collectParams(), gateConfig.value)
       const data: WinrateScanResult = Array.isArray(res)
         ? (res as any)
         : ((res as any).data ?? { scan_date: '', from_cache: false, results: [] })
       const map = new Map<string, WinrateScanItem>()
       ;(data.results ?? []).forEach(r => map.set(r.symbol, r))
       winrateMap.value = map
-      // 旧缓存可能是裸数组（v2 之前），没有 pooled；页面据此隐藏汇总卡片
+      // 旧缓存可能是裸数组（v2 之前），没有 pooled / gate；页面据此隐藏汇总卡片
       winratePooled.value = Array.isArray(res) ? null : (data.pooled ?? null)
+      winrateGate.value = Array.isArray(res) ? null : (data.gate ?? null)
       winrateLoaded.value = true
       const sName = strategies.value.find(s => s.id === selectedStrategyId.value)?.name ?? selectedStrategyId.value
-      winrateMeta.value = `${sName} · ${data.scan_date} ${data.from_cache ? '（当日缓存）' : '（首次计算）'}`
-      opts.notify?.(`胜率扫描完成：${map.size} 只（次日收盘买入、扣成本口径）`)
+      const gateTag = gateEnabled.value ? ' · 大盘门禁开' : ''
+      winrateMeta.value = `${sName} · ${data.scan_date} ${data.from_cache ? '（当日缓存）' : '（首次计算）'}${gateTag}`
+      opts.notify?.(`胜率扫描完成：${map.size} 只（次日收盘买入、扣成本口径${gateEnabled.value ? '、大盘门禁' : ''}）`)
     } catch (e: any) {
       opts.onError('胜率扫描失败：' + (e.message || e))
     } finally {
@@ -145,6 +181,8 @@ export function useSignalScan(getSymbols: () => string[], opts: SignalScanOption
     tacticalMap, tacticalLoading, tacticalLoaded, loadTactical,
     // 胜率扫描
     winrateMap, winrateLoading, winrateLoaded, winrateMeta, winratePooled, scanWinrate,
+    // 大盘门禁（v4，默认关闭）
+    gateEnabled, gatePreset, gateConfig, winrateGate,
     // 查询
     statsOf,
   }

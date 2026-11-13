@@ -37,8 +37,22 @@
   用于观察策略表现是否在特定市场环境（如单边熊）失效
 - 注意：IS/OOS 按**每只标的自身**的前 70% / 后 30% 切分，不是全池统一日期切分
 
+大盘门禁（v4，可选）：
+- gate 是请求顶层可选字段，**不塞进 params**（params 是策略参数，混在一起会让
+  「同策略不同门禁」被误判成不同策略参数，缓存与前端都要跟着分叉）。
+- 门禁指数显式按 type="INDEX" 取数（指数与个股代码段重叠，_kline_asset_type
+  不做猜测）；默认沪深300/中证1000/创业板指，10SMA>20SMA，任一满足即放行。
+- 判定只用截至信号日当日（含）的收盘价，买入在次日收盘，**无前视偏差**；
+  fast/slow 窗口不足的前 slow-1 根一律不放行。
+- 全池按**日期集合**对齐过滤触发点，绝不按位置索引对齐（ETF 停牌 / 指数
+  交易日不一致会错位）；基线仍取全部交易日，保证策略与基线口径可比。
+- 任一门禁指数取数失败或根数不足一律抛错（fail-fast），绝不静默退化成
+  「无门禁」返回一份看似正常、实则未过滤的结果。
+- gate 配置进缓存键，且 SCAN_SCHEMA_VERSION 升到 4；否则同一天内
+  「门禁开 / 门禁关」会命中同一份缓存串味。
+
 结果当日缓存于 biz_winrate_scan（键：scan_date + strategy_id + params_json，
-params_json 内嵌 SCAN_SCHEMA_VERSION 版本号），缓存命中时返回交集；
+params_json 内嵌 SCAN_SCHEMA_VERSION 版本号与 gate 配置），缓存命中时返回交集；
 请求标的超出缓存范围的部分不做增量补算（P2 简化）。
 """
 
@@ -69,9 +83,14 @@ HOLDOUT_RATIO = 0.3
 PRIMARY_HORIZON = 10
 # 胜率扫描的历史回看年数：1 年样本严重不足，实测 5 年约 1211 根
 SCAN_LOOKBACK_YEARS = 5
-# 缓存键版本：统计结构升级时 +1，旧缓存自动失效
-# v2 = 样本内外 + 分年度；v3 = 5 年窗口 + pooled 可信统计
-SCAN_SCHEMA_VERSION = 3
+# 缓存键版本：统计结构/语义升级时 +1，旧缓存自动失效
+# v2 = 样本内外 + 分年度；v3 = 5 年窗口 + pooled 可信统计；v4 = 可选大盘门禁
+SCAN_SCHEMA_VERSION = 4
+# 大盘门禁默认口径：沪深300 / 中证1000 / 创业板指，10SMA > 20SMA 任一满足放行
+DEFAULT_GATE_INDICES = ("000300", "000852", "399006")
+GATE_FAST = 10
+GATE_SLOW = 20
+GATE_MAX_INDICES = 5
 
 
 def _ensure_tables() -> None:
@@ -98,6 +117,109 @@ def _scan_window(years: int = SCAN_LOOKBACK_YEARS) -> tuple[str, str]:
     end = datetime.now()
     start = end - timedelta(days=365 * years)
     return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+
+
+def _normalize_gate(gate: dict | None) -> dict | None:
+    """校验并规范化门禁配置；未启用返回 None（行为与 v3 完全一致）。
+
+    gate 是请求顶层字段，不塞进 params：params 是策略参数，两套口径混在一起
+    会让「同策略不同门禁」被误判成不同策略参数，缓存与前端都要跟着分叉。
+    服务层独立校验（不依赖 router 的 pydantic）：测试与内部调用同样受保护。
+    """
+    if not gate:
+        return None
+    if not isinstance(gate, dict):
+        raise ValueError("gate 必须是对象")
+    if not gate.get("enabled"):
+        return None
+    # 区分「字段缺失」与「显式传空」：后者是错误配置，必须拒绝，
+    # 不能用 or 回退成默认三指数（静默篡改调用方意图）。
+    raw_indices = gate.get("indices", None)
+    if raw_indices is None:
+        raw_indices = list(DEFAULT_GATE_INDICES)
+    if not isinstance(raw_indices, (list, tuple)) or not raw_indices:
+        raise ValueError("门禁指数列表不能为空")
+    indices = [str(c).strip() for c in raw_indices if str(c).strip()]
+    if not indices or len(indices) > GATE_MAX_INDICES:
+        raise ValueError(f"门禁指数数量须在 1~{GATE_MAX_INDICES} 之间")
+    if len(set(indices)) != len(indices):
+        raise ValueError("门禁指数不能重复")
+    fast, slow = gate.get("fast", GATE_FAST), gate.get("slow", GATE_SLOW)
+    if (not isinstance(fast, int) or isinstance(fast, bool)
+            or not isinstance(slow, int) or isinstance(slow, bool)):
+        raise ValueError("门禁均线周期必须是整数")
+    if fast < 1 or slow < 2 or fast >= slow:
+        raise ValueError("门禁均线须满足 1 <= fast < slow")
+    require = gate.get("require", "any")
+    if require not in ("any", "all"):
+        raise ValueError("门禁 require 只能是 any / all")
+    return {"enabled": True, "indices": indices, "fast": fast,
+            "slow": slow, "require": require}
+
+
+def _sma_allowed_dates(klines: list[dict], fast: int, slow: int) -> set[str]:
+    """指数日线上 fast SMA > slow SMA 的交易日集合（前缀和 O(n)）。
+
+    - 只用截至当日（含）的收盘价，信号日收盘后即可判定；买入在次日收盘，
+      因此没有前视偏差。
+    - 前 slow-1 根不足窗口，一律不放行（保守，绝不外推）。
+    - 返回日期字符串集合，供全池按日期对齐，不返回位置索引。
+    """
+    closes = [k["close"] for k in klines]
+    dates = [str(k["date"])[:10] for k in klines]
+    if len(closes) < slow:
+        return set()
+    prefix = [0.0]
+    for c in closes:
+        prefix.append(prefix[-1] + c)
+    out: set[str] = set()
+    for i in range(slow - 1, len(closes)):
+        fast_ma = (prefix[i + 1] - prefix[i + 1 - fast]) / fast
+        slow_ma = (prefix[i + 1] - prefix[i + 1 - slow]) / slow
+        if fast_ma > slow_ma:
+            out.add(dates[i])
+    return out
+
+
+def _build_gate(cfg: dict, window: tuple[str, str]) -> tuple[set[str], dict]:
+    """按配置取门禁指数日线，算出全池统一的放行日期集合 + 可展示摘要。
+
+    fail-fast：任一指数取数失败 / 根数不足直接抛 ValueError，绝不静默退化成
+    「无门禁」——那会返回一份看似正常、实则未过滤的结果。
+    """
+    sets: list[set[str]] = []
+    per_index: list[dict] = []
+    all_days: set[str] = set()
+    for code in cfg["indices"]:
+        # 指数与个股代码段重叠，必须显式 type="INDEX"（_kline_asset_type 不做猜测）
+        klines = get_kline(code, type="INDEX", count=0,
+                           start_date=window[0], end_date=window[1])
+        if len(klines) < cfg["slow"]:
+            raise ValueError(
+                f"大盘门禁指数 {code} 日线不足（{len(klines)} 根 < {cfg['slow']} 根），"
+                "无法计算门禁均线；请检查网关 /api/quote/kline?type=INDEX"
+            )
+        all_days |= {str(k["date"])[:10] for k in klines}
+        allowed = _sma_allowed_dates(klines, cfg["fast"], cfg["slow"])
+        sets.append(allowed)
+        per_index.append({"code": code, "bars": len(klines), "allowed_days": len(allowed)})
+    final = set.intersection(*sets) if cfg["require"] == "all" else set.union(*sets)
+    mode = "全部指数同时满足" if cfg["require"] == "all" else "任一指数满足"
+    summary = {
+        "enabled": True,
+        "indices": cfg["indices"],
+        "fast": cfg["fast"], "slow": cfg["slow"], "require": cfg["require"],
+        "allowed_days": len(final),
+        "total_days": len(all_days),
+        "blocked_days": len(all_days - final),
+        "per_index": per_index,
+        "note": (
+            f"{mode} {cfg['fast']}SMA>{cfg['slow']}SMA 才放行信号；"
+            "按交易日期对齐各标的，未取到门禁状态的日期保守过滤；"
+            "基线仍为全部交易日，保证与策略口径可比。"
+        ),
+    }
+    return final, summary
 
 
 def _wilson(k: int, n: int, z: float = 1.96) -> list[float] | None:
@@ -264,12 +386,16 @@ def _error_result(symbol: str, msg: str) -> dict:
 
 def _scan_symbol(symbol: str, strategy_id: str, params: dict,
                  horizons: tuple[int, ...], cost_pct: float,
-                 window: tuple[str, str], pool_hz: int) -> tuple[dict, dict]:
+                 window: tuple[str, str], pool_hz: int,
+                 allowed_dates: set[str] | None = None) -> tuple[dict, dict]:
     """单标的历史触发点统计（基于 qfq 前复权日线）。
 
     返回 ``(result, detail)``：result 进 results（形状与 v2 完全一致），
     detail 是 pooled 汇总所需的原始收益序列，只在服务内部聚合，
     不进 results、不进缓存对外结构、不进 CSV。
+
+    allowed_dates 非 None 时按**信号日日期**过滤触发点（大盘门禁）；
+    None 表示无门禁，行为与 v3 完全一致。基线始终取全部交易日，不受门禁影响。
     """
     detail: dict[str, Any] = {
         "symbol": symbol, "bars": 0, "error": None,
@@ -297,6 +423,11 @@ def _scan_symbol(symbol: str, strategy_id: str, params: dict,
         split_idx = int(n * (1 - HOLDOUT_RATIO))
         # 触发点 = 仓位由空翻多的当日（信号日）
         trigger_idx = [i for i in range(1, n) if position[i] == "long" and position[i - 1] != "long"]
+        if allowed_dates is not None:
+            # 大盘门禁：按日期集合对齐（ETF 停牌 / 指数交易日不一致时位置索引会错位）。
+            # 门禁状态只用信号日当日收盘价判定，买入在次日收盘，无前视偏差。
+            trigger_idx = [i for i in trigger_idx
+                           if str(klines[i]["date"])[:10] in allowed_dates]
         out: dict[str, Any] = {"symbol": symbol, "error": None, "triggers": len(trigger_idx)}
 
         # 市场基线：同窗口、同成本、全部交易日的 pool_hz 日前向净收益。
@@ -346,16 +477,20 @@ def _scan_symbol(symbol: str, strategy_id: str, params: dict,
 
 def scan_winrate(symbols: list[str], strategy_id: str, params: dict | None = None,
                  horizons: tuple[int, ...] = DEFAULT_HORIZONS,
-                 cost_pct: float = DEFAULT_COST_PCT) -> dict:
-    """批量胜率扫描。当日 + 同策略 + 同参数命中缓存直接返回。"""
+                 cost_pct: float = DEFAULT_COST_PCT,
+                 gate: dict | None = None) -> dict:
+    """批量胜率扫描。当日 + 同策略 + 同参数 + 同门禁命中缓存直接返回。"""
     if not horizons:
         # fail-fast：空持有期会让 results 缺 stats_* 且 pooled 拿不到任何样本，
         # 静默返回「无触发样本」比报错更危险，直接拒绝。
         raise ValueError("horizons 不能为空")
+    # 门禁配置先校验：非法参数绝不触达数据库或行情层
+    cfg = _normalize_gate(gate)
     _ensure_tables()
     today = datetime.now().strftime("%Y-%m-%d")
-    # 缓存键带结构版本号：统计结构升级（v2 样本内外 / v3 pooled）时旧缓存自动失效
-    params_json = json.dumps({"v": SCAN_SCHEMA_VERSION, "p": params or {}},
+    # 缓存键带结构版本号 + 门禁配置：版本升级让 v3 旧缓存失效，
+    # 带 gate 让同一天「门禁开 / 门禁关」不会串味。
+    params_json = json.dumps({"v": SCAN_SCHEMA_VERSION, "p": params or {}, "g": cfg},
                              sort_keys=True, ensure_ascii=False)
     db = get_biz_db()
     row = db.fetchone(
@@ -367,20 +502,22 @@ def scan_winrate(symbols: list[str], strategy_id: str, params: dict | None = Non
         cached = json.loads(row[0])
         if isinstance(cached, list):
             # 兼容 v2 及更早的裸数组缓存（版本号已升，正常不会命中）
-            cached = {"results": cached, "pooled": None}
+            cached = {"results": cached, "pooled": None, "gate": None}
         by_sym = {r["symbol"]: r for r in cached.get("results", [])}
         results = [by_sym[s] for s in symbols if s in by_sym]
         return {"scan_date": today, "from_cache": True, "results": results,
-                "pooled": cached.get("pooled")}
+                "pooled": cached.get("pooled"), "gate": cached.get("gate")}
 
     window = _scan_window()
     pool_hz = (PRIMARY_HORIZON if PRIMARY_HORIZON in horizons
                else (horizons[0] if horizons else PRIMARY_HORIZON))
+    # 门禁指数每只只拉一次，算出全池统一的放行日期集合后再并发扫标的
+    allowed_dates, gate_summary = _build_gate(cfg, window) if cfg else (None, None)
     # 网关 K 线并发闸门 _KLINE_MAX_INFLIGHT=10，8 并发刚好在容量内，禁止盲目加并发
     with ThreadPoolExecutor(max_workers=8) as ex:
         pairs = list(ex.map(
             lambda s: _scan_symbol(s, strategy_id, params or {}, horizons, cost_pct,
-                                   window, pool_hz),
+                                   window, pool_hz, allowed_dates),
             symbols,
         ))
     results = [p[0] for p in pairs]
@@ -393,11 +530,20 @@ def scan_winrate(symbols: list[str], strategy_id: str, params: dict | None = Non
         f"CI={pooled['strategy']['ci95']} 基线={pooled['baseline']['win_rate']}% "
         f"独立信号日={pooled['distinct_signal_days']} → {pooled['verdict']}"
     )
+    if gate_summary:
+        print(
+            f"[Winrate] 大盘门禁 {gate_summary['fast']}/{gate_summary['slow']}SMA "
+            f"require={gate_summary['require']} indices={gate_summary['indices']} "
+            f"放行 {gate_summary['allowed_days']}/{gate_summary['total_days']} 交易日 "
+            f"（拦截 {gate_summary['blocked_days']} 天）"
+        )
     db.execute(
         "INSERT INTO biz_winrate_scan (id, scan_date, strategy_id, params_json, result_json, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?)",
         [str(uuid.uuid4()), today, strategy_id, params_json,
-         json.dumps({"results": results, "pooled": pooled}, ensure_ascii=False),
+         json.dumps({"results": results, "pooled": pooled, "gate": gate_summary},
+                    ensure_ascii=False),
          datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
     )
-    return {"scan_date": today, "from_cache": False, "results": results, "pooled": pooled}
+    return {"scan_date": today, "from_cache": False, "results": results,
+            "pooled": pooled, "gate": gate_summary}
