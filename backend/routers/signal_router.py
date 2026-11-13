@@ -4,7 +4,7 @@
 - GET  /strategies          策略目录（前端下拉 + 动态参数）
 - POST /generate            {symbol, strategy_id, params?} → 买卖点信号
 - POST /tactical/batch      {symbols[]} → 批量战术信号快照（偏离度/RSI/布林）
-- POST /winrate/scan        {symbols[], strategy_id, params?, gate?} → 历史胜率扫描 + 凯利仓位 + 大盘门禁
+- POST /winrate/scan        {symbols[], strategy_id, params?, gate?} → 历史胜率扫描 + 凯利仓位 + 大盘门禁 + 仓位口径摘要
 - GET  /tracked            当前用户订阅的 (标的物×策略) 列表
 - POST /tracked            {symbol, name?, strategy_id, params?} → 新增监控
 - DELETE /tracked/{id}     取消监控
@@ -91,7 +91,12 @@ def tactical_batch(body: TacticalBatchRequest, user_id: str = Depends(get_curren
 
 @router.post("/winrate/scan", response_model=ApiResponse[dict])
 def winrate_scan(body: WinrateScanRequest, user_id: str = Depends(get_current_user)) -> ApiResponse[dict]:
-    """批量胜率扫描（次日收盘买入、持有N日收盘卖出、扣成本），当日缓存。"""
+    """批量胜率扫描（次日收盘买入、持有N日收盘卖出、扣成本），当日缓存。
+
+    返回顶层 exposure 为仓位口径摘要：既有策略为满仓固定持有，
+    bias_ladder 等输出 exposure 的策略走 T-1 仓位的逐日账本撮合。
+    exposure 由评估器决定，不是请求参数。
+    """
     if not body.symbols:
         return ApiResponse(code=400, message="symbols 不能为空", data=None)
     if len(body.symbols) > 200:

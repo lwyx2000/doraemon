@@ -411,7 +411,7 @@ class TestCacheKeyAndPayload(_Base):
     def test_cache_key_contains_gate_config(self):
         self._scan(gate={"enabled": True, "indices": ["000300"], "require": "all"})
         key = json.loads(self.db.insert_params[3])
-        self.assertEqual(key["v"], 4)
+        self.assertEqual(key["v"], 5)
         self.assertEqual(key["g"]["indices"], ["000300"])
         self.assertEqual(key["g"]["require"], "all")
 
@@ -461,12 +461,16 @@ class TestCacheKeyAndPayload(_Base):
         hit = WIN.scan_winrate(["A"], "s", {}, (5, 10, 20), 0.11)
         self.assertIsNone(hit["gate"])
         self.assertIsNone(hit["pooled"])
+        self.assertIsNone(hit["exposure"], "v4 旧缓存无 exposure，必须优雅降级为 null")
 
     def test_cache_payload_contains_gate(self):
         self._scan(gate={"enabled": True})
         payload = json.loads(self.db.insert_params[4])
         self.assertIn("gate", payload)
-        self.assertEqual(set(payload.keys()), {"results", "pooled", "gate"})
+        self.assertEqual(set(payload.keys()),
+                         {"results", "pooled", "gate", "exposure"})
+        self.assertEqual(payload["exposure"]["mode"], "full",
+                         "二元组策略必须走满仓口径，不能被误判成分级仓位")
 
 
 if __name__ == "__main__":

@@ -5,9 +5,13 @@
 - 策略目录 STRATEGY_CATALOG 为内置技术策略（趋势/双均线/MACD/布林/RSI/BIAS/网格
   + 动量突破类：海龟/旗形/放量上涨/回踩均线/区间放大），每项给出参数 schema 与
   一段 evaluate 逻辑；EVALUATORS 注册后 winrate_service 自动纳入胜率扫描。
-- 评估器契约：返回 (position, signals)，position 是逐日 flat/long 状态序列，长度必须
-  等于 klines；所有计算只引用 ≤ i 的数据（无未来函数）。行情层字段仅
+- 评估器契约：返回 (position, signals)，或**可选**多返回一个 exposure 序列
+  (position, signals, exposure)；position 是逐日 flat/long 状态序列，长度必须
+  等于 klines；exposure 是逐日目标仓位（0~1），同样等长、只用 ≤ i 的数据。
+  所有计算只引用 ≤ i 的数据（无未来函数）。行情层字段仅
   {date,open,close,high,low,volume}，无成交额，禁止估算金额冒充真实字段。
+  winrate_service 对二元组按「满仓固定持有」统计（数值与旧版逐字节一致），
+  对三元组按逐日账本撮合；generate_signal 只透出当前仓位，不做数值校验。
 - generate_signal(symbol, strategy_id, params) 拉取日 K 线 → 计算指标 → 检测买卖点
   （仓位状态序列 flat/long 的翻转即信号）→ 返回当前信号 + 历史信号点 + 价格走势。
 - 订阅（biz_signal_subscriptions）持久化用户“监控的 (标的物×策略)”组合，供系统持续跟踪表现。
@@ -280,6 +284,70 @@ def _eval_bias(klines, closes, params):
     return position, _transitions(klines, position, buy_reason, sell_reason)
 
 
+def _eval_bias_ladder(klines, closes, params):
+    """BIAS 乖离分级减仓（仓位管理）：超卖入场 + 持仓期按正偏离逐级减半。
+
+    档位口径严格来自用户技能 bias-position-strategy，不自己编：
+        BIAS(N) = (close − MA_N) / MA_N × 100%
+        BIAS20 > 10%  → 仓位减半    (1.0 → 0.5)
+        BIAS20 > 15%  → 再减半      (0.5 → 0.25)
+        BIAS60 > 20%  → 再减半，独立触发（补两波行情里 BIAS20 背离不触发的漏）
+    三档从 1.0 起各自 *= 0.5，最低 0.125；只触发 BIAS60 时留 0.5。
+
+    与本系统「入场点胜率统计器」契约的衔接：
+    - position 仍是 flat/long 二值，入场/出场复用 _eval_bias 的负偏离超卖
+      口径（bias_n / bias_threshold），保证触发点与 bias 策略完全可比，
+      可直接对比「满仓持有 vs 分级减仓」的胜率与净收益。
+    - 第三个返回值 exposure 是逐日目标仓位（0~1），只用截至当日（含）的
+      收盘价与均线计算，无未来函数；winrate_service 用 T-1 目标仓位决定
+      T 日收益（1 日滞后），与技能 backtest() 的 pos=target[i-1] 一致。
+    - MA 数据不足的前 n-1 根不触发任何减仓档，保守记满仓 1.0。
+
+    已知取舍：BIAS 是左侧信号，主升浪里会卖飞；这是「少赚换安稳」，
+    不是 bug。策略只做多头仓位管理，不做空、不加杠杆。
+    """
+    n = int(params.get("bias_n", 20))
+    threshold = float(params.get("bias_threshold", -3.0))
+    long_n = int(params.get("ladder_long", 60))
+    t1 = float(params.get("ladder_t1", 10.0))
+    t2 = float(params.get("ladder_t2", 15.0))
+    t3 = float(params.get("ladder_t3", 20.0))
+    ma = _sma(closes, n)
+    ma_long = _sma(closes, long_n)
+
+    def bias_at(i, m):
+        return (closes[i] - m[i]) / m[i] * 100 if m[i] not in (None, 0) else None
+
+    position, exposure = [], []
+    for i in range(len(klines)):
+        b = bias_at(i, ma)
+        position.append("flat" if b is None else ("long" if b <= threshold else "flat"))
+        factor = 1.0
+        if b is not None:
+            if b > t1:
+                factor *= 0.5
+            if b > t2:
+                factor *= 0.5
+        bl = bias_at(i, ma_long)
+        if bl is not None and bl > t3:
+            factor *= 0.5
+        exposure.append(factor)
+
+    def buy_reason(i):
+        b = bias_at(i, ma)
+        btxt = f"BIAS{n} {b:.2f}%" if b is not None else "偏离度数据不足"
+        return (f"{btxt} ≤ 阈值 {threshold}%（负偏离超卖）触发买入；"
+                f"当日目标仓位 {exposure[i] * 100:.1f}%")
+
+    def sell_reason(i):
+        b = bias_at(i, ma)
+        cur = (f"BIAS{n} 修复至 {b:.2f}%（高于阈值 {threshold}%）"
+               if b is not None else "偏离度数据不足")
+        return (f"{cur}，超卖状态解除；当日目标仓位 {exposure[i] * 100:.1f}%")
+
+    return position, _transitions(klines, position, buy_reason, sell_reason), exposure
+
+
 def _eval_grid(klines, closes, params):
     gl = float(params.get("grid_lower", 0))
     gu = float(params.get("grid_upper", 0))
@@ -546,6 +614,8 @@ EVALUATORS = {
     "boll": _eval_boll,
     "rsi": _eval_rsi,
     "bias": _eval_bias,
+    # 仓位管理：唯一返回三元组（含 exposure）的策略，winrate_service 自动走逐日账本
+    "bias_ladder": _eval_bias_ladder,
     "grid": _eval_grid,
     # 动量/突破类（winrate_service 直接按本字典取评估器，注册即自动纳入扫描）
     "turtle_breakout": _eval_turtle_breakout,
@@ -602,6 +672,22 @@ STRATEGY_CATALOG = [
         "params": [
             {"key": "bias_n", "label": "均线周期", "type": "number", "default": 20, "min": 5, "max": 120},
             {"key": "bias_threshold", "label": "偏离阈值%", "type": "number", "default": -3, "step": 0.5, "min": -30, "max": 0},
+        ],
+    },
+    {
+        "id": "bias_ladder", "name": "BIAS 乖离分级减仓", "category": "仓位管理",
+        "desc": "档位来自 bias-position-strategy：BIAS20>10% 减半、>15% 再减半、"
+                "BIAS60>20% 再减半（独立触发），目标仓位 1.0→0.5→0.25→0.125。"
+                "入场/出场复用『均线偏离度』的负偏离超卖口径，便于与 bias 策略"
+                "直接对比满仓 vs 分级减仓。收益按 T-1 目标仓位逐日复利，不做空、不加杠杆。"
+                "注意：BIAS 是左侧信号，主升浪可能卖飞，属『少赚换安稳』。",
+        "params": [
+            {"key": "bias_n", "label": "入场/短周期", "type": "number", "default": 20, "min": 5, "max": 120},
+            {"key": "bias_threshold", "label": "入场偏离阈值%", "type": "number", "default": -3, "step": 0.5, "min": -30, "max": 0},
+            {"key": "ladder_long", "label": "长周期均线", "type": "number", "default": 60, "min": 20, "max": 250},
+            {"key": "ladder_t1", "label": "短周期第一档%", "type": "number", "default": 10, "step": 0.5, "min": 1, "max": 30},
+            {"key": "ladder_t2", "label": "短周期第二档%", "type": "number", "default": 15, "step": 0.5, "min": 1, "max": 40},
+            {"key": "ladder_t3", "label": "长周期警戒档%", "type": "number", "default": 20, "step": 0.5, "min": 1, "max": 50},
         ],
     },
     {
@@ -697,7 +783,7 @@ def generate_signal(symbol: str, strategy_id: str, params: dict | None = None) -
     返回结构：
     {
       symbol, strategy_id, strategy_name, name,
-      current_price, current_position(long/flat),
+      current_price, current_position(long/flat), current_exposure(0~1),
       latest_signal, latest_reason, last_signal_date, last_signal_type,
       signal_count, kline_start, kline_end, kline_count,
       signal_points: [{date, price, type(buy/sell), reason}],
@@ -716,6 +802,7 @@ def generate_signal(symbol: str, strategy_id: str, params: dict | None = None) -
             "strategy_name": strategy["name"], "name": None,
             "error": "未获取到行情数据（标的代码可能无效或数据源不可用）",
             "current_price": None, "current_position": None,
+            "current_exposure": None,
             "latest_signal": None, "latest_reason": None,
             "last_signal_date": None, "last_signal_type": None,
             "signal_count": 0, "signal_points": [],
@@ -724,7 +811,16 @@ def generate_signal(symbol: str, strategy_id: str, params: dict | None = None) -
         }
 
     closes = [k["close"] for k in klines]
-    position, signals = EVALUATORS[strategy_id](klines, closes, params)
+    # v5：评估器可选返回第三个元素 exposure（逐日目标仓位）。这里只做展示
+    # 透出，不做数值口径校验（严格校验在 winrate_service._normalize_eval）。
+    raw = EVALUATORS[strategy_id](klines, closes, params)
+    position, signals = raw[0], raw[1]
+    exposure = raw[2] if len(raw) > 2 else None
+    current_exposure = (
+        round(float(exposure[-1]), 4)
+        if exposure and len(exposure) == len(klines)
+        else (1.0 if position and position[-1] == "long" else 0.0)
+    )
 
     current_price = round(closes[-1], 2)
     current_position = position[-1] if position else "flat"
@@ -743,6 +839,7 @@ def generate_signal(symbol: str, strategy_id: str, params: dict | None = None) -
         "name": None,
         "current_price": current_price,
         "current_position": current_position,
+        "current_exposure": current_exposure,
         "latest_signal": latest_signal,
         "latest_reason": latest_reason,
         "last_signal_date": last["date"] if last else None,

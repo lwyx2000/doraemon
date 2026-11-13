@@ -1,7 +1,7 @@
 """胜率扫描 v3 回归测试（标准库 unittest，stub 掉数据库与行情网关，不触网）。
 
 覆盖：
-1. 5 年窗口显式传给 get_kline；SCAN_SCHEMA_VERSION 必须升到 3（否则旧缓存无 pooled）
+1. 5 年窗口显式传给 get_kline；SCAN_SCHEMA_VERSION 必须随统计语义升级（v4 门禁 / v5 分级仓位），否则旧缓存结构缺失新字段
 2. Wilson 95% CI 的已知值 / 空样本 / 极端样本
 3. pooled 汇总口径：基线 = 全部交易日、策略 = 触发样本、去重信号日、IS/OOS、
    超额 pp、direction / verdict、失败标的计数、caveats
@@ -133,9 +133,9 @@ class TestWindowAndSchema(_Base):
         self.assertEqual(len(s), 10)
         self.assertEqual(len(e), 10)
 
-    def test_schema_version_is_four(self):
+    def test_schema_version_is_five(self):
         # v4 = 可选大盘门禁；结构/语义升级必须升版本，否则 v3 旧缓存会串味
-        self.assertEqual(WIN.SCAN_SCHEMA_VERSION, 4)
+        self.assertEqual(WIN.SCAN_SCHEMA_VERSION, 5)
         self.assertEqual(WIN.SCAN_LOOKBACK_YEARS, 5)
         self.assertEqual(WIN.MIN_SAMPLES, 20, "MIN_SAMPLES 仍为单标的显示阈值，不得改")
 
@@ -343,7 +343,7 @@ class TestResultsAndCache(_Base):
         self._scan()
         self.assertIsNotNone(self.db.insert_params)
         params_json = self.db.insert_params[3]
-        self.assertEqual(json.loads(params_json)["v"], 4)
+        self.assertEqual(json.loads(params_json)["v"], 5)
         self.assertIn("g", json.loads(params_json), "门禁配置必须进缓存键，否则开/关会串味")
         payload = json.loads(self.db.insert_params[4])
         self.assertIn("results", payload)

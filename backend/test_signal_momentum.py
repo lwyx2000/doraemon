@@ -23,6 +23,9 @@ NEW_IDS = (
     "pullback_ma", "tight_range",
 )
 OLD_IDS = ("trend", "ma_cross", "macd", "boll", "rsi", "bias", "grid")
+# v5 档 B 新增：唯一返回三元组（含 exposure）的仓位管理策略，单独在
+# test_signal_bias_ladder.py 里覆盖，不混进动量策略的二元组契约测试。
+LADDER_IDS = ("bias_ladder",)
 
 
 def _mod(name, **attrs):
@@ -108,7 +111,7 @@ class TestRegistry(unittest.TestCase):
     def test_catalog_matches_evaluators(self):
         catalog_ids = {s["id"] for s in SIG.STRATEGY_CATALOG}
         self.assertEqual(catalog_ids, set(SIG.EVALUATORS))
-        self.assertEqual(len(catalog_ids), len(OLD_IDS) + len(NEW_IDS))
+        self.assertEqual(len(catalog_ids), len(OLD_IDS) + len(NEW_IDS) + len(LADDER_IDS))
         for sid in NEW_IDS:
             self.assertIn(sid, catalog_ids)
 

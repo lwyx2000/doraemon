@@ -51,6 +51,25 @@
 - gate 配置进缓存键，且 SCAN_SCHEMA_VERSION 升到 4；否则同一天内
   「门禁开 / 门禁关」会命中同一份缓存串味。
 
+分级仓位（v5，可选）：
+- 评估器契约扩展为**可选**三元组 (position, signals, exposure)；exposure 是逐日
+  目标仓位（0~1），长度必须等于 klines，只用 ≤ i 日数据算出（无未来函数）。
+  position 仍为 flat/long 二值，触发点判定、前端 current_position 语义一律不动。
+- 既有 12 个策略仍返回二元组 → exposure=None → 走**满仓固定持有**的 v4 原公式
+  快速路径，数值逐字节一致。刻意不换成「补成全 1 序列再走逐日账本」的等价实现：
+  逐日复利有浮点累积误差，贴近 0 的收益可能被翻转胜负判定。
+- 分级仓位走逐日账本：第 t 日收益用第 t-1 日收盘决定的目标仓位 w[t-1]
+  （1 日滞后，对齐 bias-position-strategy 的 target_positions[i-1]），
+  equity *= (1 + w × (P[t]/P[t-1] − 1))。w≡1 时望远镜积恒等于
+  P[sell]/P[buy]，即满仓是分级仓位的特例，口径只有一套。
+- 成本按 turnover 计：一次完整往返（建仓 + 平仓）总成本 = cost_pct，故单边
+  = cost_pct/2，每次调仓按 |Δw| 计费。单调减仓路径总 turnover 恒为
+  2×w[buy]，因此「只减不加」不额外增加成本，只有回补加仓才增加。
+- 市场基线**保持满仓**（全部交易日的前向收益），它是「什么都不做」的对照，
+  不随策略仓位变化；这条同时保证 v4 基线数值零变化、策略与基线仍可比。
+- SCAN_SCHEMA_VERSION 升到 5；顶层新增 exposure 摘要（口径 / 实际档位 /
+  平均仓位）。results、pooled、caveats、CSV、表格列结构一律不动。
+
 结果当日缓存于 biz_winrate_scan（键：scan_date + strategy_id + params_json，
 params_json 内嵌 SCAN_SCHEMA_VERSION 版本号与 gate 配置），缓存命中时返回交集；
 请求标的超出缓存范围的部分不做增量补算（P2 简化）。
@@ -84,8 +103,9 @@ PRIMARY_HORIZON = 10
 # 胜率扫描的历史回看年数：1 年样本严重不足，实测 5 年约 1211 根
 SCAN_LOOKBACK_YEARS = 5
 # 缓存键版本：统计结构/语义升级时 +1，旧缓存自动失效
-# v2 = 样本内外 + 分年度；v3 = 5 年窗口 + pooled 可信统计；v4 = 可选大盘门禁
-SCAN_SCHEMA_VERSION = 4
+# v2 = 样本内外 + 分年度；v3 = 5 年窗口 + pooled 可信统计；v4 = 可选大盘门禁；
+# v5 = 可选分级仓位 exposure（逐日账本撮合 + 顶层口径摘要）
+SCAN_SCHEMA_VERSION = 5
 # 大盘门禁默认口径：沪深300 / 中证1000 / 创业板指，10SMA > 20SMA 任一满足放行
 DEFAULT_GATE_INDICES = ("000300", "000852", "399006")
 GATE_FAST = 10
@@ -384,6 +404,92 @@ def _error_result(symbol: str, msg: str) -> dict:
             "triggers": 0, "stats_5d": None, "stats_10d": None, "stats_20d": None}
 
 
+def _normalize_eval(raw: Any, n: int) -> tuple[list, list[float] | None]:
+    """统一评估器返回值 -> (position, exposure)。
+
+    既有 12 个策略返回 (position, signals) 二元组，exposure 记 None：表示
+    「该策略不管理仓位，按满仓固定持有统计」，_holding_return 走精确原公式
+    快速路径，数值与 v4 逐字节一致。刻意不改成「补成全 1 序列再走逐日账本」
+    的等价实现：浮点累积误差可能翻转贴近 0 的胜负判定。
+
+    bias_ladder 返回 (position, signals, exposure) 三元组：长度必须等于 klines、
+    取值 ∈ [0,1] 且为有限数值，否则 fail-fast 标成单标的错误，绝不静默夹紧或
+    丢弃——错误仓位会直接污染胜率结论，比少一只标的危险得多。
+    """
+    if not isinstance(raw, (tuple, list)) or len(raw) not in (2, 3):
+        raise ValueError("评估器须返回 (position, signals) 或 (position, signals, exposure)")
+    position = raw[0]
+    if len(position) != n:
+        raise ValueError(f"评估器 position 长度 {len(position)} != K线 {n}")
+    if len(raw) == 2:
+        return position, None
+    exposure = raw[2]
+    if exposure is None or len(exposure) != n:
+        raise ValueError(f"评估器 exposure 长度须等于 K线 {n}")
+    out: list[float] = []
+    for w in exposure:
+        if isinstance(w, bool) or not isinstance(w, (int, float)):
+            # 元素类型不对是 TypeError；取值越界才是 ValueError（数据校验）
+            raise TypeError("exposure 元素必须是数值")
+        v = float(w)
+        if not math.isfinite(v) or not 0.0 <= v <= 1.0:
+            raise ValueError("exposure 须为 0~1 的有限数值")
+        out.append(v)
+    return position, out
+
+
+def _holding_return(closes: list[float], buy: int, sell: int,
+                    exposure: list[float] | None, cost_pct: float) -> float:
+    """单笔 [buy, sell] 净收益（%）。满仓与分级仓位共用一处出口。
+
+    exposure is None（既有 12 策略）：走 v4 原公式，保证逐字节零变化。
+    exposure 给定（bias_ladder）：第 t 日收益用第 t-1 日收盘决定的目标仓位
+    w[t-1]（1 日滞后，无前视），逐日复利；w≡1 时望远镜积 = P[sell]/P[buy]，
+    满仓因此是分级仓位的特例，口径只有一套，不是两套。
+
+    成本 = cost_pct × turnover / 2：一次完整往返（建仓 + 平仓）= cost_pct，
+    故单边按 cost_pct/2，每次调仓按 |Δw| 计费。单调减仓路径
+    w[buy] + Σ|Δw| + w[sell-1] ≡ 2×w[buy]，即「只减不加」不额外收费。
+    """
+    if exposure is None:
+        return (closes[sell] / closes[buy] - 1) * 100 - cost_pct
+    equity = 1.0
+    for t in range(buy + 1, sell + 1):
+        w = exposure[t - 1]
+        equity *= 1.0 + w * (closes[t] / closes[t - 1] - 1.0)
+    turnover = exposure[buy]
+    for t in range(buy + 1, sell):
+        turnover += abs(exposure[t] - exposure[t - 1])
+    turnover += exposure[sell - 1]
+    return (equity - 1.0) * 100 - cost_pct * turnover / 2.0
+
+
+def _exposure_summary(details: list[dict], strategy_id: str) -> dict:
+    """顶层仓位口径摘要：本次扫描是满仓还是分级、实际档位与平均仓位。
+
+    results / pooled 结构一律不动，新增字段只在前端做一张轻量说明卡片。
+    旧缓存（v4 及更早）无 exposure 字段时调用方返回 None，前端隐藏卡片。
+    """
+    valid = [d for d in details if not d["error"]]
+    ladder = any(d.get("exposure_mode") == "ladder" for d in valid)
+    levels = sorted({lv for d in valid for lv in d["exposure_levels"]}, reverse=True)
+    total_bars = sum(d["exposure_bars"] for d in valid)
+    avg = (round(sum(d["exposure_sum"] for d in valid) / total_bars, 4)
+           if total_bars else None)
+    if ladder:
+        note = ("该策略输出逐日目标仓位：收益按 T-1 目标仓位逐日复利、成本按 turnover 计；"
+                "触发点仍由 flat→long 翻转决定，市场基线保持满仓，口径与满仓结果可比。")
+    else:
+        note = "该策略不管理仓位，按满仓固定持有统计（次日收盘买入、持有 N 日收盘卖出、扣单次成本）。"
+    return {
+        "mode": "ladder" if ladder else "full",
+        "strategy_id": strategy_id,
+        "levels": levels if ladder else [],
+        "avg_exposure": avg,
+        "note": note,
+    }
+
+
 def _scan_symbol(symbol: str, strategy_id: str, params: dict,
                  horizons: tuple[int, ...], cost_pct: float,
                  window: tuple[str, str], pool_hz: int,
@@ -396,11 +502,18 @@ def _scan_symbol(symbol: str, strategy_id: str, params: dict,
 
     allowed_dates 非 None 时按**信号日日期**过滤触发点（大盘门禁）；
     None 表示无门禁，行为与 v3 完全一致。基线始终取全部交易日，不受门禁影响。
+
+    v5：评估器可选返回 exposure（逐日目标仓位）。二元组策略 exposure=None，
+    走 _holding_return 的满仓快速路径，数值与 v4 逐字节一致；三元组策略
+    走逐日账本。基线两种情况下都保持满仓，不改变。
     """
     detail: dict[str, Any] = {
         "symbol": symbol, "bars": 0, "error": None,
         "baseline": [], "strategy": [], "is_rets": [], "oos_rets": [],
         "signal_days": [],
+        # 顶层 exposure 摘要所需（fail 时也有默认值，汇总不会 KeyError）
+        "exposure_mode": "full", "exposure_levels": [],
+        "exposure_sum": 0.0, "exposure_bars": 0,
     }
 
     def fail(msg: str) -> tuple[dict, dict]:
@@ -418,7 +531,14 @@ def _scan_symbol(symbol: str, strategy_id: str, params: dict,
         if evaluate is None:
             return fail(f"未知策略 {strategy_id}")
 
-        position, _ = evaluate(klines, closes, params)
+        position, exposure = _normalize_eval(evaluate(klines, closes, params), n)
+        # 仓位口径摘要（顶层 exposure 用）：二元组策略按满仓固定持有统计，
+        # 三元组策略按实际逐日目标仓位。基线始终保持满仓，不受此影响。
+        detail["exposure_mode"] = "ladder" if exposure is not None else "full"
+        detail["exposure_levels"] = (sorted({round(w, 4) for w in exposure})
+                                     if exposure is not None else [])
+        detail["exposure_sum"] = sum(exposure) if exposure is not None else float(n)
+        detail["exposure_bars"] = n
         # 样本内/外拆分：前 70% 时段为样本内，后 30% 为策略"没见过"的验证段
         split_idx = int(n * (1 - HOLDOUT_RATIO))
         # 触发点 = 仓位由空翻多的当日（信号日）
@@ -445,7 +565,7 @@ def _scan_symbol(symbol: str, strategy_id: str, params: dict,
                 sell = buy + hz    # 持有 hz 个交易日后收盘卖出
                 if sell >= n:
                     continue
-                r = (closes[sell] / closes[buy] - 1) * 100 - cost_pct
+                r = _holding_return(closes, buy, sell, exposure, cost_pct)
                 rets.append(r)
                 if buy < split_idx:
                     is_rets.append(r)
@@ -506,7 +626,8 @@ def scan_winrate(symbols: list[str], strategy_id: str, params: dict | None = Non
         by_sym = {r["symbol"]: r for r in cached.get("results", [])}
         results = [by_sym[s] for s in symbols if s in by_sym]
         return {"scan_date": today, "from_cache": True, "results": results,
-                "pooled": cached.get("pooled"), "gate": cached.get("gate")}
+                "pooled": cached.get("pooled"), "gate": cached.get("gate"),
+                "exposure": cached.get("exposure")}
 
     window = _scan_window()
     pool_hz = (PRIMARY_HORIZON if PRIMARY_HORIZON in horizons
@@ -523,6 +644,12 @@ def scan_winrate(symbols: list[str], strategy_id: str, params: dict | None = Non
     results = [p[0] for p in pairs]
     details = [p[1] for p in pairs]
     pooled = _pooled_summary(details, len(symbols), pool_hz, window, cost_pct)
+    exposure = _exposure_summary(details, strategy_id)
+    if exposure["mode"] == "ladder":
+        print(
+            f"[Winrate] 分级仓位 exposure: 实际档位 {exposure['levels']} "
+            f"平均仓位 {exposure['avg_exposure']}（逐日账本撮合，基线仍满仓）"
+        )
     print(
         f"[Winrate] {strategy_id} 扫描完成: 有效 {pooled['symbols']['valid']}/"
         f"{pooled['symbols']['requested']} 只, 中位K线 {pooled['data_window']['bars_median']} 根, "
@@ -541,9 +668,9 @@ def scan_winrate(symbols: list[str], strategy_id: str, params: dict | None = Non
         "INSERT INTO biz_winrate_scan (id, scan_date, strategy_id, params_json, result_json, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?)",
         [str(uuid.uuid4()), today, strategy_id, params_json,
-         json.dumps({"results": results, "pooled": pooled, "gate": gate_summary},
-                    ensure_ascii=False),
+         json.dumps({"results": results, "pooled": pooled, "gate": gate_summary,
+                     "exposure": exposure}, ensure_ascii=False),
          datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
     )
     return {"scan_date": today, "from_cache": False, "results": results,
-            "pooled": pooled, "gate": gate_summary}
+            "pooled": pooled, "gate": gate_summary, "exposure": exposure}
