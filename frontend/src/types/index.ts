@@ -2297,3 +2297,117 @@ export interface DailyImportResult {
   inserted: number
   failed: DailyImportFailedRow[]
 }
+
+// ---- 动量轮动实验室（RotationLab / 组合层回测）----
+// 与 /api/v1/rotation/backtest 输出一一对应；数值可能为 null（样本不足/不可计算），
+// 前端一律走 fmt() 兜底，禁止直接 toFixed。
+export interface RotationPreset {
+  key: string
+  name: string
+  symbols: string[]
+}
+
+export interface RotationCoverage {
+  symbol: string
+  bars: number
+  first: string | null
+  last: string | null
+  listed_late: boolean
+}
+
+export interface RotationMetrics {
+  total_return_pct: number | null
+  annualized_pct: number | null
+  max_drawdown_pct: number | null
+  volatility_pct: number | null
+  sharpe: number | null
+  calmar: number | null
+}
+
+export interface RotationEquityPoint {
+  date: string
+  rotation: number | null
+  equal_weight: number | null
+}
+
+export interface RotationBiasInfo {
+  bias20_pct: number | null
+  bias60_pct: number | null
+  target_position: number
+  levels: string[]
+}
+
+export interface RotationSignal {
+  date: string
+  effective_date: string | null
+  selected: string[]
+  prev_selected: string[]
+  roc_pct: Record<string, number | null>
+  bias: Record<string, RotationBiasInfo>
+}
+
+export interface RotationAction {
+  symbol: string
+  action: string
+  target_position: number
+}
+
+export interface RotationLatest extends RotationSignal {
+  stance: 'invested' | 'cash'
+  actions: RotationAction[]
+}
+
+export interface RotationCorrPair {
+  a: string
+  b: string
+  value: number | null
+  warn: boolean
+}
+
+export interface RotationResult {
+  config: {
+    symbols: string[]
+    lookback: number
+    rebalance: number
+    top: number
+    years: number
+    min_return: number | null
+    cost_bps: number
+    bias_overlay: boolean
+    execution_lag: number
+    always_pick: boolean
+    corr_warn: number
+    benchmark: string
+  }
+  window: {
+    start: string
+    end: string
+    trading_days: number
+    requested: { start: string; end: string }
+  }
+  coverage: RotationCoverage[]
+  metrics: {
+    rotation: RotationMetrics
+    equal_weight: RotationMetrics
+    excess_pp: number | null
+    rebalance_count: number
+    total_turnover: number | null
+    total_cost_pct: number | null
+  }
+  equity_curve: RotationEquityPoint[]
+  signals: RotationSignal[]
+  correlation: { pairs: RotationCorrPair[]; warnings: string[] }
+  latest: RotationLatest | null
+  caveats: string[]
+}
+
+export interface RotationRequestPayload {
+  symbols: string[]
+  lookback: number
+  rebalance: number
+  top: number
+  years: number
+  min_return: number | null
+  cost_bps: number
+  bias_overlay: boolean
+}

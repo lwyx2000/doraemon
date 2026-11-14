@@ -1158,4 +1158,19 @@ import type {
   TradingAnalysis,
   SettlementImportResult,
   DailyImportResult,
+  RotationPreset,
+  RotationResult,
+  RotationRequestPayload,
 } from '../types'
+
+// ---- 动量轮动实验室（组合层回测）----
+// 与 signalApi.winrateScan（单标的入场点胜率统计）是两套独立引擎：
+// 这里做横截面 ROC 排名 + top-K 等权 + 周度再平衡 + 资金曲线。
+export const rotationApi = {
+  getPresets: () => request<RotationPreset[]>('/api/v1/rotation/presets'),
+  backtest: (body: RotationRequestPayload) =>
+    request<RotationResult>('/api/v1/rotation/backtest', undefined, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+}

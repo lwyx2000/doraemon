@@ -90,6 +90,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '信号实验室', icon: 'flash' },
   },
   {
+    path: '/rotation-lab',
+    name: 'RotationLab',
+    component: () => import('../pages/RotationLab.vue'),
+    meta: { title: '动量轮动实验室', icon: 'trending-up' },
+  },
+  {
     path: '/ai-decision',
     name: 'AiDecisionHub',
     component: () => import('../pages/AiDecisionHub.vue'),

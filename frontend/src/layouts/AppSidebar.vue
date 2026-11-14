@@ -104,6 +104,7 @@ const navItems: NavItem[] = [
   { name: 'HoldingsAnalysis', path: '/holdings', icon: BriefcaseOutline, label: '持仓分析' },
   { name: 'StrategyCenter', path: '/strategy-center', icon: OptionsOutline, label: '策略中心' },
   { name: 'SignalLab', path: '/signal-lab', icon: FlashOutline, label: '信号实验室' },
+  { name: 'RotationLab', path: '/rotation-lab', icon: TrendingUp, label: '动量轮动实验室' },
   { name: 'AiDecisionHub', path: '/ai-decision', icon: BulbOutline, label: 'AI决策' },
   { name: 'AiChat', path: '/ai-chat', icon: ChatbubblesOutline, label: 'AI问答' },
   { name: 'Knowledge', path: '/knowledge', icon: LibraryOutline, label: '知识库' },
