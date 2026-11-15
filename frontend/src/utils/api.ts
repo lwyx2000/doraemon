@@ -104,18 +104,22 @@ async function handleSessionExpired(path: string): Promise<void> {
     }
   }
   const redirect = typeof window !== 'undefined' ? window.location.pathname + window.location.search : '/'
-  const target = `/login?redirect=${encodeURIComponent(redirect)}&expired=1`
-  // 用整页导航而非 router.push：会话已失效，SPA 里还留着 keep-alive 页面、
-  // 定时器、正在重试的请求和已置位的一次性开关。整页重载能彻底清干净，
-  // 登录页也会全新 mount（软导航过来的登录页表单在部分浏览器下无法输入）。
-  // replace 而非 href：避免用户按「后退」又回到这个坏掉的会话页面。
-  if (typeof window !== 'undefined') window.location.replace(target)
+  // 用 SPA 软导航（不整页 reload）：整页导航实测会让登录页表单的事件绑定异常，
+  // 出现「输入框能显示但点击登录无反应」。登录/注册请求本身被 isAuthEndpoint 排除，
+  // 不会因这次跳转被误判为会话过期；clearAuth() 已保证守卫不会把 /login 弹回首页。
+  // 动态 import 避免 api.ts 与 router 形成静态循环依赖（只在出错时加载）。
+  import('../router')
+    .then((m) => m.default.push({ path: '/login', query: { redirect, expired: '1' } }))
+    .catch(() => {
+      if (typeof window !== 'undefined') window.location.href = '/login'
+    })
 }
 
 /**
  * 重置「会话过期一次性开关」。
- * 建立新会话时调用（见 useAuth.setAuth / applyRefreshedToken）：该开关只置位、
- * 永不复位，同一页面上下文内第二次过期（例如静默续期后又被重置密码）会被吞掉。
+ * 必须在建立新会话时调用（见 useAuth.setAuth / applyRefreshedToken）：该开关只置位、
+ * 永不复位，而 401 跳转是 SPA 软导航、JS 模块上下文跨登录保持，
+ * 若不重置，重新登录后的第二次会话过期不会再跳登录页，页面只会裸显错误条。
  */
 export function resetSessionExpiredFlag(): void {
   _sessionExpiredHandled = false
