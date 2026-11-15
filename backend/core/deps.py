@@ -54,6 +54,9 @@ def _resolve_user(token: Optional[str], require_admin: bool = False) -> str:
     user_id = payload.get("sub")
     if not user_id:
         raise _unauthorized("无效的登录凭证")
+    # refresh token 只能用于 /auth/refresh 换发 access token，不能直接当登录凭证调用业务接口
+    if payload.get("typ") == "refresh":
+        raise _unauthorized("凭证类型不正确，请重新登录")
     if require_admin:
         username = payload.get("username")
         if username not in ADMIN_USERS:

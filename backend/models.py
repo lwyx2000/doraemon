@@ -33,6 +33,8 @@ class PaginatedData(BaseModel, Generic[T]):
 class LoginRequest(BaseModel):
     username: str
     password: str
+    # 勾选「自动登录」时下发长效 refresh token（默认关闭，向后兼容旧客户端）
+    auto_login: bool = False
 
 
 class LoginResponse(BaseModel):
@@ -41,6 +43,8 @@ class LoginResponse(BaseModel):
     username: str
     is_admin: bool = False
     force_change: bool = False
+    # 仅 auto_login=True 时非空；/auth/refresh 会原值回填，方便前端统一处理
+    refresh_token: Optional[str] = None
 
 
 class RegisterRequest(BaseModel):

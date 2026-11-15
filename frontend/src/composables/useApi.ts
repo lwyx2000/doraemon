@@ -40,7 +40,10 @@ export function useAsyncData<T>(fetcher: () => Promise<T | { data: T; meta?: Sec
       }
     } catch (e) {
       meta.value = null
-      if (e instanceof ApiError) {
+      if (e instanceof ApiError && e.status === 401) {
+        // 401 由 api.ts 统一处理（静默续期 / 退回登录页），不再向用户裸显「HTTP 401」
+        error.value = '登录状态已过期，正在返回登录页…'
+      } else if (e instanceof ApiError) {
         error.value = e.message
       } else {
         error.value = String(e)

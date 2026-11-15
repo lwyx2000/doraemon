@@ -18,9 +18,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import HTTPException, status
+from jose import JWTError, jwt
 from passlib.context import CryptContext
 
-from core.config import ADMIN_USERS
+from core.config import ADMIN_USERS, AUTO_LOGIN_DAYS, JWT_ALGORITHM, JWT_EXPIRE_HOURS, JWT_SECRET
 from core.deps import create_access_token
 from database.sqlite_connection import get_biz_db
 
@@ -104,6 +105,8 @@ def _build_token(
     username: str,
     must_change_password: bool = False,
     token_version: int = 0,
+    auto_login: bool = False,
+    refresh_token: str | None = None,
 ) -> dict:
     # sub = pk_user（整数）；username / is_admin / token_version 随包下发供前端展示与令牌失效校验。
     token = create_access_token({
@@ -112,18 +115,34 @@ def _build_token(
         "is_admin": _is_admin(username),
         "token_version": int(token_version),
     })
-    expires_at = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+    expires_at = (datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRE_HOURS)).isoformat()
+    # 自动登录：另签一张长效 refresh token（typ=refresh），仅能用于 /auth/refresh。
+    # 带 token_version，管理员重置密码 / 改密后同样立即失效。
+    if auto_login and not refresh_token:
+        refresh_token = create_access_token(
+            {
+                "sub": str(pk),
+                "username": username,
+                "token_version": int(token_version),
+                "typ": "refresh",
+            },
+            expires_delta=timedelta(days=AUTO_LOGIN_DAYS),
+        )
     return {
         "token": token,
         "expires_at": expires_at,
         "username": username,
         "is_admin": _is_admin(username),
         "force_change": bool(must_change_password),
+        "refresh_token": refresh_token,
     }
 
 
-def authenticate(username: str, password: str) -> dict:
+def authenticate(username: str, password: str, auto_login: bool = False) -> dict:
     """校验凭据并返回 JWT（sub = pk_user）。
+
+    auto_login=True 时额外下发 AUTO_LOGIN_DAYS 天有效的 refresh token，
+    供前端在 access token 过期后静默换新，实现「打开页面自动登录」。
 
     Raises:
         HTTPException: 401 凭据无效 / 用户不存在。
@@ -137,7 +156,37 @@ def authenticate(username: str, password: str) -> dict:
     fields = _fetch_user_fields(pk)
     must = fields["must_change_password"] if fields else False
     tv = fields["token_version"] if fields else 0
-    return _build_token(pk, username, must, tv)
+    return _build_token(pk, username, must, tv, auto_login=auto_login)
+
+
+def refresh_access_token(refresh_token: str) -> dict:
+    """用长效 refresh token 换发新的 access token（自动登录静默续期）。
+
+    校验：签名/有效期、typ=refresh、用户仍存在、token_version 未变
+    （管理员重置密码会让已签发的长效凭证一起失效）。
+    refresh token 原值回填到响应，前端可继续沿用，直到 AUTO_LOGIN_DAYS 到期。
+
+    Raises:
+        HTTPException: 401 凭证无效 / 已失效。
+    """
+    try:
+        payload = jwt.decode(refresh_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except JWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="自动登录已过期，请重新登录")
+    if payload.get("typ") != "refresh":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的自动登录凭证")
+    pk = payload.get("sub")
+    if not pk:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的自动登录凭证")
+    fields = _fetch_user_fields(str(pk))
+    if fields is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
+    if int(payload.get("token_version") or 0) != fields["token_version"]:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="登录状态已失效，请重新登录")
+    return _build_token(
+        str(pk), fields["username"], fields["must_change_password"],
+        fields["token_version"], auto_login=False, refresh_token=refresh_token,
+    )
 
 
 def register(username: str, password: str) -> dict:

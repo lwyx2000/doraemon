@@ -6,11 +6,16 @@ const TOKEN_KEY = 'qt_token'
 const USER_KEY = 'qt_user'
 const IS_ADMIN_KEY = 'qt_is_admin'
 const FORCE_CHANGE_KEY = 'qt_force_change'
+// 自动登录：长效 refresh token + 开关标记（勾选「自动登录」后才写入）
+const REFRESH_TOKEN_KEY = 'qt_refresh_token'
+const AUTO_LOGIN_KEY = 'qt_auto_login'
 
 const token = ref<string>(localStorage.getItem(TOKEN_KEY) || '')
 const username = ref<string>(localStorage.getItem(USER_KEY) || '')
 const isAdmin = ref<boolean>(localStorage.getItem(IS_ADMIN_KEY) === '1')
 const forceChange = ref<boolean>(localStorage.getItem(FORCE_CHANGE_KEY) === '1')
+const refreshToken = ref<string>(localStorage.getItem(REFRESH_TOKEN_KEY) || '')
+const autoLogin = ref<boolean>(localStorage.getItem(AUTO_LOGIN_KEY) === '1')
 
 const isLoggedIn = computed(() => !!token.value)
 const userInitial = computed(() => (username.value ? username.value[0].toUpperCase() : '?'))
@@ -18,41 +23,87 @@ const userInitial = computed(() => (username.value ? username.value[0].toUpperCa
 function setAuth(
   t: string,
   u: string,
-  authInfo?: { is_admin?: boolean; force_change?: boolean },
+  authInfo?: {
+    is_admin?: boolean
+    force_change?: boolean
+    refresh_token?: string | null
+    auto_login?: boolean
+  },
 ) {
   const isAdminVal = authInfo?.is_admin ?? false
   const forceChangeVal = authInfo?.force_change ?? false
+  const rt = authInfo?.refresh_token ?? null
+  const auto = authInfo?.auto_login ?? false
   token.value = t
   username.value = u
   isAdmin.value = isAdminVal
   forceChange.value = forceChangeVal
+  refreshToken.value = auto && rt ? rt : ''
+  autoLogin.value = auto
   localStorage.setItem(TOKEN_KEY, t)
   localStorage.setItem(USER_KEY, u)
   localStorage.setItem(IS_ADMIN_KEY, isAdminVal ? '1' : '0')
   localStorage.setItem(FORCE_CHANGE_KEY, forceChangeVal ? '1' : '0')
+  if (auto && rt) {
+    localStorage.setItem(REFRESH_TOKEN_KEY, rt)
+    localStorage.setItem(AUTO_LOGIN_KEY, '1')
+  } else {
+    // 用户取消勾选后重新登录，或普通登录：清掉旧的长效凭证，避免退出后又被自动登录回来
+    localStorage.removeItem(REFRESH_TOKEN_KEY)
+    localStorage.removeItem(AUTO_LOGIN_KEY)
+  }
   // 新会话建立：重置 api.ts 的 401 一次性开关，保证本次会话再次过期仍能跳登录页
   // （否则 Login.vue 软导航后开关保持置位，第二次过期只会裸显错误条）
   resetSessionExpiredFlag()
 }
 
-function logout() {
+/**
+ * 只更新 token（自动登录静默续期用），不动用户名/管理员/强制改密等其它状态。
+ * 必须同步 ref 与 localStorage：路由守卫读的是模块级 ref，
+ * 只改 localStorage 会让「已登录」状态残留，导致 401 跳转到 /login 时被守卫弹回首页。
+ */
+function applyRefreshedToken(t: string, rt?: string | null) {
+  token.value = t
+  localStorage.setItem(TOKEN_KEY, t)
+  if (rt) {
+    refreshToken.value = rt
+    localStorage.setItem(REFRESH_TOKEN_KEY, rt)
+  }
+  resetSessionExpiredFlag()
+}
+
+/** 清空全部本地登录态（含自动登录长效凭证），不负责跳转。 */
+function clearAuth() {
   token.value = ''
   username.value = ''
   isAdmin.value = false
   forceChange.value = false
+  refreshToken.value = ''
+  autoLogin.value = false
   localStorage.removeItem(TOKEN_KEY)
   localStorage.removeItem(USER_KEY)
   localStorage.removeItem(IS_ADMIN_KEY)
   localStorage.removeItem(FORCE_CHANGE_KEY)
+  localStorage.removeItem(REFRESH_TOKEN_KEY)
+  localStorage.removeItem(AUTO_LOGIN_KEY)
+}
+
+function logout() {
+  clearAuth()
   // 收口跳转：清空本地状态后直接跳登录页（避免各调用点遗漏 / SPA 守卫边缘情况）。
   // 用整页导航而非 router.push，规避 useAuth 与 router 的循环依赖；
   // 未登录访问非 public 路由时守卫也会兜底 302 到 /login。
   window.location.href = '/login'
 }
 
-async function login(uname: string, pwd: string) {
-  const res = await api.login(uname, pwd)
-  setAuth(res.token, res.username, { is_admin: res.is_admin, force_change: res.force_change })
+async function login(uname: string, pwd: string, auto: boolean) {
+  const res = await api.login(uname, pwd, auto)
+  setAuth(res.token, res.username, {
+    is_admin: res.is_admin,
+    force_change: res.force_change,
+    refresh_token: res.refresh_token,
+    auto_login: auto,
+  })
 }
 
 async function register(uname: string, pwd: string) {
@@ -74,12 +125,16 @@ export function useAuth() {
     username,
     isAdmin,
     forceChange,
+    refreshToken,
+    autoLogin,
     isLoggedIn,
     userInitial,
     login,
     register,
     logout,
     setAuth,
+    clearAuth,
+    applyRefreshedToken,
     changePassword,
   }
 }

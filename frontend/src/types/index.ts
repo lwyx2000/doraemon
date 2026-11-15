@@ -15,6 +15,8 @@ export interface LoginResult {
   username: string
   is_admin?: boolean
   force_change?: boolean
+  // 仅登录勾选「自动登录」或调用 /auth/refresh 时返回
+  refresh_token?: string | null
 }
 
 export interface AdminUserItem {

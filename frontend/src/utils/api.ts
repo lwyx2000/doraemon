@@ -19,21 +19,94 @@ export class ApiError extends Error {
 }
 
 // ============================================================
-// 全局 401 拦截：会话过期（token 在服务端已失效）时清掉失效 token 并自动跳登录页，
-// 避免所有需要登录的页面（持仓/预警/策略/AI 配置…）裸显「401」错误。
-// 仅触发一次跳转；removeItem 幂等，重复 401 不会循环导航。
-// 排除 /auth/login、/auth/register 自身，否则登录/注册失败会被误判为过期而循环跳转。
+// 自动登录 + 全局 401 拦截
+//
+// 流程：业务接口 401 → 若勾选过「自动登录」，先用长效 refresh token 静默换发
+// 新 access token 并重放原请求（用户无感）；刷新失败/未开启自动登录，则清空
+// 全部登录态并退回登录页，页面不再裸显「401」错误条。
+//
+// 关键点：清状态必须走 useAuth.clearAuth() 同步模块级 ref —— 只删 localStorage
+// 的话路由守卫仍认为「已登录」，router.push('/login') 会被弹回首页，用户看到的就是
+// 各区块一直挂着 401 错误条。动态 import 避免 api.ts 与 useAuth 静态循环依赖。
 // ============================================================
+const TOKEN_KEY = 'qt_token'
+const REFRESH_TOKEN_KEY = 'qt_refresh_token'
+const AUTO_LOGIN_KEY = 'qt_auto_login'
+const REFRESH_PATH = '/api/v1/auth/refresh'
+
 let _sessionExpiredHandled = false
-function handleSessionExpired(path: string): void {
+let _refreshPromise: Promise<boolean> | null = null
+
+/** 登录/注册/续期接口自身的 401 属于「凭据错误」，不能当作会话过期跳转。 */
+function isAuthEndpoint(path: string): boolean {
+  return path.includes('/auth/login') || path.includes('/auth/register') || path.includes('/auth/refresh')
+}
+
+function authHeaders(): Record<string, string> {
+  const t = localStorage.getItem(TOKEN_KEY)
+  return t ? { Authorization: `Bearer ${t}` } : {}
+}
+
+/**
+ * 用长效 refresh token 换发新 access token。
+ * 并发 401（首屏往往一次发十几个请求）共享同一个 Promise，只刷新一次。
+ * 成功时同步 useAuth 的 token ref，否则守卫状态与 localStorage 会不一致。
+ */
+function tryRefreshSession(): Promise<boolean> {
+  const rt = localStorage.getItem(REFRESH_TOKEN_KEY)
+  if (!rt || localStorage.getItem(AUTO_LOGIN_KEY) !== '1') return Promise.resolve(false)
+  if (_refreshPromise) return _refreshPromise
+  const p = (async () => {
+    try {
+      const res = await fetch(new URL(REFRESH_PATH, API_BASE).toString(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: rt }),
+      })
+      if (!res.ok) return false
+      const j = await res.json()
+      const d = j.data ?? j
+      if (!d?.token) return false
+      const m = await import('../composables/useAuth')
+      m.useAuth().applyRefreshedToken(d.token, d.refresh_token ?? rt)
+      return true
+    } catch {
+      return false
+    }
+  })()
+  _refreshPromise = p
+  p.finally(() => { if (_refreshPromise === p) _refreshPromise = null })
+  return p
+}
+
+/**
+ * 应用启动时主动续期（仅开启自动登录时生效），让首屏就拿到新 token，
+ * 避免过期 token 触发 401 闪烁。失败静默忽略，由真实业务请求的 401 兜底。
+ */
+export async function bootstrapSession(): Promise<boolean> {
+  if (localStorage.getItem(AUTO_LOGIN_KEY) !== '1') return false
+  return tryRefreshSession()
+}
+
+/** 会话确实失效：清干净本地状态并跳登录页（带原地址，登录后回跳）。 */
+async function handleSessionExpired(path: string): Promise<void> {
   if (_sessionExpiredHandled) return
-  if (path.includes('/auth/login') || path.includes('/auth/register')) return
+  if (isAuthEndpoint(path)) return
   _sessionExpiredHandled = true
-  localStorage.removeItem('qt_token')
+  try {
+    const m = await import('../composables/useAuth')
+    m.useAuth().clearAuth()
+  } catch {
+    // 兜底：动态加载失败也必须清干净，否则守卫会把 /login 弹回首页
+    for (const k of ['qt_token', 'qt_user', 'qt_is_admin', 'qt_force_change',
+      REFRESH_TOKEN_KEY, AUTO_LOGIN_KEY]) {
+      localStorage.removeItem(k)
+    }
+  }
   const redirect = typeof window !== 'undefined' ? window.location.pathname + window.location.search : '/'
   // 动态 import 避免 api.ts 与 router 形成静态循环依赖（只在出错时加载）
   import('../router')
-    .then((m) => m.default.push({ path: '/login', query: { redirect } }))
+    .then((m) => m.default.push({ path: '/login', query: { redirect, expired: '1' } }))
     .catch(() => {
       if (typeof window !== 'undefined') window.location.href = '/login'
     })
@@ -68,21 +141,30 @@ async function requestWithMeta<T>(
   }
 
   const isFormData = options?.body instanceof FormData
-  const res = await fetch(url.toString(), {
+  // 抽成闭包，401 静默续期后可用新 token 原样重放一次（body 为 JSON 字符串 / FormData，可复用）
+  const send = () => fetch(url.toString(), {
+    ...options,
     headers: {
       ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
-      ...(localStorage.getItem('qt_token') ? { Authorization: `Bearer ${localStorage.getItem('qt_token')}` } : {}),
+      ...authHeaders(),
       ...options?.headers,
     },
-    ...options,
   })
+
+  let res = await send()
+  if (res.status === 401 && !isAuthEndpoint(path)) {
+    const refreshed = await tryRefreshSession()
+    if (refreshed) {
+      res = await send()
+    }
+    // 刷新失败，或换新 token 后仍 401（凭证被管理员重置）→ 干净退回登录页
+    if (!refreshed || res.status === 401) {
+      await handleSessionExpired(path)
+    }
+  }
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
-    // 会话过期：清失效 token 并自动导向登录页（登录/注册请求除外）
-    if (res.status === 401) {
-      handleSessionExpired(path)
-    }
     throw new ApiError(
       res.status,
       body.message || `HTTP ${res.status}`,
@@ -823,10 +905,10 @@ export const api = {
   // ============================================================
   // 认证（登录 / 注册）
   // ============================================================
-  login: (username: string, password: string) =>
+  login: (username: string, password: string, autoLogin = false) =>
     request<LoginResult>('/api/v1/auth/login', undefined, {
       method: 'POST',
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username, password, auto_login: autoLogin }),
     }),
 
   register: (username: string, password: string) =>
@@ -939,18 +1021,18 @@ export interface AiStreamHandlers {
   onDone?: () => void
 }
 
-export async function streamAi(
+async function streamAiOnce(
   path: string,
   body: Record<string, unknown>,
   handlers: AiStreamHandlers,
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  allowRetry: boolean,
 ): Promise<void> {
-  const token = localStorage.getItem('qt_token')
   const res = await fetch(new URL(path, API_BASE).toString(), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...authHeaders(),
     },
     body: JSON.stringify(body),
     signal,
@@ -963,7 +1045,13 @@ export async function streamAi(
     } catch {
       /* 非 JSON 响应用状态码 */
     }
-    if (res.status === 401) handleSessionExpired(path)
+    if (res.status === 401 && !isAuthEndpoint(path)) {
+      // SSE 流：静默续期成功后整体重发一次（只换 token 不重放会中断对话）
+      if (allowRetry && await tryRefreshSession()) {
+        return streamAiOnce(path, body, handlers, signal, false)
+      }
+      await handleSessionExpired(path)
+    }
     throw new ApiError(res.status, message)
   }
   const reader = res.body.getReader()
@@ -989,6 +1077,16 @@ export async function streamAi(
       }
     }
   }
+}
+
+/** AI 流式对话入口：401 时允许静默续期并整体重发一次。 */
+export function streamAi(
+  path: string,
+  body: Record<string, unknown>,
+  handlers: AiStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  return streamAiOnce(path, body, handlers, signal, true)
 }
 
 // ---- 信号实验室（SignalLab）----

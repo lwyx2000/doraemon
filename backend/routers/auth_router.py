@@ -12,6 +12,7 @@ from services.auth_service import (
     change_password,
     admin_list_users,
     admin_reset_password,
+    refresh_access_token,
 )
 from core.deps import get_current_user, require_admin
 
@@ -35,10 +36,28 @@ class AdminResetPasswordRequest(BaseModel):
     new_password: Optional[str] = None
 
 
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
 @router.post("/login", response_model=ApiResponse[LoginResponse])
 def login(request: LoginRequest) -> ApiResponse[LoginResponse]:
-    """Authenticate user and return JWT token."""
-    data = authenticate(request.username, request.password)
+    """Authenticate user and return JWT token.
+
+    auto_login=True 时额外返回长效 refresh_token，用于前端静默续期。
+    """
+    data = authenticate(request.username, request.password, request.auto_login)
+    return ApiResponse(data=LoginResponse(**data))
+
+
+@router.post("/refresh", response_model=ApiResponse[LoginResponse])
+def refresh_endpoint(request: RefreshRequest) -> ApiResponse[LoginResponse]:
+    """自动登录静默续期：用长效 refresh token 换发新的 access token。
+
+    无需携带 access token（此时它通常已过期）；校验签名 / typ / token_version。
+    前端在收到业务接口 401 时优先调用本接口，成功后重放原请求，用户无感。
+    """
+    data = refresh_access_token(request.refresh_token)
     return ApiResponse(data=LoginResponse(**data))
 
 
