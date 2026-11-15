@@ -172,9 +172,97 @@ const extSettlementColumns = [
   { title: '名称', key: 'name', minWidth: 110 },
   { title: '方向', key: 'direction', width: 100 },
   { title: '成交额', key: 'amount', width: 120, align: 'right' as const },
+  { title: '佣金', key: 'commission', width: 92, align: 'right' as const },
+  { title: '印花税', key: 'stamp_tax', width: 92, align: 'right' as const },
+  { title: '过户费', key: 'transfer_fee', width: 92, align: 'right' as const },
   { title: '费用', key: 'fee_total', width: 100, align: 'right' as const },
   { title: '净额', key: 'net_amount', width: 120, align: 'right' as const },
   { title: '业务', key: 'biz', minWidth: 130 },
+]
+
+// ============================================================
+// 交割单费用口径（交易员视角：真实成交成本，而不是佣金率表上的名义费率）
+// 费率单位 bp（1bp = 万分之一）：综合费率 = 总费用 / 成交额
+// ============================================================
+interface FeeGroup {
+  key: string
+  label: string
+  count: number
+  amount: number
+  fee: number
+  commission: number
+  stamp_tax: number
+  bps: number | null
+}
+const feeSummary = computed(() => {
+  const rows = accountSettlements.value
+  const bps = (fee: number, base: number) => (base > 0 ? (fee / base) * 10000 : null)
+  let amount = 0, fee = 0, commission = 0, stampTax = 0, transferFee = 0, otherFee = 0
+  let buyAmount = 0, sellAmount = 0, rated = 0
+  const byGroup = new Map<string, FeeGroup>()
+  for (const r of rows) {
+    const amt = Math.abs(r.amount ?? 0)
+    const f = r.fee_total ?? 0
+    // 无成交额的行（如利息归本、红利入账）不参与费率
+    if (amt <= 0) continue
+    const comm = r.commission ?? 0
+    const stamp = r.stamp_tax ?? 0
+    const transfer = r.transfer_fee ?? 0
+    const other = r.other_fee ?? 0
+    amount += amt
+    commission += comm
+    stampTax += stamp
+    transferFee += transfer
+    otherFee += other
+    if (r.direction === 'sell') sellAmount += amt
+    else buyAmount += amt
+    if (r.fee_total !== null && r.fee_total !== undefined) { fee += f; rated += 1 }
+    const k = r.type || 'other'
+    const g = byGroup.get(k) ?? {
+      key: k, label: TYPE_LABELS[k] ?? k, count: 0, amount: 0, fee: 0, commission: 0, stamp_tax: 0, bps: null,
+    }
+    g.count += 1
+    g.amount += amt
+    g.fee += f
+    g.commission += comm
+    g.stamp_tax += stamp
+    byGroup.set(k, g)
+  }
+  const groups = [...byGroup.values()]
+    .map(g => ({ ...g, bps: bps(g.fee, g.amount) }))
+    .sort((a, b) => b.amount - a.amount)
+  return {
+    rows: rows.length,
+    rated,
+    amount,
+    fee,
+    commission,
+    stampTax,
+    transferFee,
+    otherFee,
+    buyAmount,
+    sellAmount,
+    bps: bps(fee, amount),
+    commissionBps: bps(commission, amount),
+    // 印花税按卖出额做分母，与券商账单口径一致
+    stampBps: bps(stampTax, sellAmount),
+    transferBps: bps(transferFee, amount),
+    // 平均每笔费用，用于判断小单被最低佣金吃掉多少
+    avgFee: rated > 0 ? fee / rated : null,
+    groups,
+  }
+})
+const feeGroupColumns = [
+  { title: '品种', key: 'label', width: 110 },
+  { title: '笔数', key: 'count', width: 70, align: 'right' as const },
+  { title: '成交额', key: 'amount', width: 130, align: 'right' as const, render: (r: FeeGroup) => h('span', { class: 'mono' }, fmtMoney(r.amount)) },
+  { title: '佣金', key: 'commission', width: 100, align: 'right' as const, render: (r: FeeGroup) => h('span', { class: 'mono' }, fmtMoney(r.commission)) },
+  { title: '印花税', key: 'stamp_tax', width: 100, align: 'right' as const, render: (r: FeeGroup) => h('span', { class: 'mono' }, fmtMoney(r.stamp_tax)) },
+  { title: '费用合计', key: 'fee', width: 110, align: 'right' as const, render: (r: FeeGroup) => h('span', { class: 'mono' }, fmtMoney(r.fee)) },
+  {
+    title: '综合费率', key: 'bps', width: 100, align: 'right' as const,
+    render: (r: FeeGroup) => h('span', { class: 'mono' }, r.bps == null ? '—' : `${fmtNum(r.bps, 2)} bp`),
+  },
 ]
 
 // 表格分页：每页默认 20 行，客户端分页
@@ -320,8 +408,7 @@ function aggregateBy(
 
 const typeSummaryRows = computed(() =>
   aggregateBy(view.value?.items ?? [], i => i.type, k => TYPE_LABELS[k] ?? k))
-const brokerSummaryRows = computed(() =>
-  aggregateBy(view.value?.items ?? [], i => brokerName(i.broker, i.broker_account)))
+// 按资金账号汇总：不同资金账号严格分开，绝不合并（两个账号的持仓口径完全不同）
 const accountSummaryRows = computed(() => {
   const rows = aggregateBy(view.value?.items ?? [], i => i.broker_account || '未分组',
     k => (k === '未分组' ? '未分组（旧数据）' : k))
@@ -362,19 +449,59 @@ const kpi = computed(() => {
     accountCount: (ov?.accounts ?? []).length,
     totalAsset: ov?.totals.total_asset ?? null,
     available: ov?.totals.available ?? null,
+    // 仓位 = 持仓市值 / 总资产（含可用资金），交易员看是否满仓最直观
+    positionPct: ov?.totals.total_asset ? (totalMv / ov.totals.total_asset) * 100 : null,
   }
 })
 
+// 持仓集中度：包含全部持仓（逆回购等类现金也计入，否则占比加起来对不上 100%）
 const topHoldings = computed(() => {
   const total = fullSummary.value?.total_market_value ?? 0
-  // 逆回购是类现金，不参与「前十大权重」，避免把资金出借画成单票集中
   return [...(view.value?.items ?? [])]
-    .filter(i => (i.market_value ?? 0) > 0 && i.type !== 'repo')
+    .filter(i => (i.market_value ?? 0) > 0)
     .sort((a, b) => (b.market_value ?? 0) - (a.market_value ?? 0))
     .slice(0, 10)
     .map(i => ({ ...i, weight: total > 0 ? ((i.market_value ?? 0) / total) * 100 : 0 }))
 })
 const topWeightMax = computed(() => Math.max(...topHoldings.value.map(h => h.weight), 1))
+// 集中度尾部统计：前 5 / 前 10 合计、最大单票、股票类合计
+const concentrationStats = computed(() => {
+  const all = [...(view.value?.items ?? [])].filter(i => (i.market_value ?? 0) > 0)
+  const total = fullSummary.value?.total_market_value ?? 0
+  if (!total) return null
+  const pct = (v: number) => (v / total) * 100
+  const sorted = all.slice().sort((a, b) => (b.market_value ?? 0) - (a.market_value ?? 0))
+  const top5 = sorted.slice(0, 5).reduce((s, i) => s + (i.market_value ?? 0), 0)
+  const top10 = sorted.slice(0, 10).reduce((s, i) => s + (i.market_value ?? 0), 0)
+  const equity = all.filter(i => i.type !== 'repo')
+    .reduce((s, i) => s + (i.market_value ?? 0), 0)
+  return {
+    top5Pct: pct(top5),
+    top10Pct: pct(top10),
+    maxPct: sorted.length ? pct(sorted[0].market_value ?? 0) : 0,
+    maxName: sorted.length ? `${sorted[0].name}(${sorted[0].code})` : '—',
+    equityPct: pct(equity),
+  }
+})
+
+// 持仓盈亏结构：盈利 / 亏损家数、盈亏比、最大浮亏（交易员最关心的四条）
+const structureStats = computed(() => {
+  const items = (view.value?.items ?? []).filter(i => (i.market_value ?? 0) > 0)
+  let win = 0, loss = 0, winAmt = 0, lossAmt = 0
+  let worst: Holding | null = null
+  for (const i of items) {
+    const p = i.pnl
+    if (p === null || p === undefined) continue
+    if (p > 0) { win += 1; winAmt += p } else if (p < 0) { loss += 1; lossAmt += -p }
+    if (p < 0 && (!worst || p < (worst.pnl ?? 0))) worst = i
+  }
+  return {
+    win, loss, winAmt, lossAmt,
+    winRate: win + loss > 0 ? (win / (win + loss)) * 100 : null,
+    ratio: lossAmt > 0 ? winAmt / lossAmt : null,
+    worst,
+  }
+})
 
 function accountRowProps(row: any) {
   return {
@@ -391,6 +518,14 @@ const accountSummaryColumns = [
   { title: '券商', key: 'broker', width: 100, render: (r: any) => h('span', { style: { color: isBrokerUnknown(r.broker, r.key) ? 'var(--text-muted)' : undefined } }, brokerName(r.broker, r.key)) },
   { title: '持仓', key: 'count', width: 68, align: 'right' as const, sorter: (a: any, b: any) => a.count - b.count },
   { title: '持仓市值', key: 'mv', width: 120, align: 'right' as const, sorter: (a: any, b: any) => a.mv - b.mv, render: (r: any) => h('span', { class: 'mono' }, fmtMoney(r.mv)) },
+  {
+    title: '市值占比', key: 'weight', width: 132,
+    sorter: (a: any, b: any) => a.weight - b.weight,
+    render: (r: any) => h('div', { class: 'share-cell' }, [
+      h('div', { class: 'share-bar' }, [h('i', { style: { width: `${Math.min(r.weight, 100)}%` } })]),
+      h('span', { class: 'mono' }, `${fmtNum(r.weight, 1)}%`),
+    ]),
+  },
   { title: '浮动盈亏', key: 'pnl', width: 120, align: 'right' as const, sorter: (a: any, b: any) => a.pnl - b.pnl, render: (r: any) => h('span', { class: 'mono', style: { color: pnlColor(r.pnl), fontWeight: 600 } }, fmtMoney(r.pnl)) },
   { title: '收益率', key: 'pnl_pct', width: 90, align: 'right' as const, sorter: (a: any, b: any) => (a.pnl_pct ?? -Infinity) - (b.pnl_pct ?? -Infinity), render: (r: any) => h('span', { style: { color: pnlColor(r.pnl_pct), fontWeight: 600 } }, r.pnl_pct == null ? '—' : `${r.pnl_pct >= 0 ? '+' : ''}${fmtNum(r.pnl_pct)}%`) },
   { title: '当日盈亏', key: 'daily', width: 116, align: 'right' as const, sorter: (a: any, b: any) => a.daily - b.daily, render: (r: any) => h('span', { class: 'mono', style: { color: pnlColor(r.daily) } }, fmtMoney(r.daily)) },
@@ -410,22 +545,14 @@ const typeSummaryColumns = [
     },
   },
   { title: '标的', key: 'count', width: 62, align: 'right' as const, sorter: (a: any, b: any) => a.count - b.count },
-  { title: '市值', key: 'mv', width: 110, align: 'right' as const, sorter: (a: any, b: any) => a.mv - b.mv, render: (r: any) => h('span', { class: 'mono' }, fmtMoney(r.mv)) },
-  { title: '浮动盈亏', key: 'pnl', width: 110, align: 'right' as const, sorter: (a: any, b: any) => a.pnl - b.pnl, render: (r: any) => h('span', { class: 'mono', style: { color: pnlColor(r.pnl), fontWeight: 600 } }, fmtMoney(r.pnl)) },
-  { title: '收益率', key: 'pnl_pct', width: 84, align: 'right' as const, render: (r: any) => h('span', { style: { color: pnlColor(r.pnl_pct), fontWeight: 600 } }, r.pnl_pct == null ? '—' : `${r.pnl_pct >= 0 ? '+' : ''}${fmtNum(r.pnl_pct)}%`) },
-  { title: '占比', key: 'weight', width: 72, align: 'right' as const, sorter: (a: any, b: any) => a.weight - b.weight, render: (r: any) => h('span', { class: 'mono' }, `${fmtNum(r.weight, 1)}%`) },
+  { title: '成本', key: 'cost', width: 116, align: 'right' as const, sorter: (a: any, b: any) => a.cost - b.cost, render: (r: any) => h('span', { class: 'mono' }, fmtMoney(r.cost)) },
+  { title: '市值', key: 'mv', width: 120, align: 'right' as const, sorter: (a: any, b: any) => a.mv - b.mv, render: (r: any) => h('span', { class: 'mono' }, fmtMoney(r.mv)) },
+  { title: '浮动盈亏', key: 'pnl', width: 120, align: 'right' as const, sorter: (a: any, b: any) => a.pnl - b.pnl, render: (r: any) => h('span', { class: 'mono', style: { color: pnlColor(r.pnl), fontWeight: 600 } }, fmtMoney(r.pnl)) },
+  { title: '收益率', key: 'pnl_pct', width: 92, align: 'right' as const, render: (r: any) => h('span', { style: { color: pnlColor(r.pnl_pct), fontWeight: 600 } }, r.pnl_pct == null ? '—' : `${r.pnl_pct >= 0 ? '+' : ''}${fmtNum(r.pnl_pct)}%`) },
+  { title: '当日盈亏', key: 'daily', width: 120, align: 'right' as const, sorter: (a: any, b: any) => a.daily - b.daily, render: (r: any) => h('span', { class: 'mono', style: { color: pnlColor(r.daily) } }, fmtMoney(r.daily)) },
+  { title: '占比', key: 'weight', width: 76, align: 'right' as const, sorter: (a: any, b: any) => a.weight - b.weight, render: (r: any) => h('span', { class: 'mono' }, `${fmtNum(r.weight, 1)}%`) },
 ]
 const typeSummaryScrollX = typeSummaryColumns.reduce((s, c: any) => s + (c.width ?? 100), 0)
-
-const brokerSummaryColumns = [
-  { title: '券商', key: 'label', width: 120, render: (r: any) => h('span', { style: { color: r.label === '未标注券商' ? 'var(--text-muted)' : undefined } }, r.label || '未分组') },
-  { title: '标的', key: 'count', width: 62, align: 'right' as const, sorter: (a: any, b: any) => a.count - b.count },
-  { title: '市值', key: 'mv', width: 110, align: 'right' as const, sorter: (a: any, b: any) => a.mv - b.mv, render: (r: any) => h('span', { class: 'mono' }, fmtMoney(r.mv)) },
-  { title: '浮动盈亏', key: 'pnl', width: 110, align: 'right' as const, sorter: (a: any, b: any) => a.pnl - b.pnl, render: (r: any) => h('span', { class: 'mono', style: { color: pnlColor(r.pnl), fontWeight: 600 } }, fmtMoney(r.pnl)) },
-  { title: '收益率', key: 'pnl_pct', width: 84, align: 'right' as const, render: (r: any) => h('span', { style: { color: pnlColor(r.pnl_pct), fontWeight: 600 } }, r.pnl_pct == null ? '—' : `${r.pnl_pct >= 0 ? '+' : ''}${fmtNum(r.pnl_pct)}%`) },
-  { title: '占比', key: 'weight', width: 72, align: 'right' as const, sorter: (a: any, b: any) => a.weight - b.weight, render: (r: any) => h('span', { class: 'mono' }, `${fmtNum(r.weight, 1)}%`) },
-]
-const brokerSummaryScrollX = brokerSummaryColumns.reduce((s, c: any) => s + (c.width ?? 100), 0)
 
 // ============================================================
 // 筛选（表格展示层过滤，汇总统计始终全量）
@@ -1222,7 +1349,32 @@ const historySummary = computed(() => {
   const items = history.value ?? []
   if (!items.length) return null
   const totalRealized = items.reduce((s, i) => s + (i.realized_pnl ?? 0), 0)
-  return { count: items.length, totalRealized }
+  // 已平仓质量：胜率 / 盈亏比 / 平均持有天数（交易员复盘最常用）
+  let win = 0, loss = 0, winAmt = 0, lossAmt = 0, best: HoldingHistory | null = null, worst: HoldingHistory | null = null
+  let heldDays = 0, heldCount = 0
+  for (const i of items) {
+    const p = i.realized_pnl
+    if (p !== null && p !== undefined) {
+      if (p > 0) { win += 1; winAmt += p } else if (p < 0) { loss += 1; lossAmt += -p }
+      if (!best || p > (best.realized_pnl ?? 0)) best = i
+      if (!worst || p < (worst.realized_pnl ?? 0)) worst = i
+    }
+    if (i.open_date && i.closed_at) {
+      const d = (new Date(i.closed_at).getTime() - new Date(i.open_date).getTime()) / 86400000
+      if (Number.isFinite(d) && d >= 0) { heldDays += d; heldCount += 1 }
+    }
+  }
+  return {
+    count: items.length,
+    totalRealized,
+    win,
+    loss,
+    winRate: win + loss > 0 ? (win / (win + loss)) * 100 : null,
+    ratio: lossAmt > 0 ? winAmt / lossAmt : null,
+    avgHoldDays: heldCount > 0 ? heldDays / heldCount : null,
+    best,
+    worst,
+  }
 })
 
 // ============ 终端管理（持仓页 tab：终端管理） ============
@@ -1493,12 +1645,14 @@ watch(activeTab, (tab) => {
 
       <GlossaryPanel page-key="holdingsAnalysis" />
 
-      <!-- 资金账号切换：外部程序按账号上传，单账号时只显示一行，多账号自动展开 -->
+      <!-- 资金账号筛选：单选框，一眼看到当前口径；只作用于「当前持仓」与「账户数据」 -->
       <div class="account-bar" v-if="accountOptions.length">
-        <span class="account-bar-label">资金账号筛选</span>
-        <n-select v-model:value="selectedBrokerAccount" :options="accountOptions" clearable
-          placeholder="全部账号（汇总）" size="small" class="account-bar-select"
-          title="筛选只作用于「当前持仓」与「账户数据」两个页签" />
+        <span class="account-bar-label">资金账号</span>
+        <n-radio-group v-model:value="selectedBrokerAccount" size="small" class="account-bar-radio"
+          title="筛选只作用于「当前持仓」与「账户数据」两个页签">
+          <n-radio-button value="">全部</n-radio-button>
+          <n-radio-button v-for="o in accountOptions" :key="o.value" :value="o.value">{{ o.label }}</n-radio-button>
+        </n-radio-group>
         <div class="account-bar-stats">
           <span class="mini-stat"><i>账号</i><b class="mono">{{ accountCards.length }}</b></span>
           <span class="mini-stat"><i>总资产</i><b class="mono">{{ fmtMoney(externalOverview?.totals.total_asset) }}</b></span>
@@ -1533,6 +1687,11 @@ watch(activeTab, (tab) => {
                 </span>
               </div>
               <div class="kpi-card">
+                <span class="kpi-label">仓位</span>
+                <b class="kpi-value mono">{{ kpi.positionPct == null ? '—' : fmtNum(kpi.positionPct, 1) + '%' }}</b>
+                <span class="kpi-sub">可用 {{ fmtMoney(kpi.available) }}</span>
+              </div>
+              <div class="kpi-card">
                 <span class="kpi-label">持仓标的</span>
                 <b class="kpi-value mono">{{ kpi.holdingCount }}</b>
                 <span class="kpi-sub">{{ kpi.pricedCount }} 个已获行情 · {{ kpi.typeCount }} 个品种</span>
@@ -1544,10 +1703,40 @@ watch(activeTab, (tab) => {
               </div>
             </div>
 
-            <!-- 资金账号总览：点行切换账号口径 -->
-            <DataPanel title="资金账号总览">
+            <!-- 盈亏结构：交易员看「赚的在哪些、亏的在哪些」 -->
+            <div class="struct-strip">
+              <span class="struct-chip">
+                <i>盈利标的</i>
+                <b class="mono" style="color: var(--color-danger);">{{ structureStats.win }}</b>
+                <em class="mono">+{{ fmtMoney(structureStats.winAmt) }}</em>
+              </span>
+              <span class="struct-chip">
+                <i>亏损标的</i>
+                <b class="mono" style="color: var(--color-success);">{{ structureStats.loss }}</b>
+                <em class="mono">-{{ fmtMoney(structureStats.lossAmt) }}</em>
+              </span>
+              <span class="struct-chip">
+                <i>胜率</i>
+                <b class="mono">{{ structureStats.winRate == null ? '—' : fmtNum(structureStats.winRate, 1) + '%' }}</b>
+              </span>
+              <span class="struct-chip">
+                <i>盈亏比</i>
+                <b class="mono">{{ structureStats.ratio == null ? '—' : fmtNum(structureStats.ratio) }}</b>
+                <em>盈利额 / 亏损额</em>
+              </span>
+              <span class="struct-chip" v-if="structureStats.worst">
+                <i>最大浮亏</i>
+                <b class="mono">{{ structureStats.worst.name }}</b>
+                <em class="mono" style="color: var(--color-success);">
+                  {{ fmtMoney(structureStats.worst.pnl) }}{{ structureStats.worst.pnl_pct == null ? '' : ` (${fmtNum(structureStats.worst.pnl_pct)}%)` }}
+                </em>
+              </span>
+            </div>
+
+            <!-- 按资金账号汇总：两个资金账号分别一行，绝不合并 -->
+            <DataPanel title="按资金账号汇总">
               <template #actions>
-                <span class="panel-hint">这里是全量汇总；点某一行跳到「当前持仓」并只看该账号</span>
+                <span class="panel-hint">每个资金账号单独一行（不按券商合并）；点某一行跳到「当前持仓」并只看该账号</span>
                 <n-button size="small" tertiary @click="refreshAccountData">同步状态</n-button>
               </template>
               <n-data-table
@@ -1573,20 +1762,13 @@ watch(activeTab, (tab) => {
               </DataPanel>
             </div>
 
-            <div class="summary-tables">
-              <DataPanel title="按品种汇总">
-                <n-data-table :columns="typeSummaryColumns" :data="typeSummaryRows"
-                  :row-key="(row: any) => row.key" :bordered="false" size="small"
-                  :scroll-x="typeSummaryScrollX" max-height="360" />
-              </DataPanel>
-              <DataPanel title="按券商汇总">
-                <n-data-table :columns="brokerSummaryColumns" :data="brokerSummaryRows"
-                  :row-key="(row: any) => row.key" :bordered="false" size="small"
-                  :scroll-x="brokerSummaryScrollX" max-height="360" />
-              </DataPanel>
-            </div>
+            <DataPanel title="按品种汇总">
+              <n-data-table :columns="typeSummaryColumns" :data="typeSummaryRows"
+                :row-key="(row: any) => row.key" :bordered="false" size="small"
+                :scroll-x="typeSummaryScrollX" max-height="360" />
+            </DataPanel>
 
-            <DataPanel title="持仓集中度（前 10 大权重）" v-if="topHoldings.length">
+            <DataPanel title="持仓集中度（前 10 大权重，含逆回购等类现金）" v-if="topHoldings.length">
               <div class="concentration">
                 <div v-for="(h, idx) in topHoldings" :key="h.id" class="conc-row">
                   <span class="conc-idx">{{ idx + 1 }}</span>
@@ -1597,6 +1779,13 @@ watch(activeTab, (tab) => {
                   <span class="conc-mv mono">{{ fmtMoney(h.market_value) }}</span>
                   <span class="conc-pnl mono" :style="{ color: pnlColor(h.pnl) }">{{ fmtMoney(h.pnl) }}</span>
                 </div>
+              </div>
+              <div class="conc-foot" v-if="concentrationStats">
+                <span>前 5 合计 <b class="mono">{{ fmtNum(concentrationStats.top5Pct, 1) }}%</b></span>
+                <span>前 10 合计 <b class="mono">{{ fmtNum(concentrationStats.top10Pct, 1) }}%</b></span>
+                <span>最大单票 <b class="mono">{{ fmtNum(concentrationStats.maxPct, 1) }}%</b>（{{ concentrationStats.maxName }}）</span>
+                <span>股票类合计 <b class="mono">{{ fmtNum(concentrationStats.equityPct, 1) }}%</b></span>
+                <span class="conc-foot-note">分母为全部持仓市值，逆回购等类现金也计入</span>
               </div>
             </DataPanel>
           </div>
@@ -1720,6 +1909,33 @@ watch(activeTab, (tab) => {
           <div v-if="historySummary" class="history-summary">
             历史持仓 <b>{{ historySummary.count }}</b> 笔 · 已实现盈亏合计
             <b :style="{ color: pnlColor(historySummary.totalRealized) }">{{ fmtMoney(historySummary.totalRealized) }}</b>
+          </div>
+          <div v-if="historySummary" class="fee-strip">
+            <span class="fee-chip">
+              <i>胜率</i>
+              <b class="mono">{{ historySummary.winRate == null ? '—' : fmtNum(historySummary.winRate, 1) + '%' }}</b>
+              <em>盈 {{ historySummary.win }} / 亏 {{ historySummary.loss }}</em>
+            </span>
+            <span class="fee-chip">
+              <i>盈亏比</i>
+              <b class="mono">{{ historySummary.ratio == null ? '—' : fmtNum(historySummary.ratio) }}</b>
+              <em>盈利额 / 亏损额</em>
+            </span>
+            <span class="fee-chip">
+              <i>平均持有</i>
+              <b class="mono">{{ historySummary.avgHoldDays == null ? '—' : fmtNum(historySummary.avgHoldDays, 1) + ' 天' }}</b>
+              <em>按开仓日 ~ 平仓日</em>
+            </span>
+            <span class="fee-chip" v-if="historySummary.best">
+              <i>最佳单笔</i>
+              <b class="mono">{{ historySummary.best.name }}</b>
+              <em class="mono" style="color: var(--color-danger);">{{ fmtMoney(historySummary.best.realized_pnl) }}</em>
+            </span>
+            <span class="fee-chip" v-if="historySummary.worst">
+              <i>最差单笔</i>
+              <b class="mono">{{ historySummary.worst.name }}</b>
+              <em class="mono" style="color: var(--color-success);">{{ fmtMoney(historySummary.worst.realized_pnl) }}</em>
+            </span>
           </div>
           <DataPanel title="历史持仓（已平仓）">
             <n-data-table
@@ -1892,9 +2108,54 @@ watch(activeTab, (tab) => {
               :row-key="(row: any) => row.id" :bordered="false" size="small" max-height="240" :scroll-x="1000" />
             <div v-if="!accountDataLoading && !accountBalances.length" class="history-empty">暂无资金面板数据</div>
           </DataPanel>
+          <!-- 费用口径：直接由交割单分项费用反算真实成交成本 -->
+          <DataPanel title="手续费率（按交割单反算）">
+            <template #actions>
+              <span class="panel-hint">
+                综合费率 = 费用合计 / 成交额；印花税按卖出额计；样本 {{ feeSummary.rated }} 笔（最多取最近 200 条交割单）
+              </span>
+            </template>
+            <div class="fee-strip" v-if="feeSummary.rated">
+              <span class="fee-chip is-primary">
+                <i>综合费率</i>
+                <b class="mono">{{ feeSummary.bps == null ? '—' : fmtNum(feeSummary.bps, 2) + ' bp' }}</b>
+                <em>合计 {{ fmtMoney(feeSummary.fee) }}</em>
+              </span>
+              <span class="fee-chip">
+                <i>佣金费率</i>
+                <b class="mono">{{ feeSummary.commissionBps == null ? '—' : fmtNum(feeSummary.commissionBps, 2) + ' bp' }}</b>
+                <em>佣金 {{ fmtMoney(feeSummary.commission) }}</em>
+              </span>
+              <span class="fee-chip">
+                <i>印花税率（卖出）</i>
+                <b class="mono">{{ feeSummary.stampBps == null ? '—' : fmtNum(feeSummary.stampBps, 2) + ' bp' }}</b>
+                <em>印花税 {{ fmtMoney(feeSummary.stampTax) }}</em>
+              </span>
+              <span class="fee-chip">
+                <i>过户费率</i>
+                <b class="mono">{{ feeSummary.transferBps == null ? '—' : fmtNum(feeSummary.transferBps, 2) + ' bp' }}</b>
+                <em>过户费 {{ fmtMoney(feeSummary.transferFee) }}</em>
+              </span>
+              <span class="fee-chip">
+                <i>平均每笔费用</i>
+                <b class="mono">{{ fmtMoney(feeSummary.avgFee) }}</b>
+                <em>成交额 {{ fmtMoney(feeSummary.amount) }}</em>
+              </span>
+              <span class="fee-chip">
+                <i>买 / 卖成交额</i>
+                <b class="mono">{{ fmtMoney(feeSummary.buyAmount) }} / {{ fmtMoney(feeSummary.sellAmount) }}</b>
+                <em>笔数 {{ feeSummary.rated }}</em>
+              </span>
+            </div>
+            <div v-else class="history-empty">暂无交割单费用数据（需客户端上传含分项费用的交割单）</div>
+            <n-data-table v-if="feeSummary.groups.length" :columns="feeGroupColumns"
+              :data="feeSummary.groups" :row-key="(row: any) => row.key"
+              :bordered="false" size="small" max-height="240" :scroll-x="760" />
+          </DataPanel>
+
           <DataPanel title="交割单（分项费用）">
             <n-data-table :columns="extSettlementColumns" :data="accountSettlements"
-              :row-key="(row: any) => row.id" :bordered="false" size="small" max-height="280" :scroll-x="1200" />
+              :row-key="(row: any) => row.id" :bordered="false" size="small" max-height="280" :scroll-x="1560" />
             <div v-if="!accountDataLoading && !accountSettlements.length" class="history-empty">暂无交割单数据</div>
           </DataPanel>
         </n-tab-pane>
@@ -2258,11 +2519,12 @@ watch(activeTab, (tab) => {
 }
 .warning-item.warn { background: rgba(134, 79, 0, 0.1); color: #864f00; border-color: rgba(134, 79, 0, 0.3); }
 .warning-item.danger { background: rgba(147, 0, 10, 0.08); color: #93000a; border-color: rgba(147, 0, 10, 0.28); }
+.warning-item.info { background: rgba(0, 94, 161, 0.08); color: #005ea1; border-color: rgba(0, 94, 161, 0.26); }
 
 /* ===== 汇总页 ===== */
 .summary-section { display: flex; flex-direction: column; gap: 18px; }
 
-.kpi-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+.kpi-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
 .kpi-card {
   position: relative; display: flex; flex-direction: column; gap: 4px;
   padding: 14px 16px; border-radius: 10px;
@@ -2281,10 +2543,40 @@ watch(activeTab, (tab) => {
 .kpi-sub { font-size: 11px; color: var(--text-muted); }
 .kpi-sub i { font-style: normal; font-weight: 600; }
 
-.summary-tables { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 
 .panel-hint { font-size: 12px; color: var(--text-muted); }
+
+/* 盈亏结构 chips（盈利/亏损家数、胜率、盈亏比、最大浮亏） */
+.struct-strip { display: flex; flex-wrap: wrap; gap: 8px; }
+.struct-chip {
+  display: inline-flex; align-items: baseline; gap: 6px;
+  padding: 5px 12px; border-radius: 999px;
+  background: var(--bg-subtle); border: 1px solid var(--border-default);
+  font-size: 11px; color: var(--text-muted);
+}
+.struct-chip i { font-style: normal; font-weight: 700; letter-spacing: 0.03em; }
+.struct-chip b { font-size: 14px; font-weight: 700; color: var(--text-primary); }
+.struct-chip em { font-style: normal; color: var(--text-muted); font-size: 11px; }
+
+/* 费用口径 chips */
+.fee-strip { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.fee-chip {
+  display: inline-flex; align-items: baseline; gap: 6px;
+  padding: 6px 12px; border-radius: 999px;
+  background: var(--bg-subtle); border: 1px solid var(--border-default);
+  font-size: 11px; color: var(--text-muted);
+}
+.fee-chip i { font-style: normal; font-weight: 700; letter-spacing: 0.03em; }
+.fee-chip b { font-size: 14px; font-weight: 700; color: var(--text-primary); }
+.fee-chip em { font-style: normal; color: var(--text-muted); font-size: 11px; }
+.fee-chip.is-primary { background: linear-gradient(135deg, rgba(0,94,161,0.12), rgba(0,94,161,0.03)); border-color: rgba(0,94,161,0.3); }
+.fee-chip.is-primary b { color: #005ea1; }
+
+/* 汇总表内的市值占比小条 */
+.share-cell { display: flex; align-items: center; gap: 8px; }
+.share-bar { flex: 1; min-width: 40px; height: 5px; border-radius: 3px; background: var(--bg-overlay); overflow: hidden; }
+.share-bar i { display: block; height: 100%; border-radius: 3px; background: linear-gradient(90deg, rgba(0,94,161,0.5), rgba(0,94,161,0.9)); }
 
 /* 持仓集中度 */
 .concentration { display: flex; flex-direction: column; gap: 6px; }
@@ -2303,6 +2595,14 @@ watch(activeTab, (tab) => {
 .conc-weight { text-align: right; color: var(--text-secondary); }
 .conc-mv { text-align: right; color: var(--text-primary); }
 .conc-pnl { text-align: right; font-weight: 600; }
+.conc-foot {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px;
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px dashed var(--border-default);
+  font-size: 12px; color: var(--text-muted);
+}
+.conc-foot b { color: var(--text-primary); font-weight: 700; }
+.conc-foot-note { margin-left: auto; font-size: 11px; color: var(--text-muted); }
 
 /* 资金账号切换 bar */
 .account-bar {
@@ -2312,7 +2612,8 @@ watch(activeTab, (tab) => {
   background: var(--bg-subtle);
 }
 .account-bar-label { font-size: 12px; font-weight: 700; color: var(--text-secondary); }
-.account-bar-select { width: 220px; }
+.account-bar-radio { flex-wrap: wrap; }
+.account-bar-radio .n-radio-button { font-family: 'JetBrains Mono', monospace; }
 .account-bar-stats { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex: 1; min-width: 260px; }
 .mini-stat {
   display: inline-flex; align-items: baseline; gap: 5px;
@@ -2491,7 +2792,6 @@ watch(activeTab, (tab) => {
 
 @media (max-width: 1280px) {
   .kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .summary-tables { grid-template-columns: 1fr; }
 }
 @media (max-width: 1024px) {
   .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }

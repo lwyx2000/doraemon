@@ -981,9 +981,13 @@ def build_holdings_view(
         if it["market_value"] is None:
             continue
         weight = it["market_value"] / total_mv * 100 if total_mv else 0.0
-        # 逆回购是资金出借（类现金），占比大不算集中度风险，跳过这条预警
-        if weight > 30 and it["type"] != "repo":
-            warnings.append({"level": "warn", "text": f"集中度过高：{it['name']}({it['code']}) 占比 {weight:.1f}%（>30%）"})
+        # 集中度口径覆盖全部持仓（含逆回购）。逆回购是资金出借（类现金），
+        # 占比大要提示，但不算单票风险，单独给一条 info 说明。
+        if weight > 30:
+            if it["type"] == "repo":
+                warnings.append({"level": "info", "text": f"资金占用：{it['name']}({it['code']}) 占比 {weight:.1f}%，属类现金出借，非股票风险敞口"})
+            else:
+                warnings.append({"level": "warn", "text": f"集中度过高：{it['name']}({it['code']}) 占比 {weight:.1f}%（>30%）"})
         if it["pnl_pct"] is not None and it["pnl_pct"] <= -15:
             warnings.append({"level": "danger", "text": f"深度浮亏：{it['name']}({it['code']}) 浮亏 {it['pnl_pct']:.1f}%"})
         if it["alert_status"] == "stop_loss":

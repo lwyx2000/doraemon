@@ -1048,15 +1048,22 @@ export interface ExternalBalance {
 export interface ExternalSettlement {
   id: string
   trade_date: string
+  settle_date?: string | null
   broker_account: string
   broker: string
   code: string
   name: string
+  type?: string
   direction: string
   entry_type: string
   price: number | null
   quantity: number | null
   amount: number | null
+  // 分项费用（交割单原始列，用于反算真实手续费率）
+  commission?: number | null
+  stamp_tax?: number | null
+  transfer_fee?: number | null
+  other_fee?: number | null
   fee_total: number | null
   net_amount: number | null
   trade_id: string
