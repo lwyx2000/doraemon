@@ -386,43 +386,43 @@ function accountRowProps(row: any) {
 }
 
 const accountSummaryColumns = [
-  { title: '资金账号', key: 'key', width: 128, fixed: 'left' as const, render: (r: any) => h('span', { class: 'mono' }, r.key) },
-  { title: '券商', key: 'broker', width: 96, render: (r: any) => h('span', { style: { color: isBrokerUnknown(r.broker, r.key) ? 'var(--text-muted)' : undefined } }, brokerName(r.broker, r.key)) },
-  { title: '持仓', key: 'count', width: 66, align: 'right' as const, sorter: (a: any, b: any) => a.count - b.count },
-  { title: '持仓市值', key: 'mv', width: 116, align: 'right' as const, sorter: (a: any, b: any) => a.mv - b.mv, render: (r: any) => h('span', { class: 'mono' }, fmtMoney(r.mv)) },
-  { title: '浮动盈亏', key: 'pnl', width: 116, align: 'right' as const, sorter: (a: any, b: any) => a.pnl - b.pnl, render: (r: any) => h('span', { class: 'mono', style: { color: pnlColor(r.pnl), fontWeight: 600 } }, fmtMoney(r.pnl)) },
-  { title: '收益率', key: 'pnl_pct', width: 86, align: 'right' as const, sorter: (a: any, b: any) => (a.pnl_pct ?? -Infinity) - (b.pnl_pct ?? -Infinity), render: (r: any) => h('span', { style: { color: pnlColor(r.pnl_pct), fontWeight: 600 } }, r.pnl_pct == null ? '—' : `${r.pnl_pct >= 0 ? '+' : ''}${fmtNum(r.pnl_pct)}%`) },
-  { title: '当日盈亏', key: 'daily', width: 112, align: 'right' as const, sorter: (a: any, b: any) => a.daily - b.daily, render: (r: any) => h('span', { class: 'mono', style: { color: pnlColor(r.daily) } }, fmtMoney(r.daily)) },
-  { title: '总资产', key: 'total_asset', width: 116, align: 'right' as const, render: (r: any) => h('span', { class: 'mono' }, fmtMoney(r.total_asset)) },
-  { title: '可用', key: 'available', width: 112, align: 'right' as const, render: (r: any) => h('span', { class: 'mono' }, fmtMoney(r.available)) },
-  { title: '成交/委托/交割', key: 'counts', width: 118, render: (r: any) => h('span', { class: 'mono' }, `${r.trade_count} / ${r.order_count} / ${r.settlement_count}`) },
-  { title: '最后同步', key: 'last_data_at', width: 104, render: (r: any) => fmtTime(r.last_data_at) },
+  { title: '资金账号', key: 'key', width: 122, fixed: 'left' as const, render: (r: any) => h('span', { class: 'mono' }, r.key) },
+  { title: '券商', key: 'broker', width: 100, render: (r: any) => h('span', { style: { color: isBrokerUnknown(r.broker, r.key) ? 'var(--text-muted)' : undefined } }, brokerName(r.broker, r.key)) },
+  { title: '持仓', key: 'count', width: 68, align: 'right' as const, sorter: (a: any, b: any) => a.count - b.count },
+  { title: '持仓市值', key: 'mv', width: 120, align: 'right' as const, sorter: (a: any, b: any) => a.mv - b.mv, render: (r: any) => h('span', { class: 'mono' }, fmtMoney(r.mv)) },
+  { title: '浮动盈亏', key: 'pnl', width: 120, align: 'right' as const, sorter: (a: any, b: any) => a.pnl - b.pnl, render: (r: any) => h('span', { class: 'mono', style: { color: pnlColor(r.pnl), fontWeight: 600 } }, fmtMoney(r.pnl)) },
+  { title: '收益率', key: 'pnl_pct', width: 90, align: 'right' as const, sorter: (a: any, b: any) => (a.pnl_pct ?? -Infinity) - (b.pnl_pct ?? -Infinity), render: (r: any) => h('span', { style: { color: pnlColor(r.pnl_pct), fontWeight: 600 } }, r.pnl_pct == null ? '—' : `${r.pnl_pct >= 0 ? '+' : ''}${fmtNum(r.pnl_pct)}%`) },
+  { title: '当日盈亏', key: 'daily', width: 116, align: 'right' as const, sorter: (a: any, b: any) => a.daily - b.daily, render: (r: any) => h('span', { class: 'mono', style: { color: pnlColor(r.daily) } }, fmtMoney(r.daily)) },
+  { title: '总资产', key: 'total_asset', width: 120, align: 'right' as const, render: (r: any) => h('span', { class: 'mono' }, fmtMoney(r.total_asset)) },
+  { title: '可用', key: 'available', width: 116, align: 'right' as const, render: (r: any) => h('span', { class: 'mono' }, fmtMoney(r.available)) },
+  { title: '成交/委托/交割', key: 'counts', width: 120, render: (r: any) => h('span', { class: 'mono' }, `${r.trade_count} / ${r.order_count} / ${r.settlement_count}`) },
+  { title: '最后同步', key: 'last_data_at', width: 112, render: (r: any) => fmtTime(r.last_data_at) },
 ]
 const accountSummaryScrollX = accountSummaryColumns.reduce((s, c: any) => s + (c.width ?? 100), 0)
 
 const typeSummaryColumns = [
   {
-    title: '品种', key: 'label', width: 118,
+    title: '品种', key: 'label', width: 120,
     render: (r: any) => {
       const c = typeColor(r.key)
       return h(NTag, { size: 'small', bordered: false, color: { color: c.bg, textColor: c.fg, borderColor: c.border } }, { default: () => r.label })
     },
   },
-  { title: '标的', key: 'count', width: 60, align: 'right' as const, sorter: (a: any, b: any) => a.count - b.count },
-  { title: '市值', key: 'mv', width: 108, align: 'right' as const, sorter: (a: any, b: any) => a.mv - b.mv, render: (r: any) => h('span', { class: 'mono' }, fmtMoney(r.mv)) },
-  { title: '浮动盈亏', key: 'pnl', width: 108, align: 'right' as const, sorter: (a: any, b: any) => a.pnl - b.pnl, render: (r: any) => h('span', { class: 'mono', style: { color: pnlColor(r.pnl), fontWeight: 600 } }, fmtMoney(r.pnl)) },
-  { title: '收益率', key: 'pnl_pct', width: 82, align: 'right' as const, render: (r: any) => h('span', { style: { color: pnlColor(r.pnl_pct), fontWeight: 600 } }, r.pnl_pct == null ? '—' : `${r.pnl_pct >= 0 ? '+' : ''}${fmtNum(r.pnl_pct)}%`) },
-  { title: '占比', key: 'weight', width: 70, align: 'right' as const, sorter: (a: any, b: any) => a.weight - b.weight, render: (r: any) => h('span', { class: 'mono' }, `${fmtNum(r.weight, 1)}%`) },
+  { title: '标的', key: 'count', width: 62, align: 'right' as const, sorter: (a: any, b: any) => a.count - b.count },
+  { title: '市值', key: 'mv', width: 110, align: 'right' as const, sorter: (a: any, b: any) => a.mv - b.mv, render: (r: any) => h('span', { class: 'mono' }, fmtMoney(r.mv)) },
+  { title: '浮动盈亏', key: 'pnl', width: 110, align: 'right' as const, sorter: (a: any, b: any) => a.pnl - b.pnl, render: (r: any) => h('span', { class: 'mono', style: { color: pnlColor(r.pnl), fontWeight: 600 } }, fmtMoney(r.pnl)) },
+  { title: '收益率', key: 'pnl_pct', width: 84, align: 'right' as const, render: (r: any) => h('span', { style: { color: pnlColor(r.pnl_pct), fontWeight: 600 } }, r.pnl_pct == null ? '—' : `${r.pnl_pct >= 0 ? '+' : ''}${fmtNum(r.pnl_pct)}%`) },
+  { title: '占比', key: 'weight', width: 72, align: 'right' as const, sorter: (a: any, b: any) => a.weight - b.weight, render: (r: any) => h('span', { class: 'mono' }, `${fmtNum(r.weight, 1)}%`) },
 ]
 const typeSummaryScrollX = typeSummaryColumns.reduce((s, c: any) => s + (c.width ?? 100), 0)
 
 const brokerSummaryColumns = [
-  { title: '券商', key: 'label', width: 118, render: (r: any) => h('span', { style: { color: r.label === '未标注券商' ? 'var(--text-muted)' : undefined } }, r.label || '未分组') },
-  { title: '标的', key: 'count', width: 60, align: 'right' as const, sorter: (a: any, b: any) => a.count - b.count },
-  { title: '市值', key: 'mv', width: 108, align: 'right' as const, sorter: (a: any, b: any) => a.mv - b.mv, render: (r: any) => h('span', { class: 'mono' }, fmtMoney(r.mv)) },
-  { title: '浮动盈亏', key: 'pnl', width: 108, align: 'right' as const, sorter: (a: any, b: any) => a.pnl - b.pnl, render: (r: any) => h('span', { class: 'mono', style: { color: pnlColor(r.pnl), fontWeight: 600 } }, fmtMoney(r.pnl)) },
-  { title: '收益率', key: 'pnl_pct', width: 82, align: 'right' as const, render: (r: any) => h('span', { style: { color: pnlColor(r.pnl_pct), fontWeight: 600 } }, r.pnl_pct == null ? '—' : `${r.pnl_pct >= 0 ? '+' : ''}${fmtNum(r.pnl_pct)}%`) },
-  { title: '占比', key: 'weight', width: 70, align: 'right' as const, sorter: (a: any, b: any) => a.weight - b.weight, render: (r: any) => h('span', { class: 'mono' }, `${fmtNum(r.weight, 1)}%`) },
+  { title: '券商', key: 'label', width: 120, render: (r: any) => h('span', { style: { color: r.label === '未标注券商' ? 'var(--text-muted)' : undefined } }, r.label || '未分组') },
+  { title: '标的', key: 'count', width: 62, align: 'right' as const, sorter: (a: any, b: any) => a.count - b.count },
+  { title: '市值', key: 'mv', width: 110, align: 'right' as const, sorter: (a: any, b: any) => a.mv - b.mv, render: (r: any) => h('span', { class: 'mono' }, fmtMoney(r.mv)) },
+  { title: '浮动盈亏', key: 'pnl', width: 110, align: 'right' as const, sorter: (a: any, b: any) => a.pnl - b.pnl, render: (r: any) => h('span', { class: 'mono', style: { color: pnlColor(r.pnl), fontWeight: 600 } }, fmtMoney(r.pnl)) },
+  { title: '收益率', key: 'pnl_pct', width: 84, align: 'right' as const, render: (r: any) => h('span', { style: { color: pnlColor(r.pnl_pct), fontWeight: 600 } }, r.pnl_pct == null ? '—' : `${r.pnl_pct >= 0 ? '+' : ''}${fmtNum(r.pnl_pct)}%`) },
+  { title: '占比', key: 'weight', width: 72, align: 'right' as const, sorter: (a: any, b: any) => a.weight - b.weight, render: (r: any) => h('span', { class: 'mono' }, `${fmtNum(r.weight, 1)}%`) },
 ]
 const brokerSummaryScrollX = brokerSummaryColumns.reduce((s, c: any) => s + (c.width ?? 100), 0)
 
@@ -608,25 +608,25 @@ interface ColDef {
   render: (row: Holding) => any
 }
 const columnDefs: ColDef[] = [
-  { key: 'code', title: '代码', width: 86, always: true, fixed: 'left' as const, render: (row: Holding) => h('span', { class: 'mono' }, row.code) },
-  { key: 'name', title: '名称', minWidth: 104, always: true, fixed: 'left' as const, render: (row: Holding) => h('span', { class: 'holding-name' }, row.name) },
+  { key: 'code', title: '代码', width: 92, always: true, fixed: 'left' as const, render: (row: Holding) => h('span', { class: 'mono' }, row.code) },
+  { key: 'name', title: '名称', minWidth: 112, always: true, fixed: 'left' as const, render: (row: Holding) => h('span', { class: 'holding-name', title: row.name }, row.name) },
   {
-    key: 'type_label', title: '类型', width: 88, always: true,
+    key: 'type_label', title: '类型', width: 100, always: true,
     render: (row: Holding) => {
       const c = typeColor(row.type)
       return h(NTag, { size: 'small', bordered: false, color: { color: c.bg, textColor: c.fg, borderColor: c.border } }, { default: () => row.type_label })
     },
   },
   { key: 'broker', title: '券商', width: 100, defaultOn: false, render: (row: Holding) => brokerName(row.broker, row.broker_account) },
-  { key: 'broker_account', title: '资金账号', width: 116, render: (row: Holding) => h('span', { class: 'mono' }, row.broker_account || '未分组') },
+  { key: 'broker_account', title: '资金账号', width: 122, render: (row: Holding) => h('span', { class: 'mono' }, row.broker_account || '未分组') },
   { key: 'account', title: '账户', width: 96, defaultOn: false, render: (row: Holding) => row.account || '未分组' },
   { key: 'avail_qty', title: '可用数量', align: 'right' as const, width: 100, defaultOn: false, render: (row: Holding) => row.avail_qty == null ? '—' : fmtNum(row.avail_qty) },
   { key: 'client_market_value', title: '客户端市值', align: 'right' as const, width: 120, defaultOn: false, render: (row: Holding) => fmtMoney(row.client_market_value) },
   { key: 'client_profit', title: '客户端盈亏', align: 'right' as const, width: 120, defaultOn: false, render: (row: Holding) => h('span', { class: 'mono', style: { color: pnlColor(row.client_profit) } }, fmtMoney(row.client_profit)) },
-  { key: 'quantity', title: '数量', align: 'right' as const, width: 90, sorter: (a, b) => a.quantity - b.quantity, render: (row: Holding) => fmtNum(row.quantity) },
-  { key: 'cost_price', title: '成本价', align: 'right' as const, width: 88, sorter: (a, b) => (a.cost_price ?? 0) - (b.cost_price ?? 0), render: (row: Holding) => h('span', { class: 'mono' }, fmtNum(row.cost_price, 3)) },
+  { key: 'quantity', title: '数量', align: 'right' as const, width: 96, sorter: (a, b) => a.quantity - b.quantity, render: (row: Holding) => fmtNum(row.quantity) },
+  { key: 'cost_price', title: '成本价', align: 'right' as const, width: 92, sorter: (a, b) => (a.cost_price ?? 0) - (b.cost_price ?? 0), render: (row: Holding) => h('span', { class: 'mono' }, fmtNum(row.cost_price, 3)) },
   {
-    key: 'price', title: '现价', align: 'right' as const, width: 100, sorter: (a, b) => (a.price ?? -Infinity) - (b.price ?? -Infinity),
+    key: 'price', title: '现价', align: 'right' as const, width: 112, sorter: (a, b) => (a.price ?? -Infinity) - (b.price ?? -Infinity),
     render: (row: Holding) => {
       if (row.price === null) {
         return h(NButton, { size: 'tiny', dashed: true, onClick: () => openEdit(row) }, { default: () => '手动填价' })
@@ -637,21 +637,21 @@ const columnDefs: ColDef[] = [
       ])
     },
   },
-  { key: 'market_value', title: '市值', align: 'right' as const, width: 106, sorter: (a, b) => (a.market_value ?? -Infinity) - (b.market_value ?? -Infinity), render: (row: Holding) => h('span', { class: 'mono' }, fmtMoney(row.market_value)) },
+  { key: 'market_value', title: '市值', align: 'right' as const, width: 112, sorter: (a, b) => (a.market_value ?? -Infinity) - (b.market_value ?? -Infinity), render: (row: Holding) => h('span', { class: 'mono' }, fmtMoney(row.market_value)) },
   {
-    key: 'pnl', title: '浮动盈亏', align: 'right' as const, width: 106, sorter: (a, b) => (a.pnl ?? -Infinity) - (b.pnl ?? -Infinity),
+    key: 'pnl', title: '浮动盈亏', align: 'right' as const, width: 110, sorter: (a, b) => (a.pnl ?? -Infinity) - (b.pnl ?? -Infinity),
     help: '现价相对成本价计算的浮动盈亏金额（尚未卖出，不计交易税费）。',
     render: (row: Holding) => h('span', { class: `mono flash-${flash[row.id] || ''}`, style: { color: pnlColor(row.pnl), fontWeight: 600, borderRadius: '3px', padding: '0 2px' } }, fmtMoney(row.pnl)),
   },
   {
-    key: 'pnl_pct', title: '收益率', align: 'right' as const, width: 84, sorter: (a, b) => (a.pnl_pct ?? -Infinity) - (b.pnl_pct ?? -Infinity),
+    key: 'pnl_pct', title: '收益率', align: 'right' as const, width: 90, sorter: (a, b) => (a.pnl_pct ?? -Infinity) - (b.pnl_pct ?? -Infinity),
     help: '浮动盈亏 ÷ 成本价，即（现价 − 成本价）÷ 成本价 × 100%。',
     render: (row: Holding) => row.pnl_pct === null
       ? '—'
       : h('span', { style: { color: pnlColor(row.pnl_pct), fontWeight: 600 } }, `${row.pnl_pct >= 0 ? '+' : ''}${fmtNum(row.pnl_pct)}%`),
   },
   {
-    key: 'daily_pnl', title: '当日盈亏', align: 'right' as const, width: 100, defaultOn: true, sorter: (a, b) => (a.daily_pnl ?? -Infinity) - (b.daily_pnl ?? -Infinity),
+    key: 'daily_pnl', title: '当日盈亏', align: 'right' as const, width: 104, defaultOn: true, sorter: (a, b) => (a.daily_pnl ?? -Infinity) - (b.daily_pnl ?? -Infinity),
     help: '今天这一天的盈亏变化 = 数量 ×（现价 − 昨收价），无昨收价的不计入。',
     render: (row: Holding) => h('span', { class: 'mono', style: { color: pnlColor(row.daily_pnl) } }, fmtMoney(row.daily_pnl)),
   },
@@ -663,7 +663,7 @@ const columnDefs: ColDef[] = [
       : h('span', { class: 'mono', style: { color: pnlColor(row.daily_pct), fontWeight: 600 } }, `${row.daily_pct >= 0 ? '+' : ''}${fmtNum(row.daily_pct)}%`),
   },
   {
-    key: 'weight', title: '权重%', align: 'right' as const, width: 68, sorter: (a, b) => (weightOf(a) ?? -Infinity) - (weightOf(b) ?? -Infinity),
+    key: 'weight', title: '权重%', align: 'right' as const, width: 72, sorter: (a, b) => (weightOf(a) ?? -Infinity) - (weightOf(b) ?? -Infinity),
     help: '该标的市值占全部持仓总市值的比例。>30% 代表单票过于集中，是判断要不要减仓、控制风险的关键指标。',
     render: (row: Holding) => {
       const w = weightOf(row)
@@ -730,7 +730,7 @@ const columnDefs: ColDef[] = [
     },
   },
   {
-    key: 'actions', title: '维护', width: 100, fixed: 'right' as const, always: true,
+    key: 'actions', title: '维护', width: 108, fixed: 'right' as const, always: true,
     help: '只维护分析参数（止损 / 止盈 / 合理价 / 网格 / 手动价）与归档，买入卖出、加减仓请在券商客户端操作。',
     render: (row: Holding) => h('div', { class: 'row-actions' }, [
       h(NButton, { size: 'tiny', quaternary: true, type: 'primary', onClick: () => openEdit(row) }, { default: () => '编辑' }),
