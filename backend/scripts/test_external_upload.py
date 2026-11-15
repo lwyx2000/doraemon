@@ -93,20 +93,27 @@ print("[1] 持仓：多账号隔离 + 逆回购/可转债 type 放开")
 res = import_holdings_api(HoldingUploadRequest(
     username="trader", source="test", account=A1, broker_name="华泰证券",
     items=[
-        holding("204001", "repo", 1000, 1.2, broker_account=A1,
-                avail_qty=1000, client_market_value=85000, last_price=1.2),
-        holding("204001", "repo", 500, 1.3, broker_account=A2,
-                client_market_value=42000),
+        holding("204001", "repo", 1000, 100.0, broker_account=A1,
+                avail_qty=1000, client_market_value=100000, last_price=1.2),
+        holding("204001", "repo", 500, 100.0, broker_account=A2,
+                client_market_value=50000),
         holding("127119", "bond_cb", 10, 140.0, name="中鼎转03"),
     ],
 )).data
 check(res["added"] == 3 and not res["failed"], "3 条全部入库，无 failed: %r" % res)
 check(len(res["by_account"]) == 2, "按账号返回 2 组明细")
 
+# 逆回购的 price 是年化利率，不能当单价乘数量：市值应取客户端上报 / 面值
+_v1 = build_holdings_view("1", save_snapshot=False)
+_repo_a1 = [i for i in _v1["items"] if i["type"] == "repo" and i.get("broker_account") == A1]
+check(_repo_a1 and abs((_repo_a1[0]["market_value"] or 0) - 100000) < 1,
+      "逆回购市值按客户端上报口径，不是年化利率×数量: %r" %
+      (_repo_a1[0]["market_value"] if _repo_a1 else None))
+
 # A2 再次上传同标的 → 更新而不是新增；A1 不动
 res2 = import_holdings_api(HoldingUploadRequest(
     username="trader", source="test", account=A2, broker_name="银河证券",
-    items=[holding("204001", "repo", 600, 1.31, broker_account=A2)],
+    items=[holding("204001", "repo", 600, 100.0, broker_account=A2)],
 )).data
 check(res2["updated"] == 1 and res2["added"] == 0, "同账号同标的覆盖更新，不串到 A1")
 rows = db.fetchall("SELECT broker_account, quantity FROM biz_holdings WHERE code='204001' ORDER BY broker_account")

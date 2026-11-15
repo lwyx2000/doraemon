@@ -807,16 +807,35 @@ def build_holdings_view(
         val_pct = valuation = grid = None
         alert_status = None
         if price is not None:
-            mv = price * h["quantity"]
-            pnl = (price - h["cost_price"]) * h["quantity"]
-            # 成本 <= 0 时收益率无意义（如分红后成本为负），显示为 None
-            if h["cost_price"] and h["cost_price"] > 0:
-                pnl_pct = (price - h["cost_price"]) / h["cost_price"] * 100
+            if h["type"] == "repo":
+                # 国债逆回购的 price 是年化利率（如 1.095），直接乘数量会把 81.8 万面值
+                # 算成 9 千、收益率 -98%。优先用客户端上报的市值/盈亏（券商口径），
+                # 没有上报时按面值兜底，不再拿年化利率当单价。
+                cost_amt = (h["cost_price"] or 0.0) * h["quantity"]
+                if h.get("client_market_value") is not None:
+                    mv = h["client_market_value"]
+                    pnl = h.get("client_profit")
+                    if pnl is None:
+                        pnl = mv - cost_amt
+                    pnl_pct = h.get("client_profit_pct")
+                    if pnl_pct is None and cost_amt > 0:
+                        pnl_pct = pnl / cost_amt * 100
+                else:
+                    face = h["cost_price"] if h["cost_price"] and h["cost_price"] > 0 else 100.0
+                    mv = face * h["quantity"]
+                    pnl = 0.0
+                    pnl_pct = 0.0 if cost_amt else None
             else:
-                pnl_pct = None
+                mv = price * h["quantity"]
+                pnl = (price - h["cost_price"]) * h["quantity"]
+                # 成本 <= 0 时收益率无意义（如分红后成本为负），显示为 None
+                if h["cost_price"] and h["cost_price"] > 0:
+                    pnl_pct = (price - h["cost_price"]) / h["cost_price"] * 100
+                else:
+                    pnl_pct = None
             total_mv += mv
-            total_cost += h["cost_price"] * h["quantity"]
-            total_pnl += pnl
+            total_cost += (h["cost_price"] or 0.0) * h["quantity"]
+            total_pnl += pnl or 0.0
             priced_count += 1
             prev_close = quote.get("prev_close")
             if prev_close is not None and h["manual_price"] is None:
