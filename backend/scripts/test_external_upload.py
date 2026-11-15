@@ -109,6 +109,9 @@ _repo_a1 = [i for i in _v1["items"] if i["type"] == "repo" and i.get("broker_acc
 check(_repo_a1 and abs((_repo_a1[0]["market_value"] or 0) - 100000) < 1,
       "逆回购市值按客户端上报口径，不是年化利率×数量: %r" %
       (_repo_a1[0]["market_value"] if _repo_a1 else None))
+# 客户端上报的 profit 对逆回购是坏的（(利率-100)×数量 → -98%），一律不计
+check(_repo_a1 and (_repo_a1[0]["pnl"] or 0) == 0 and _repo_a1[0]["pnl_pct"] is None,
+      "逆回购盈亏不计、收益率留空: %r" % (((_repo_a1[0]["pnl"], _repo_a1[0]["pnl_pct"]) if _repo_a1 else None),))
 
 # A2 再次上传同标的 → 更新而不是新增；A1 不动
 res2 = import_holdings_api(HoldingUploadRequest(
