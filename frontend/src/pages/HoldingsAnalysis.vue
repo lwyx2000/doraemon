@@ -367,8 +367,9 @@ const kpi = computed(() => {
 
 const topHoldings = computed(() => {
   const total = fullSummary.value?.total_market_value ?? 0
+  // 逆回购是类现金，不参与「前十大权重」，避免把资金出借画成单票集中
   return [...(view.value?.items ?? [])]
-    .filter(i => (i.market_value ?? 0) > 0)
+    .filter(i => (i.market_value ?? 0) > 0 && i.type !== 'repo')
     .sort((a, b) => (b.market_value ?? 0) - (a.market_value ?? 0))
     .slice(0, 10)
     .map(i => ({ ...i, weight: total > 0 ? ((i.market_value ?? 0) / total) * 100 : 0 }))

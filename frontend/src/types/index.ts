@@ -866,7 +866,10 @@ export interface NotificationConfig {
 // 持仓分析（HoldingsAnalysis）
 // ============================================================
 
-export type HoldingType = 'stock' | 'etf' | 'fund_otc' | 'option' | 'future' | 'hk_stock'
+export type HoldingType =
+  | 'stock' | 'etf' | 'fund_otc' | 'option' | 'future' | 'hk_stock'
+  // 外部程序上传的扩展类型：国债逆回购、可转债、债券、标准券等
+  | 'repo' | 'bond_cb' | 'bond' | 'standard_bond' | 'fund' | 'other'
 
 export interface Holding {
   id: string
