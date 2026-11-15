@@ -198,13 +198,15 @@ const feeSummary = computed(() => {
   const rows = accountSettlements.value
   const bps = (fee: number, base: number) => (base > 0 ? (fee / base) * 10000 : null)
   let amount = 0, fee = 0, commission = 0, stampTax = 0, transferFee = 0, otherFee = 0
-  let buyAmount = 0, sellAmount = 0, rated = 0
+  let buyAmount = 0, sellAmount = 0, rated = 0, skipped = 0
   const byGroup = new Map<string, FeeGroup>()
   for (const r of rows) {
     const amt = Math.abs(r.amount ?? 0)
     const f = r.fee_total ?? 0
-    // 无成交额的行（如利息归本、红利入账）不参与费率
-    if (amt <= 0) continue
+    // 只统计真实买卖成交：回购返还、红利入账、申购赎回等「其它业务」
+    // 成交额大而费用接近 0，混进来会把综合费率稀释成无意义的数字
+    if (r.direction !== 'buy' && r.direction !== 'sell') { skipped += 1; continue }
+    if (amt <= 0) { skipped += 1; continue }
     const comm = r.commission ?? 0
     const stamp = r.stamp_tax ?? 0
     const transfer = r.transfer_fee ?? 0
@@ -234,6 +236,7 @@ const feeSummary = computed(() => {
   return {
     rows: rows.length,
     rated,
+    skipped,
     amount,
     fee,
     commission,
@@ -644,6 +647,11 @@ function fmtNum(v: number | null | undefined, digits = 2): string {
   if (v === null || v === undefined || Number.isNaN(v)) return '—'
   return v.toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits })
 }
+// 数量：整数不带 .00（股票/ETF 看 8,400 比 8,400.00 清爽），有零股时保留 2 位
+function fmtQty(v: number | null | undefined): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—'
+  return v.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
+}
 function fmtMoney(v: number | null | undefined): string {
   return v === null || v === undefined ? '—' : `¥${fmtNum(v)}`
 }
@@ -748,10 +756,10 @@ const columnDefs: ColDef[] = [
   { key: 'broker', title: '券商', width: 100, defaultOn: false, render: (row: Holding) => brokerName(row.broker, row.broker_account) },
   { key: 'broker_account', title: '资金账号', width: 122, render: (row: Holding) => h('span', { class: 'mono' }, row.broker_account || '未分组') },
   { key: 'account', title: '账户', width: 96, defaultOn: false, render: (row: Holding) => row.account || '未分组' },
-  { key: 'avail_qty', title: '可用数量', align: 'right' as const, width: 100, defaultOn: false, render: (row: Holding) => row.avail_qty == null ? '—' : fmtNum(row.avail_qty) },
+  { key: 'avail_qty', title: '可用数量', align: 'right' as const, width: 100, defaultOn: false, render: (row: Holding) => row.avail_qty == null ? '—' : fmtQty(row.avail_qty) },
   { key: 'client_market_value', title: '客户端市值', align: 'right' as const, width: 120, defaultOn: false, render: (row: Holding) => fmtMoney(row.client_market_value) },
   { key: 'client_profit', title: '客户端盈亏', align: 'right' as const, width: 120, defaultOn: false, render: (row: Holding) => h('span', { class: 'mono', style: { color: pnlColor(row.client_profit) } }, fmtMoney(row.client_profit)) },
-  { key: 'quantity', title: '数量', align: 'right' as const, width: 96, sorter: (a, b) => a.quantity - b.quantity, render: (row: Holding) => fmtNum(row.quantity) },
+  { key: 'quantity', title: '数量', align: 'right' as const, width: 96, sorter: (a, b) => a.quantity - b.quantity, render: (row: Holding) => fmtQty(row.quantity) },
   { key: 'cost_price', title: '成本价', align: 'right' as const, width: 92, sorter: (a, b) => (a.cost_price ?? 0) - (b.cost_price ?? 0), render: (row: Holding) => h('span', { class: 'mono' }, fmtNum(row.cost_price, 3)) },
   {
     key: 'price', title: '现价', align: 'right' as const, width: 112, sorter: (a, b) => (a.price ?? -Infinity) - (b.price ?? -Infinity),
@@ -862,7 +870,7 @@ const columnDefs: ColDef[] = [
     help: '只维护分析参数（止损 / 止盈 / 合理价 / 网格 / 手动价）与归档，买入卖出、加减仓请在券商客户端操作。',
     render: (row: Holding) => h('div', { class: 'row-actions' }, [
       h(NButton, { size: 'tiny', quaternary: true, type: 'primary', onClick: () => openEdit(row) }, { default: () => '编辑' }),
-      h(NButton, { size: 'tiny', quaternary: true, onClick: () => confirmDelete(row) }, { default: () => '平仓' }),
+      h(NButton, { size: 'tiny', quaternary: true, class: 'btn-quiet', onClick: () => confirmDelete(row) }, { default: () => '平仓' }),
     ]),
   },
 ]
@@ -1339,7 +1347,7 @@ const historyColumns = [
   { title: '类型', key: 'type', width: 90, render: (row: HoldingHistory) => h('span', {}, typeLabel(row.type)) },
   { title: '券商', key: 'broker', width: 120, render: (row: HoldingHistory) => row.broker || '—' },
   { title: '账户', key: 'account', width: 100, render: (row: HoldingHistory) => row.account || '—' },
-  { title: '数量', key: 'quantity', align: 'right' as const, render: (row: HoldingHistory) => fmtNum(row.quantity) },
+  { title: '数量', key: 'quantity', align: 'right' as const, render: (row: HoldingHistory) => fmtQty(row.quantity) },
   { title: '成本价', key: 'cost_price', align: 'right' as const, render: (row: HoldingHistory) => fmtMoney(row.cost_price) },
   { title: '平仓价', key: 'close_price', align: 'right' as const, render: (row: HoldingHistory) => fmtMoney(row.close_price) },
   { title: '已实现盈亏', key: 'realized_pnl', align: 'right' as const, render: (row: HoldingHistory) => h('span', { style: { color: pnlColor(row.realized_pnl) } }, fmtMoney(row.realized_pnl)) },
@@ -1812,7 +1820,7 @@ watch(activeTab, (tab) => {
             <template #icon><n-icon :component="FilterOutline" /></template>
             过滤
           </n-button>
-          <n-button size="small" quaternary @click="resetFilter" v-if="appliedType || appliedBroker || appliedAccount || appliedLossOnly || appliedAlertOnly">重置</n-button>
+          <n-button size="small" quaternary class="btn-quiet" @click="resetFilter" v-if="appliedType || appliedBroker || appliedAccount || appliedLossOnly || appliedAlertOnly">重置</n-button>
           <n-popover trigger="click" placement="bottom-end">
             <template #trigger>
               <n-button size="small">
@@ -1825,7 +1833,7 @@ watch(activeTab, (tab) => {
               <div v-for="c in toggleableCols" :key="c.key" class="col-set-item">
                 <n-checkbox :checked="isColOn(c.key)" @update:checked="(e: boolean) => setCol(c.key, e)">{{ c.title }}</n-checkbox>
               </div>
-              <n-button size="tiny" quaternary block @click="resetCols">恢复默认</n-button>
+              <n-button size="tiny" quaternary block class="btn-quiet" @click="resetCols">恢复默认</n-button>
             </div>
           </n-popover>
           <n-tooltip trigger="hover">
@@ -2112,7 +2120,7 @@ watch(activeTab, (tab) => {
           <DataPanel title="手续费率（按交割单反算）">
             <template #actions>
               <span class="panel-hint">
-                综合费率 = 费用合计 / 成交额；印花税按卖出额计；样本 {{ feeSummary.rated }} 笔（最多取最近 200 条交割单）
+                只统计买卖成交 {{ feeSummary.rated }} 笔（最多取最近 200 条交割单，已剔除回购返还/红利入账等 {{ feeSummary.skipped }} 条）；综合费率 = 费用合计 / 成交额，印花税按卖出额计
               </span>
             </template>
             <div class="fee-strip" v-if="feeSummary.rated">
@@ -2500,6 +2508,9 @@ watch(activeTab, (tab) => {
 .holdings-page .price-src { margin-left: 4px; font-size: 9px; color: var(--text-muted); border: 1px solid var(--border-default); border-radius: 3px; padding: 0 3px; }
 .holdings-page .row-actions { display: flex; gap: 4px; }
 .holdings-page .row-actions .n-button { font-weight: 500; border-radius: 4px; padding: 0 6px; white-space: nowrap; }
+/* 主题把「默认类型」按钮文字设成白色（配合蓝底）；quaternary 是透明底，白字会直接看不见 */
+.holdings-page .btn-quiet.n-button--default-type { color: var(--text-secondary) !important; }
+.holdings-page .btn-quiet.n-button--default-type:hover { color: var(--color-primary) !important; }
 /* 表格单元格一律不换行：金额、账号、收益率保持单行，窗口窄时交给横向滚动 */
 .holdings-page .n-data-table-th,
 .holdings-page .n-data-table-td { white-space: nowrap; }
