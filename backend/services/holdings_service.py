@@ -821,11 +821,12 @@ def build_holdings_view(
             else:
                 mv = price * h["quantity"]
                 cp = h["cost_price"]
-                # 成本 <= 0 时（送股 / 标准券质押）盈亏与收益率都没有意义，显示为 None
-                if cp and cp > 0:
+                if cp:
+                    # 成本为负（分红/做T 后摊薄成负数）时盈亏仍有意义，只是收益率没有分母
                     pnl = (price - cp) * h["quantity"]
-                    pnl_pct = (price - cp) / cp * 100
+                    pnl_pct = (price - cp) / cp * 100 if cp > 0 else None
                 else:
+                    # 成本为 0（送股 / 标准券质押）时盈亏与收益率都没意义，留空
                     pnl = None
                     pnl_pct = None
             total_mv += mv
