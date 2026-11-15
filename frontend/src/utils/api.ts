@@ -433,8 +433,36 @@ export const api = {
   // ============================================================
   // 持仓分析（HoldingsAnalysis）
   // ============================================================
-  getHoldings: (type?: string, broker?: string, account?: string) =>
-    request<HoldingsView>('/api/v1/holdings', { type, broker, account }),
+  getHoldings: (type?: string, broker?: string, account?: string, brokerAccount?: string) =>
+    request<HoldingsView>('/api/v1/holdings', { type, broker, account, broker_account: brokerAccount }),
+
+  // ---- 外部上传数据（按资金账号；页面带 JWT，外部程序可用 username 预检）----
+  getExternalOverview: () =>
+    request<ExternalOverview>('/api/v1/external/overview'),
+
+  getExternalAccounts: () =>
+    request<ExternalAccount[]>('/api/v1/external/accounts'),
+
+  getExternalTrades: (params: { broker_account?: string; trade_date?: string; limit?: number } = {}) =>
+    request<ExternalTrade[]>('/api/v1/external/trades', {
+      broker_account: params.broker_account, trade_date: params.trade_date, limit: params.limit,
+    }),
+
+  getExternalOrders: (params: { broker_account?: string; trade_date?: string; limit?: number } = {}) =>
+    request<ExternalOrder[]>('/api/v1/external/orders', {
+      broker_account: params.broker_account, trade_date: params.trade_date, limit: params.limit,
+    }),
+
+  getExternalBalances: (params: { broker_account?: string; limit?: number } = {}) =>
+    request<ExternalBalance[]>('/api/v1/external/balances', {
+      broker_account: params.broker_account, limit: params.limit,
+    }),
+
+  getExternalSettlements: (params: { broker_account?: string; date_from?: string; date_to?: string; limit?: number } = {}) =>
+    request<ExternalSettlement[]>('/api/v1/external/settlements', {
+      broker_account: params.broker_account, date_from: params.date_from,
+      date_to: params.date_to, limit: params.limit,
+    }),
 
   importHoldings: (items: Array<Record<string, unknown>>) =>
     request<HoldingImportResult>('/api/v1/holdings/import', undefined, {
@@ -1161,6 +1189,12 @@ import type {
   RotationPreset,
   RotationResult,
   RotationRequestPayload,
+  ExternalAccount,
+  ExternalOverview,
+  ExternalTrade,
+  ExternalOrder,
+  ExternalBalance,
+  ExternalSettlement,
 } from '../types'
 
 // ---- 动量轮动实验室（组合层回测）----

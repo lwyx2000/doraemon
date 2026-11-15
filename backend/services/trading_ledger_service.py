@@ -604,6 +604,10 @@ def _load_merged(
             continue
         if date_to and d > date_to:
             continue
+        # 2026-11-14：外部程序现在会把购回 / 新股入帐 / 资金流水也传进 biz_trades，
+        # 它们只用于「账户数据」展示，不参与做T、已清仓、胜率与费率分析。
+        if str(r.get("direction") or "") not in ("buy", "sell"):
+            continue
         fp = _daily_fingerprint(r)
         # 每日成交里的 price/amount 与交割单可能略有差异，用 code+date+direction+qty 再兜一层
         loose = f"{d}|{r.get('code')}|{r.get('direction')}|{r.get('quantity')}"

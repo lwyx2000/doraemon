@@ -902,6 +902,16 @@ export interface Holding {
   grid_pos_pct: number | null
   grid_at_bound: 'low' | 'high' | null
   alert_status: 'stop_loss' | 'take_profit' | null
+  // 2026-11-14：外部程序按资金账号上传的全量快照字段
+  broker_account?: string
+  avail_qty?: number | null
+  last_price?: number | null
+  client_market_value?: number | null
+  client_profit?: number | null
+  client_profit_pct?: number | null
+  snapshot_date?: string | null
+  biz?: string
+  raw?: string | null
 }
 
 export interface HoldingAllocation {
@@ -922,6 +932,8 @@ export interface HoldingSummary {
   allocation_by_type: HoldingAllocation[]
   allocation_by_broker: HoldingAllocation[]
   allocation_by_account: HoldingAllocation[]
+  allocation_by_broker_account?: HoldingAllocation[]
+  accounts?: HoldingAccountSummary[]
   warnings: Array<{ level: 'warn' | 'danger'; text: string }>
   quote_time: string | null
 }
@@ -929,6 +941,122 @@ export interface HoldingSummary {
 export interface HoldingsView {
   items: Holding[]
   summary: HoldingSummary
+}
+
+// ---- 按资金账号的外部上传数据（持仓分析页「账户」视图）----
+export interface HoldingAccountSummary {
+  account: string
+  broker: string
+  holding_count: number
+  market_value: number
+  cost: number
+  pnl: number
+  daily_pnl: number
+  pnl_pct: number | null
+  type_count: number
+}
+
+export interface ExternalAccount {
+  account: string
+  broker: string
+  alias: string
+  holding_count: number
+  holding_market_value: number
+  holding_cost: number
+  trade_count: number
+  order_count: number
+  settlement_count: number
+  balance_count: number
+  last_upload: string | null
+  last_data_at: string | null
+  balance: Record<string, number | string | null> | null
+}
+
+export interface ExternalOverview {
+  accounts: ExternalAccount[]
+  account_count: number
+  totals: {
+    holding_count: number
+    trade_count: number
+    order_count: number
+    settlement_count: number
+    total_asset: number
+    available: number
+    today_profit: number
+  }
+}
+
+export interface ExternalTrade {
+  id: string
+  trade_date: string
+  broker_account: string
+  broker: string
+  account: string
+  code: string
+  name: string
+  type: string
+  direction: string
+  biz: string
+  entry_type: string
+  price: number
+  quantity: number
+  amount: number | null
+  fee: number | null
+  trade_time: string | null
+  trade_id: string
+  source: string
+}
+
+export interface ExternalOrder {
+  id: string
+  trade_date: string
+  broker_account: string
+  broker: string
+  order_no: string
+  code: string
+  name: string
+  side: string
+  direction: string
+  price: number | null
+  quantity: number | null
+  filled_qty: number | null
+  filled_price: number | null
+  amount: number | null
+  order_time: string | null
+  status: string
+  source: string
+}
+
+export interface ExternalBalance {
+  id: string
+  trade_date: string
+  broker_account: string
+  broker: string
+  balance: Record<string, number | string | null>
+  total_asset: number | null
+  available: number | null
+  market_value: number | null
+  today_profit: number | null
+  created_at: string
+}
+
+export interface ExternalSettlement {
+  id: string
+  trade_date: string
+  broker_account: string
+  broker: string
+  code: string
+  name: string
+  direction: string
+  entry_type: string
+  price: number | null
+  quantity: number | null
+  amount: number | null
+  fee_total: number | null
+  net_amount: number | null
+  trade_id: string
+  biz: string
+  trade_time: string | null
 }
 
 export interface HoldingImportResult {

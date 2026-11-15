@@ -256,6 +256,7 @@ from routers.longterm_router import router as longterm_router
 from routers.import_log_router import router as import_log_router
 from routers.trading_router import router as trading_router
 from routers.rotation_router import router as rotation_router
+from routers.external_router import router as external_router
 
 app.include_router(auth_router, prefix=f"{API_PREFIX}/auth")
 app.include_router(terminals_router, prefix=API_PREFIX)
@@ -285,6 +286,8 @@ app.include_router(longterm_router, prefix=f"{API_PREFIX}/longterm")
 app.include_router(import_log_router, prefix=API_PREFIX)
 app.include_router(trading_router, prefix=API_PREFIX)
 app.include_router(rotation_router, prefix=f"{API_PREFIX}/rotation")
+# 外部数据上传（按资金账号）：委托 / 资金 / 交割单 / 券商注册 / 统一批量 / 账号查询
+app.include_router(external_router, prefix=API_PREFIX)
 
 
 # ============================================================

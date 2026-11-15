@@ -22,11 +22,14 @@ from database.sqlite_connection import get_biz_db
 from core.config import USE_MOCK_DATA
 from services.akshare_client import akshare_request
 from services.akshare_client import get_session
+from services.external_upload_service import account_of, type_label
 
 # ============================================================
 # 常量
 # ============================================================
 
+# 2026-11-14：外部程序会把逆回购 / 可转债 / 标准券等品种一起传过来，
+# 这里不再做硬白名单校验（见 import_holdings），字典只用于给已知品种中文标签。
 HOLDING_TYPES: dict[str, str] = {
     "stock": "股票",
     "etf": "场内基金",
@@ -34,7 +37,34 @@ HOLDING_TYPES: dict[str, str] = {
     "option": "期权",
     "future": "期货",
     "hk_stock": "港股",
+    "repo": "国债逆回购",
+    "bond_cb": "可转债",
+    "standard_bond": "标准券",
+    "bond": "债券",
+    "fund": "基金",
+    "other": "其它",
 }
+
+# 持仓表新增列（外部上传的全量快照字段）
+_HOLDING_EXTRA_COLS = (
+    ("broker_account", "VARCHAR", "''"),       # 券商资金账号（按账号隔离的关键）
+    ("avail_qty", "DOUBLE", None),
+    ("last_price", "DOUBLE", None),
+    ("client_market_value", "DOUBLE", None),
+    ("client_profit", "DOUBLE", None),
+    ("client_profit_pct", "DOUBLE", None),
+    ("snapshot_date", "VARCHAR", None),
+    ("biz", "VARCHAR", "''"),
+    ("raw", "VARCHAR", None),
+)
+
+
+def _holding_key(acc: str, code: str, htype: str, broker: str, sub: str) -> str:
+    """去重键：资金账号 + 代码 + 品种 + 券商名 + 子账户。
+
+    旧版是 code+type+broker+account，不同资金账号持有同一只股票会互相覆盖。
+    """
+    return "|".join((acc or "", code, htype, broker or "", sub or ""))
 
 # 行情缓存：{ "ts": float, "quotes": { code: {"price": x, "prev_close": y} } }
 _QUOTE_CACHE: dict[str, Any] = {"ts": 0.0, "quotes": {}}
@@ -79,7 +109,16 @@ def _ensure_tables() -> None:
             is_closed        INTEGER NOT NULL DEFAULT 0,
             closed_at        VARCHAR,
             realized_pnl     DOUBLE,
-            close_price      DOUBLE
+            close_price      DOUBLE,
+            broker_account   VARCHAR DEFAULT '',
+            avail_qty        DOUBLE,
+            last_price       DOUBLE,
+            client_market_value DOUBLE,
+            client_profit    DOUBLE,
+            client_profit_pct DOUBLE,
+            snapshot_date    VARCHAR,
+            biz              VARCHAR DEFAULT '',
+            raw              VARCHAR
         )
         """
     )
@@ -95,6 +134,7 @@ def _ensure_tables() -> None:
         ("closed_at", "VARCHAR", None),
         ("realized_pnl", "DOUBLE", None),
         ("close_price", "DOUBLE", None),
+        *_HOLDING_EXTRA_COLS,
     ):
         try:
             if default is None:
@@ -169,27 +209,29 @@ def _load_holdings(user_id: str) -> list[dict]:
     rows = db.fetchall(
         "SELECT id, code, name, type, broker, account, quantity, cost_price, "
         "manual_price, stop_loss_pct, take_profit_pct, open_date, currency, created_at, updated_at, fair_value, "
-        "grid_lower, grid_upper, grid_step, is_closed, closed_at, realized_pnl, close_price "
+        "grid_lower, grid_upper, grid_step, is_closed, closed_at, realized_pnl, close_price, "
+        "broker_account, avail_qty, last_price, client_market_value, client_profit, "
+        "client_profit_pct, snapshot_date, biz, raw "
         "FROM biz_holdings WHERE fk_user = ? AND (is_closed = 0 OR is_closed IS NULL) ORDER BY created_at",
         [user_id],
     )
+    def _f(v):
+        return None if v is None else float(v)
     return [
         {
             "id": r[0], "code": r[1], "name": r[2], "type": r[3],
             "broker": r[4] or "", "account": r[5] or "", "quantity": float(r[6]), "cost_price": float(r[7]),
-            "manual_price": None if r[8] is None else float(r[8]),
-            "stop_loss_pct": None if r[9] is None else float(r[9]),
-            "take_profit_pct": None if r[10] is None else float(r[10]),
+            "manual_price": _f(r[8]),
+            "stop_loss_pct": _f(r[9]), "take_profit_pct": _f(r[10]),
             "open_date": r[11], "currency": r[12] or "CNY",
-            "created_at": r[13], "updated_at": r[14],
-            "fair_value": None if r[15] is None else float(r[15]),
-            "grid_lower": None if r[16] is None else float(r[16]),
-            "grid_upper": None if r[17] is None else float(r[17]),
-            "grid_step": None if r[18] is None else float(r[18]),
+            "created_at": r[13], "updated_at": r[14], "fair_value": _f(r[15]),
+            "grid_lower": _f(r[16]), "grid_upper": _f(r[17]), "grid_step": _f(r[18]),
             "is_closed": r[19] if r[19] is not None else 0,
-            "closed_at": r[20],
-            "realized_pnl": None if r[21] is None else float(r[21]),
-            "close_price": None if r[22] is None else float(r[22]),
+            "closed_at": r[20], "realized_pnl": _f(r[21]), "close_price": _f(r[22]),
+            "broker_account": r[23] or "", "avail_qty": _f(r[24]), "last_price": _f(r[25]),
+            "client_market_value": _f(r[26]), "client_profit": _f(r[27]),
+            "client_profit_pct": _f(r[28]), "snapshot_date": r[29],
+            "biz": r[30] or "", "raw": r[31],
         }
         for r in rows
     ]
@@ -211,8 +253,9 @@ def _save_holding(user_id: str, item: dict) -> None:
         "INSERT INTO biz_holdings "
         "(id, fk_user, code, name, type, broker, account, quantity, cost_price, "
         "manual_price, stop_loss_pct, take_profit_pct, open_date, currency, created_at, updated_at, fair_value, "
-        "grid_lower, grid_upper, grid_step) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "grid_lower, grid_upper, grid_step, broker_account, avail_qty, last_price, "
+        "client_market_value, client_profit, client_profit_pct, snapshot_date, biz, raw) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
             item["id"], user_id, item["code"], item["name"], item["type"],
             item["broker"], item["account"], item["quantity"], item["cost_price"],
@@ -220,6 +263,9 @@ def _save_holding(user_id: str, item: dict) -> None:
             item["open_date"], item["currency"],
             item["created_at"], item["updated_at"], item.get("fair_value"),
             item.get("grid_lower"), item.get("grid_upper"), item.get("grid_step"),
+            item.get("broker_account") or "", item.get("avail_qty"), item.get("last_price"),
+            item.get("client_market_value"), item.get("client_profit"), item.get("client_profit_pct"),
+            item.get("snapshot_date"), item.get("biz") or "", item.get("raw"),
         ],
     )
 
@@ -249,74 +295,166 @@ def _archive_holding(user_id: str, old: dict, source: str) -> None:
     )
 
 
-def import_holdings(user_id: str, items: list[dict], source: str | None = None) -> dict:
-    """批量导入：按 code+type+account 去重，已存在则覆盖更新。
+def _extra_holding_fields(raw: dict) -> dict:
+    """客户端全量快照字段（券商原始值），None 表示本次未上报、不覆盖旧值。"""
+    def f(v):
+        return _safe_float(v)
+    return {
+        "avail_qty": f(raw.get("avail_qty")),
+        "last_price": f(raw.get("last_price")),
+        "client_market_value": f(raw.get("client_market_value") or raw.get("market_value")),
+        "client_profit": f(raw.get("client_profit") or raw.get("profit")),
+        "client_profit_pct": f(raw.get("client_profit_pct") or raw.get("profit_pct")),
+        "snapshot_date": str(raw.get("snapshot_date") or raw.get("trade_date") or "") or None,
+        "biz": str(raw.get("biz") or "") or None,
+        "raw": (str(raw.get("raw"))[:4000] if raw.get("raw") not in (None, "") else None),
+    }
 
-    source 非空时，覆盖更新前会把被覆盖持仓的旧行快照写入 biz_holdings_history
-    （满足「旧的数据存到数据表中，记录下」的留痕需求）。
+
+def import_holdings(
+    user_id: str,
+    items: list[dict],
+    source: str | None = None,
+    default_account: str = "",
+    mode: str = "merge",
+    dry_run: bool = False,
+) -> dict:
+    """批量导入持仓（按资金账号隔离）。
+
+    - 去重键 ``broker_account + code + type + broker + sub_account``：
+      不同资金账号持有同一只标的不再互相覆盖；
+    - 兼容旧数据：旧行没有 broker_account，同 code/type/broker/子账户的行会被
+      本次「认领」并补上资金账号，不产生重复行；
+    - ``type`` 不再做白名单校验：repo / bond_cb / standard_bond 等原样保存，
+      统计时单独归类（逆回购终于能进持仓分析）；
+    - ``mode=replace``：按账号全量快照，本地已清仓、本次没出现的行自动归档；
+    - ``dry_run=True``：只校验、不写库，返回 would_* 计数；
+    - 返回 ``by_account``：每个资金账号各自的新增 / 更新 / 归档 / 失败数。
     """
-    existing = {f"{h['code']}|{h['type']}|{h.get('broker') or ''}|{h.get('account') or ''}": h for h in _load_holdings(user_id)}
-    added = updated = 0
-    failed: list[dict] = []
+    loaded = _load_holdings(user_id)
+    existing: dict[str, dict] = {}
+    legacy: dict[str, dict] = {}   # broker_account 为空的旧行，供平滑迁移认领
+    for h in loaded:
+        existing[_holding_key(h.get("broker_account") or "", h["code"], h["type"],
+                              h.get("broker") or "", h.get("account") or "")] = h
+        if not (h.get("broker_account") or ""):
+            legacy[_holding_key("", h["code"], h["type"],
+                                h.get("broker") or "", h.get("account") or "")] = h
 
-    for idx, raw in enumerate(items):
+    added = updated = removed = 0
+    failed: list[dict] = []
+    by_account: dict[str, dict] = {}
+    touched: set[str] = set()
+
+    for idx, raw in enumerate(items or []):
         code = str(raw.get("code") or "").strip()
         name = str(raw.get("name") or "").strip()
-        htype = str(raw.get("type") or "").strip()
-        account = str(raw.get("account") or "").strip()
-        try:
-            quantity = float(raw.get("quantity") or 0)
-            cost_price = float(raw.get("cost_price") or 0)
-        except (TypeError, ValueError):
-            quantity = None  # type: ignore[assignment]
-            cost_price = None  # type: ignore[assignment]
+        htype = str(raw.get("type") or "").strip() or "other"
+        acc = account_of(raw, default_account)
+        broker = str(raw.get("broker") or "")
+        sub = str(raw.get("sub_account") or raw.get("account") or "").strip()
+        quantity = _safe_float(raw.get("quantity"))
+        cost_price = _safe_float(raw.get("cost_price"))
 
         if not code or not name:
-            failed.append({"index": idx, "code": code, "reason": "缺少 code 或 name"})
-            continue
-        if htype not in HOLDING_TYPES:
-            failed.append({"index": idx, "code": code, "reason": f"未知 type: {htype}"})
+            failed.append({"index": idx, "code": code, "account": acc,
+                           "reason": "缺少 code 或 name", "item": raw})
             continue
         if quantity is None or cost_price is None or quantity == 0:
-            failed.append({"index": idx, "code": code, "reason": "quantity/cost_price 缺失或为0"})
+            failed.append({"index": idx, "code": code, "account": acc,
+                           "reason": "quantity/cost_price 缺失或为0", "item": raw})
             continue
 
-        key = f"{code}|{htype}|{str(raw.get('broker') or '')}|{account}"
+        key = _holding_key(acc, code, htype, broker, sub)
+        item = existing.get(key)
+        if item is None:
+            # 旧库里没有资金账号的行：认领，避免改版后同一标的出现两行
+            candidate = legacy.pop(key, None)
+            if candidate is not None and not (candidate.get("broker_account") or ""):
+                item = candidate
         now = _now_iso()
-        if key in existing:
-            item = existing[key]
-            # 覆盖前先把旧行快照写入历史表（仅真实库、且 source 明确时留痕）
-            if source:
-                _archive_holding(user_id, item, source)
-            item.update({
-                "name": name,
-                "broker": str(raw.get("broker") or item.get("broker") or ""),
-                "account": account,
-                "quantity": quantity, "cost_price": cost_price,
-                "stop_loss_pct": _safe_float(raw.get("stop_loss_pct")) if raw.get("stop_loss_pct") not in (None, "") else item.get("stop_loss_pct"),
-                "take_profit_pct": _safe_float(raw.get("take_profit_pct")) if raw.get("take_profit_pct") not in (None, "") else item.get("take_profit_pct"),
-                "open_date": str(raw.get("open_date") or item.get("open_date") or "") or None,
-                "currency": str(raw.get("currency") or item.get("currency") or "CNY"),
-                "updated_at": now,
-            })
-            updated += 1
-        else:
-            item = {
-                "id": str(uuid.uuid4()), "code": code, "name": name, "type": htype,
-                "broker": str(raw.get("broker") or ""),
-                "account": account,
-                "quantity": quantity, "cost_price": cost_price, "manual_price": None,
-                "stop_loss_pct": _safe_float(raw.get("stop_loss_pct")),
-                "take_profit_pct": _safe_float(raw.get("take_profit_pct")),
-                "open_date": str(raw.get("open_date") or "") or None,
-                "currency": str(raw.get("currency") or "CNY"),
-                "created_at": now, "updated_at": now,
-            }
-            existing[key] = item
-            added += 1
-        _save_holding(user_id, item)
+        extra = _extra_holding_fields(raw)
 
-    return {"added": added, "updated": updated, "failed": failed}
+        if item is not None:
+            if not dry_run:
+                if source:
+                    _archive_holding(user_id, item, source)
+                item.update({
+                    "name": name, "broker": broker or item.get("broker") or "",
+                    "account": sub, "broker_account": acc,
+                    "quantity": quantity, "cost_price": cost_price,
+                    "stop_loss_pct": _safe_float(raw.get("stop_loss_pct")) if raw.get("stop_loss_pct") not in (None, "") else item.get("stop_loss_pct"),
+                    "take_profit_pct": _safe_float(raw.get("take_profit_pct")) if raw.get("take_profit_pct") not in (None, "") else item.get("take_profit_pct"),
+                    "open_date": str(raw.get("open_date") or item.get("open_date") or "") or None,
+                    "currency": str(raw.get("currency") or item.get("currency") or "CNY"),
+                    "updated_at": now,
+                })
+                for k, v in extra.items():
+                    if v is not None:
+                        item[k] = v
+                _save_holding(user_id, item)
+                existing[key] = item
+            updated += 1
+            action = "updated"
+        else:
+            if not dry_run:
+                item = {
+                    "id": str(uuid.uuid4()), "code": code, "name": name, "type": htype,
+                    "broker": broker, "account": sub, "broker_account": acc,
+                    "quantity": quantity, "cost_price": cost_price, "manual_price": None,
+                    "stop_loss_pct": _safe_float(raw.get("stop_loss_pct")),
+                    "take_profit_pct": _safe_float(raw.get("take_profit_pct")),
+                    "open_date": str(raw.get("open_date") or "") or None,
+                    "currency": str(raw.get("currency") or "CNY"),
+                    "created_at": now, "updated_at": now,
+                    **{k: v for k, v in extra.items() if v is not None},
+                }
+                _save_holding(user_id, item)
+                existing[key] = item
+            added += 1
+            action = "added"
+
+        touched.add(key)
+        stat = by_account.setdefault(acc, {"account": acc, "broker": broker,
+                                           "added": 0, "updated": 0, "removed": 0, "failed": 0})
+        stat[action] += 1
+
+    for f in failed:
+        acc = str(f.get("account") or "")
+        by_account.setdefault(acc, {"account": acc, "broker": "",
+                                    "added": 0, "updated": 0, "removed": 0, "failed": 0})["failed"] += 1
+
+    # mode=replace：该账号本次快照里没出现的行视为已清仓（软删除归档，保留历史）
+    if mode == "replace" and not dry_run:
+        db = None if USE_MOCK_DATA else get_biz_db()
+        for acc in list(by_account):
+            for h in _load_holdings(user_id):
+                if (h.get("broker_account") or "") != acc:
+                    continue
+                k = _holding_key(acc, h["code"], h["type"], h.get("broker") or "", h.get("account") or "")
+                if k in touched:
+                    continue
+                if USE_MOCK_DATA:
+                    mock = _mock_holdings.setdefault(user_id, [])
+                    mock[:] = [x for x in mock if x["id"] != h["id"]]
+                else:
+                    db = db or get_biz_db()
+                    db.execute("UPDATE biz_holdings SET is_closed = 1, closed_at = ? WHERE id = ?",
+                               [_now_iso(), h["id"]])
+                removed += 1
+                by_account[acc]["removed"] += 1
+
+    result = {
+        "added": added, "updated": updated, "removed": removed, "failed": failed,
+        "by_account": list(by_account.values()),
+    }
+    if dry_run:
+        result = {
+            "dry_run": True, "would_add": added, "would_update": updated,
+            "would_remove": 0, "failed": failed, "by_account": list(by_account.values()),
+            "added": 0, "updated": 0, "removed": 0,
+        }
+    return result
 
 
 def update_holding(user_id: str, holding_id: str, fields: dict) -> Optional[dict]:
@@ -644,6 +782,7 @@ def build_holdings_view(
     type_filter: str | None = None,
     broker_filter: str | None = None,
     account_filter: str | None = None,
+    broker_account_filter: str | None = None,
     save_snapshot: bool = True,
 ) -> dict:
     holdings = _load_holdings(user_id)
@@ -657,10 +796,15 @@ def build_holdings_view(
     for h in holdings:
         quote = quotes.get(_digits(h["code"])) or {}
         auto_price = quote.get("price")
+        # 外部程序上报的现价作为行情源兜底（逆回购 / 可转债等无轻量行情源时尤其有用）
+        if auto_price is None:
+            auto_price = h.get("last_price")
         price = h["manual_price"] if h["manual_price"] is not None else auto_price
         price_source = "manual" if h["manual_price"] is not None else ("auto" if auto_price is not None else None)
 
         mv = pnl = pnl_pct = daily = daily_pct = None
+        # 无行情价（走客户端市值兜底）时下面这些变量不会被赋值，先初始化
+        val_pct = valuation = grid = None
         alert_status = None
         if price is not None:
             mv = price * h["quantity"]
@@ -729,9 +873,22 @@ def build_holdings_view(
                     "grid_signal": g_signal, "grid_at_bound": g_bound,
                 }
 
+        # 无行情价时兜底用客户端上报的市值 / 盈亏（逆回购、停牌、场外等），
+        # 保证「所有传过来的数据」都能进入汇总，而不是显示成 0 或空。
+        if mv is None and h.get("client_market_value") is not None:
+            mv = h["client_market_value"]
+            pnl = h.get("client_profit")
+            pnl_pct = h.get("client_profit_pct")
+            total_mv += mv
+            total_cost += (mv - pnl) if pnl is not None else 0.0
+            total_pnl += pnl or 0.0
+            priced_count += 1
+            price_source = "client"
+
         items.append({
             **h,
-            "type_label": HOLDING_TYPES.get(h["type"], h["type"]),
+            "type_label": type_label(h["type"]),
+            "broker_account": h.get("broker_account") or "",
             "price": price,
             "price_source": price_source,
             "market_value": round(mv, 2) if mv is not None else None,
@@ -774,6 +931,34 @@ def build_holdings_view(
                 "weight_pct": round(v / total_mv * 100, 2) if total_mv else 0.0,
             })
         return out
+
+    # 按资金账号的汇总（多账号预留：单人局域网通常只有 1~2 个，多账号自动展开）
+    def _account_stats() -> list[dict]:
+        agg: dict[str, dict] = {}
+        for it in items:
+            k = it.get("broker_account") or "未分组"
+            d = agg.setdefault(k, {
+                "account": k, "broker": it.get("broker") or "",
+                "holding_count": 0, "market_value": 0.0, "cost": 0.0,
+                "pnl": 0.0, "daily_pnl": 0.0, "types": set(),
+            })
+            d["holding_count"] += 1
+            d["market_value"] += it.get("market_value") or 0.0
+            d["cost"] += (it.get("cost_price") or 0.0) * (it.get("quantity") or 0.0)
+            d["pnl"] += it.get("pnl") or 0.0
+            d["daily_pnl"] += it.get("daily_pnl") or 0.0
+            d["types"].add(it.get("type"))
+        out = []
+        for d in agg.values():
+            types = d.pop("types")
+            d["type_count"] = len(types)
+            d["market_value"] = round(d["market_value"], 2)
+            d["cost"] = round(d["cost"], 2)
+            d["pnl"] = round(d["pnl"], 2)
+            d["daily_pnl"] = round(d["daily_pnl"], 2)
+            d["pnl_pct"] = round(d["pnl"] / d["cost"] * 100, 2) if d["cost"] else None
+            out.append(d)
+        return sorted(out, key=lambda x: -x["market_value"])
 
     # 预警：单标的集中度 > 30%，浮亏 > 15%，止损/止盈触发
     warnings: list[dict] = []
@@ -819,6 +1004,8 @@ def build_holdings_view(
         filtered = [it for it in filtered if (it["broker"] or "未分组") == broker_filter]
     if account_filter:
         filtered = [it for it in filtered if (it["account"] or "未分组") == account_filter]
+    if broker_account_filter:
+        filtered = [it for it in filtered if (it.get("broker_account") or "未分组") == broker_account_filter]
 
     return {
         "items": filtered,
@@ -833,6 +1020,8 @@ def build_holdings_view(
             "allocation_by_type": _alloc("type"),
             "allocation_by_broker": _alloc("broker"),
             "allocation_by_account": _alloc("account"),
+            "allocation_by_broker_account": _alloc("broker_account"),
+            "accounts": _account_stats(),
             "warnings": warnings,
             "quote_time": datetime.now(timezone.utc).isoformat() if quotes else None,
         },

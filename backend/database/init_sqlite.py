@@ -98,7 +98,16 @@ BIZ_TABLES = [
         is_closed        INTEGER DEFAULT 0,
         closed_at        TEXT,
         realized_pnl     REAL,
-        close_price      REAL
+        close_price      REAL,
+        broker_account   TEXT DEFAULT '',
+        avail_qty        REAL,
+        last_price       REAL,
+        client_market_value REAL,
+        client_profit    REAL,
+        client_profit_pct REAL,
+        snapshot_date    TEXT,
+        biz              TEXT DEFAULT '',
+        raw              TEXT
     )
     """,
     """
@@ -328,7 +337,116 @@ BIZ_TABLES = [
         trade_time    TEXT,
         currency      TEXT DEFAULT 'CNY',
         source        TEXT DEFAULT '',
+        created_at    TEXT,
+        broker_account TEXT DEFAULT '',
+        sub_account   TEXT DEFAULT '',
+        order_no      TEXT DEFAULT '',
+        biz           TEXT DEFAULT '',
+        raw           TEXT
+    )
+    """,
+    # 每日成交（外部程序上传）：按 (user, broker_account, trade_date) 覆盖
+    """
+    CREATE TABLE IF NOT EXISTS biz_trades (
+        id            TEXT PRIMARY KEY,
+        fk_user       INTEGER NOT NULL,
+        trade_date    TEXT NOT NULL,
+        code          TEXT NOT NULL,
+        name          TEXT DEFAULT '',
+        type          TEXT DEFAULT 'stock',
+        broker        TEXT DEFAULT '',
+        account       TEXT DEFAULT '',
+        direction     TEXT NOT NULL,
+        price         REAL NOT NULL,
+        quantity      REAL NOT NULL,
+        amount        REAL,
+        fee           REAL,
+        trade_time    TEXT,
+        source        TEXT DEFAULT '',
+        created_at    TEXT,
+        broker_account TEXT DEFAULT '',
+        trade_id      TEXT,
+        order_no      TEXT,
+        biz           TEXT DEFAULT '',
+        entry_type    TEXT DEFAULT 'trade',
+        settle_date   TEXT,
+        commission    REAL,
+        stamp_tax     REAL,
+        transfer_fee  REAL,
+        other_fee     REAL,
+        fee_total     REAL,
+        net_amount    REAL,
+        currency      TEXT DEFAULT 'CNY',
+        raw           TEXT
+    )
+    """,
+    # 当日委托（外部程序上传，按账号按日覆盖）
+    """
+    CREATE TABLE IF NOT EXISTS biz_orders (
+        id            TEXT PRIMARY KEY,
+        fk_user       INTEGER NOT NULL,
+        trade_date    TEXT NOT NULL,
+        broker_account TEXT DEFAULT '',
+        broker        TEXT DEFAULT '',
+        sub_account   TEXT DEFAULT '',
+        order_no      TEXT DEFAULT '',
+        code          TEXT DEFAULT '',
+        name          TEXT DEFAULT '',
+        type          TEXT DEFAULT '',
+        side          TEXT DEFAULT '',
+        direction     TEXT DEFAULT '',
+        price         REAL,
+        quantity      REAL,
+        filled_qty    REAL,
+        filled_price  REAL,
+        amount        REAL,
+        order_time    TEXT,
+        status        TEXT DEFAULT '',
+        status_note   TEXT DEFAULT '',
+        source        TEXT DEFAULT '',
+        raw           TEXT,
         created_at    TEXT
+    )
+    """,
+    # 资金面板（外部程序上传，按账号按日 upsert，保留历史）
+    """
+    CREATE TABLE IF NOT EXISTS biz_account_balances (
+        id            TEXT PRIMARY KEY,
+        fk_user       INTEGER NOT NULL,
+        trade_date    TEXT NOT NULL,
+        broker_account TEXT NOT NULL DEFAULT '',
+        broker        TEXT DEFAULT '',
+        balance_json  TEXT,
+        total_asset   REAL,
+        available     REAL,
+        withdrawable  REAL,
+        market_value  REAL,
+        position_profit REAL,
+        today_profit  REAL,
+        today_profit_pct REAL,
+        frozen        REAL,
+        buy_unfilled  REAL,
+        source        TEXT DEFAULT '',
+        created_at    TEXT
+    )
+    """,
+    # 外部上传调用留痕（按账号展示用）
+    """
+    CREATE TABLE IF NOT EXISTS biz_import_log (
+        id          TEXT PRIMARY KEY,
+        fk_user     INTEGER NOT NULL,
+        endpoint    TEXT NOT NULL,
+        source      TEXT DEFAULT '',
+        broker_code TEXT DEFAULT '',
+        broker      TEXT DEFAULT '',
+        total       INTEGER DEFAULT 0,
+        added       INTEGER DEFAULT 0,
+        updated     INTEGER DEFAULT 0,
+        deleted     INTEGER DEFAULT 0,
+        inserted    INTEGER DEFAULT 0,
+        failed      INTEGER DEFAULT 0,
+        fail_detail TEXT,
+        created_at  TEXT
     )
     """,
 ]
@@ -346,6 +464,12 @@ BIZ_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_biz_settle_user_date ON biz_settlements(fk_user, trade_date)",
     "CREATE INDEX IF NOT EXISTS idx_biz_settle_user_code ON biz_settlements(fk_user, code)",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_biz_settle_user_tradeid ON biz_settlements(fk_user, trade_id)",
+    "CREATE INDEX IF NOT EXISTS idx_biz_trades_user_acct_date ON biz_trades(fk_user, broker_account, trade_date)",
+    "CREATE INDEX IF NOT EXISTS idx_biz_trades_user_tradeid ON biz_trades(fk_user, trade_id)",
+    "CREATE INDEX IF NOT EXISTS idx_biz_orders_user_acct_date ON biz_orders(fk_user, broker_account, trade_date)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_biz_balance_user_acct_date ON biz_account_balances(fk_user, broker_account, trade_date)",
+    "CREATE INDEX IF NOT EXISTS idx_biz_settle_user_acct ON biz_settlements(fk_user, broker_account, trade_date)",
+    "CREATE INDEX IF NOT EXISTS idx_biz_import_log_user ON biz_import_log(fk_user, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_biz_ar_users ON biz_alert_rules(fk_user)",
     "CREATE INDEX IF NOT EXISTS idx_biz_ae_rule_time ON biz_alert_events(fk_alert_rules, triggered_at)",
     "CREATE INDEX IF NOT EXISTS idx_biz_air_users_date ON biz_ai_reports(fk_user, report_date)",

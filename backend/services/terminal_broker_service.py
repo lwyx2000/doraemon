@@ -408,7 +408,15 @@ def resolve_or_create_broker_for_upload(
         if upd_name or upd_remark is not None:
             return update_broker(user_id, existing["id"], name=upd_name, remark=upd_remark)
         return existing
-    # 不存在 → 自动创建
-    tid = terminal_id or get_or_create_default_terminal(user_id)["id"]
+    # 不存在 → 自动创建。
+    # 2026-11-14 实测修复：调用方传了一个不存在的 terminal 名称/ID 时，
+    # 旧逻辑直接 create_broker 会因「终端不存在」返回 None，整批条目被误报成
+    # 「account（券商账号）缺失」。这里改为：指定终端无效时自动回落到默认终端，
+    # 保证首次上传一定能建出券商；仍解析不了才由调用方按 failed 处理。
+    tid = ""
+    if terminal_id:
+        tid = next((t["id"] for t in list_terminals(user_id) if t["id"] == terminal_id), "")
+    if not tid:
+        tid = get_or_create_default_terminal(user_id)["id"]
     broker_name = (name or "").strip() or account
     return create_broker(user_id, tid, broker_name, account, remark or "")

@@ -566,11 +566,14 @@ class HoldingUpdate(BaseModel):
 class HoldingUploadItem(BaseModel):
     """持仓机器上传条目（无鉴权接口 /holdings/import/api 使用）。
 
-    字段与 HoldingImportItem 对齐；code/name/quantity/cost_price 必填。
+    2026-11-14 起 extra="allow"：外部程序可携带任意扩展字段（券商原始行、
+    可用数量、客户端现价/市值/盈亏等），服务端会原样落库并在持仓分析里展示，
+    不再因为多传字段而静默丢弃。type 也不再是硬白名单。
     """
+    model_config = ConfigDict(extra="allow")
     code: str
     name: str
-    type: str  # stock / etf / fund_otc / option / future / hk_stock
+    type: str  # 自由字符串；未知值原样保留并单独归类
     broker: Optional[str] = ""
     account: Optional[str] = ""  # 子账户，如 普通 / 两融
     quantity: float
@@ -579,6 +582,17 @@ class HoldingUploadItem(BaseModel):
     currency: Optional[str] = "CNY"
     stop_loss_pct: Optional[float] = None
     take_profit_pct: Optional[float] = None
+    # ---- 按账号上传 / 全量数据扩展字段 ----
+    broker_account: Optional[str] = None   # 券商资金账号（覆盖顶层 account）
+    broker_name: Optional[str] = None      # 逐条券商名（多券商混批时用）
+    avail_qty: Optional[float] = None      # 可用数量
+    last_price: Optional[float] = None     # 客户端上报现价
+    market_value: Optional[float] = None   # 客户端上报市值
+    profit: Optional[float] = None         # 客户端上报持仓盈亏
+    profit_pct: Optional[float] = None
+    snapshot_date: Optional[str] = None
+    biz: Optional[str] = None
+    raw: Optional[str] = None
 
 
 class HoldingUploadRequest(BaseModel):
@@ -592,35 +606,59 @@ class HoldingUploadRequest(BaseModel):
     - broker_code：历史字段别名，等同于 account（旧外部程序可继续传，便于兼容）；
     - broker_name / remark：可选，随上传一并登记券商名 / 备注（首见该 account 时自动建券商，落默认终端）；
     - terminal：可选，指定归属终端 id（留空自动落到该用户默认终端）。
-    account 与 broker_code 皆为空 → 整批进入 failed（不整体拒绝）。
+    account 与 broker_code 皆为空、但每条 item 都带 broker_account 时同样合法
+    （一次请求可传多个资金账号）。
     """
+    model_config = ConfigDict(extra="allow")
     user_id: Optional[int] = None
     username: Optional[str] = None
     source: Optional[str] = ""       # 来源程序标记，写入历史表便于追溯
-    account: Optional[str] = None          # 券商账号，客户端自传主标识
+    account: Optional[str] = None          # 券商账号，客户端自传主标识（整批默认值）
     broker_code: Optional[str] = None      # 历史别名，等同于 account
     broker_name: Optional[str] = None      # 可选：券商名
     remark: Optional[str] = None           # 可选：券商备注
-    terminal: Optional[str] = None         # 可选：归属终端 id
+    terminal: Optional[str] = None         # 可选：归属终端 id（无效时自动回落默认终端）
+    mode: Optional[str] = "merge"          # merge / replace（按账号全量快照）
+    dry_run: Optional[int] = 0             # 1=只校验不写库
+    snapshot_date: Optional[str] = None
     items: list[HoldingUploadItem]
 
 
 class TradeImportItem(BaseModel):
     """成交记录条目（无鉴权接口 /trades/import 使用）。
 
-    按交易日全量覆盖：同 (user, trade_date) 旧记录会被删除后重插。
+    2026-11-14 起按 (user, broker_account, trade_date) 覆盖，允许多账号分次上传；
+    direction 支持回购购回 / 新股入帐 / 资金流水，quantity 允许负（购回），
+    amount 显式优先（逆回购 price 是年化利率而非单价）。extra="allow" 保留原始字段。
     """
+    model_config = ConfigDict(extra="allow")
     code: str
     name: Optional[str] = ""
-    type: Optional[str] = "stock"    # stock / etf / fund_otc / option / future / hk_stock
+    type: Optional[str] = "stock"    # 自由字符串：repo / bond_cb / standard_bond ...
     broker: Optional[str] = ""
-    account: Optional[str] = ""
-    direction: str                   # buy / sell（买入 / 卖出）
-    price: float                     # 成交价
-    quantity: float                  # 成交数量
-    amount: Optional[float] = None   # 成交额（价×量，可选，缺失后端按 price*quantity 计算）
+    account: Optional[str] = ""      # 子账户（普通 / 两融）
+    direction: str                   # buy / sell / repo_sell / repo_buy / 中文业务名 ...
+    price: float                     # 成交价（逆回购为年化利率）
+    quantity: float                  # 成交数量（购回可为负）
+    amount: Optional[float] = None   # 成交额（显式优先，缺失才按 price*quantity 计算）
     fee: Optional[float] = None      # 手续费（可选）
     trade_time: Optional[str] = None # 成交时间 YYYY-MM-DD HH:MM:SS（可选）
+    # ---- 按账号 / 对账扩展字段 ----
+    broker_account: Optional[str] = None
+    broker_name: Optional[str] = None
+    trade_id: Optional[str] = None
+    order_no: Optional[str] = None
+    biz: Optional[str] = None
+    entry_type: Optional[str] = None
+    settle_date: Optional[str] = None
+    commission: Optional[float] = None
+    stamp_tax: Optional[float] = None
+    transfer_fee: Optional[float] = None
+    other_fee: Optional[float] = None
+    fee_total: Optional[float] = None
+    net_amount: Optional[float] = None
+    currency: Optional[str] = None
+    raw: Optional[str] = None
 
 
 class TradeUploadRequest(BaseModel):
@@ -634,16 +672,20 @@ class TradeUploadRequest(BaseModel):
     - broker_code：历史字段别名，等同于 account；
     - broker_name / remark：可选，随上传一并登记券商名 / 备注（首见该 account 时自动建券商）；
     - terminal：可选，指定归属终端 id（留空自动落到默认终端）。
-    account 与 broker_code 皆为空 → 整批进入 failed（不整体拒绝）。
+    account 与 broker_code 皆为空、但每条 item 都带 broker_account 时同样合法
+    （一次请求可传多个资金账号）。覆盖维度为 (user, broker_account, trade_date)。
     """
+    model_config = ConfigDict(extra="allow")
     user_id: Optional[int] = None
     username: Optional[str] = None
     source: Optional[str] = ""
-    account: Optional[str] = None          # 券商账号，客户端自传主标识
+    account: Optional[str] = None          # 券商账号，客户端自传主标识（整批默认值）
     broker_code: Optional[str] = None      # 历史别名，等同于 account
     broker_name: Optional[str] = None      # 可选：券商名
     remark: Optional[str] = None           # 可选：券商备注
-    terminal: Optional[str] = None         # 可选：归属终端 id
+    terminal: Optional[str] = None         # 可选：归属终端 id（无效时自动回落默认终端）
+    mode: Optional[str] = "replace"        # replace（按账号按日覆盖）/ merge（按 trade_id upsert）
+    dry_run: Optional[int] = 0             # 1=只校验不写库
     trade_date: str                  # YYYY-MM-DD，必填，归属交易日
     items: list[TradeImportItem]
 

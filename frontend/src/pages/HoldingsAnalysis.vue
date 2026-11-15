@@ -13,7 +13,7 @@ import { CloudUploadOutline, RefreshOutline, CameraOutline, ClipboardOutline, Se
 import { useAsyncData } from '../composables/useApi'
 import { api } from '../utils/api'
 import { useAuth } from '../composables/useAuth'
-import type { Holding, HoldingsView, HoldingSnapshot, HoldingSummary, Terminal, Broker, AccountName, HoldingHistory, ImportLog } from '../types'
+import type { Holding, HoldingsView, HoldingSnapshot, HoldingSummary, Terminal, Broker, AccountName, HoldingHistory, ImportLog, ExternalOverview, ExternalTrade, ExternalOrder, ExternalBalance, ExternalSettlement } from '../types'
 import PageHeader from '../components/PageHeader.vue'
 import StatCard from '../components/StatCard.vue'
 import DataPanel from '../components/DataPanel.vue'
@@ -35,6 +35,12 @@ const TYPE_LABELS: Record<string, string> = {
   option: '期权',
   future: '期货',
   hk_stock: '港股',
+  repo: '国债逆回购',
+  bond_cb: '可转债',
+  standard_bond: '标准券',
+  bond: '债券',
+  fund: '基金',
+  other: '其它',
 }
 
 // 各类型标签配色（浅底深字，避免刺眼）
@@ -45,6 +51,12 @@ const TYPE_COLORS: Record<string, { bg: string; fg: string; border: string }> = 
   option: { bg: 'rgba(214,124,0,0.14)', fg: '#b86a00', border: 'rgba(214,124,0,0.4)' },
   future: { bg: 'rgba(180,40,50,0.12)', fg: '#b42832', border: 'rgba(180,40,50,0.35)' },
   hk_stock: { bg: 'rgba(176,130,0,0.14)', fg: '#9a7200', border: 'rgba(176,130,0,0.4)' },
+  repo: { bg: 'rgba(0,130,120,0.13)', fg: '#00776e', border: 'rgba(0,130,120,0.38)' },
+  bond_cb: { bg: 'rgba(90,70,160,0.13)', fg: '#554096', border: 'rgba(90,70,160,0.38)' },
+  standard_bond: { bg: 'rgba(120,120,130,0.13)', fg: '#5f636b', border: 'rgba(120,120,130,0.35)' },
+  bond: { bg: 'rgba(40,110,150,0.13)', fg: '#266b93', border: 'rgba(40,110,150,0.35)' },
+  fund: { bg: 'rgba(61,122,74,0.12)', fg: '#2f7d44', border: 'rgba(61,122,74,0.35)' },
+  other: { bg: 'rgba(88,94,108,0.12)', fg: '#585e6c', border: 'rgba(88,94,108,0.3)' },
 }
 function typeColor(type: string) {
   return TYPE_COLORS[type] ?? { bg: 'rgba(88,94,108,0.12)', fg: '#585e6c', border: 'rgba(88,94,108,0.3)' }
@@ -53,7 +65,109 @@ function typeColor(type: string) {
 const { data: view, loading, error, refresh } = useAsyncData<HoldingsView>(() => api.getHoldings())
 const { data: snapshots, refresh: refreshSnapshots } = useAsyncData<HoldingSnapshot[]>(() => api.getHoldingSnapshots())
 const { data: history, loading: historyLoading, refresh: refreshHistory } = useAsyncData<HoldingHistory[]>(() => api.getHoldingHistory())
-const activeTab = ref<'current' | 'history' | 'brokers' | 'imports' | 'ledger' | 'review'>('current')
+const activeTab = ref<'current' | 'history' | 'brokers' | 'imports' | 'ledger' | 'review' | 'data'>('current')
+
+// ============================================================
+// 资金账号维度：外部程序按账号上传持仓 / 成交 / 委托 / 资金 / 交割单
+// 单人局域网通常只有 1~2 个资金账号；多账号时这里自动展开。
+// ============================================================
+const selectedBrokerAccount = ref<string>('')
+const externalOverview = ref<ExternalOverview | null>(null)
+const accountTrades = ref<ExternalTrade[]>([])
+const accountOrders = ref<ExternalOrder[]>([])
+const accountBalances = ref<ExternalBalance[]>([])
+const accountSettlements = ref<ExternalSettlement[]>([])
+const accountDataLoading = ref(false)
+
+const accountOptions = computed(() => {
+  const fromOverview = (externalOverview.value?.accounts ?? []).map(a => a.account)
+  const fromHoldings = (view.value?.items ?? []).map(i => i.broker_account || '未分组')
+  const all = [...new Set([...fromOverview, ...fromHoldings].filter(Boolean))]
+  return all.map(a => ({ label: a === '未分组' ? '未分组（旧数据）' : a, value: a }))
+})
+const accountCards = computed(() => externalOverview.value?.accounts ?? [])
+
+async function loadAccountDetails() {
+  const acc = selectedBrokerAccount.value || undefined
+  accountDataLoading.value = true
+  try {
+    const [t, o, b, s] = await Promise.all([
+      api.getExternalTrades({ broker_account: acc, limit: 200 }),
+      api.getExternalOrders({ broker_account: acc, limit: 200 }),
+      api.getExternalBalances({ broker_account: acc, limit: 30 }),
+      api.getExternalSettlements({ broker_account: acc, limit: 200 }),
+    ])
+    accountTrades.value = t
+    accountOrders.value = o
+    accountBalances.value = b
+    accountSettlements.value = s
+  } catch {
+    // 旧库 / 未接入外部数据时这些接口可能为空，不影响持仓主页面
+  } finally {
+    accountDataLoading.value = false
+  }
+}
+async function refreshAccountData() {
+  try {
+    externalOverview.value = await api.getExternalOverview()
+  } catch {
+    externalOverview.value = null
+  }
+  await loadAccountDetails()
+}
+watch(selectedBrokerAccount, () => { loadAccountDetails() })
+function selectAccount(acc: string) {
+  selectedBrokerAccount.value = selectedBrokerAccount.value === acc ? '' : acc
+}
+
+// 「账户数据」页签的简易表格列
+const extTradeColumns = [
+  { title: '日期', key: 'trade_date', width: 100 },
+  { title: '资金账号', key: 'broker_account', width: 130, ellipsis: { tooltip: true } as const },
+  { title: '代码', key: 'code', width: 90 },
+  { title: '名称', key: 'name', minWidth: 110 },
+  { title: '品种', key: 'type', width: 100 },
+  { title: '方向', key: 'direction', width: 110 },
+  { title: '业务', key: 'biz', minWidth: 130, ellipsis: { tooltip: true } as const },
+  { title: '价格', key: 'price', width: 90, align: 'right' as const },
+  { title: '数量', key: 'quantity', width: 100, align: 'right' as const },
+  { title: '成交额', key: 'amount', width: 120, align: 'right' as const },
+  { title: '时间', key: 'trade_time', width: 150 },
+  { title: '成交编号', key: 'trade_id', width: 140, ellipsis: { tooltip: true } as const },
+]
+const extOrderColumns = [
+  { title: '日期', key: 'trade_date', width: 100 },
+  { title: '资金账号', key: 'broker_account', width: 130, ellipsis: { tooltip: true } as const },
+  { title: '委托编号', key: 'order_no', width: 140 },
+  { title: '代码', key: 'code', width: 90 },
+  { title: '名称', key: 'name', minWidth: 110 },
+  { title: '方向', key: 'direction', width: 90 },
+  { title: '价格', key: 'price', width: 90, align: 'right' as const },
+  { title: '数量', key: 'quantity', width: 100, align: 'right' as const },
+  { title: '已成交', key: 'filled_qty', width: 100, align: 'right' as const },
+  { title: '状态', key: 'status', minWidth: 120 },
+  { title: '时间', key: 'order_time', width: 150 },
+]
+const extBalanceColumns = [
+  { title: '日期', key: 'trade_date', width: 110 },
+  { title: '资金账号', key: 'broker_account', width: 140 },
+  { title: '总资产', key: 'total_asset', width: 130, align: 'right' as const },
+  { title: '可用', key: 'available', width: 120, align: 'right' as const },
+  { title: '市值', key: 'market_value', width: 130, align: 'right' as const },
+  { title: '当日盈亏', key: 'today_profit', width: 120, align: 'right' as const },
+  { title: '同步时间', key: 'created_at', minWidth: 180 },
+]
+const extSettlementColumns = [
+  { title: '日期', key: 'trade_date', width: 100 },
+  { title: '资金账号', key: 'broker_account', width: 130, ellipsis: { tooltip: true } as const },
+  { title: '代码', key: 'code', width: 90 },
+  { title: '名称', key: 'name', minWidth: 110 },
+  { title: '方向', key: 'direction', width: 100 },
+  { title: '成交额', key: 'amount', width: 120, align: 'right' as const },
+  { title: '费用', key: 'fee_total', width: 100, align: 'right' as const },
+  { title: '净额', key: 'net_amount', width: 120, align: 'right' as const },
+  { title: '业务', key: 'biz', minWidth: 130 },
+]
 
 // 表格分页：每页默认 20 行，客户端分页
 const pagination = ref<PaginationProps>({
@@ -78,7 +192,7 @@ async function loadAccountNames() {
     accountNames.value = []
   }
 }
-onMounted(() => { refresh(); refreshSnapshots(); refreshHistory(); loadTerminals(); loadAccountNames() })
+onMounted(() => { refresh(); refreshSnapshots(); refreshHistory(); loadTerminals(); loadAccountNames(); refreshAccountData() })
 
 // 展平所有券商（跨终端），用于编辑弹窗 / 导入下拉
 const allBrokers = computed<Broker[]>(() =>
@@ -97,9 +211,54 @@ const editAccountOptions = computed(() => {
   return [...accounts].map(a => ({ label: a, value: a }))
 })
 
-function refreshAll() { refresh(); refreshSnapshots() }
+function refreshAll() { refresh(); refreshSnapshots(); refreshAccountData() }
 
-const summary = computed<HoldingSummary | null>(() => view.value?.summary ?? null)
+// 汇总随选中的资金账号联动：切换账号后所有统计卡、图表、权重都按该账号重算
+const summary = computed<HoldingSummary | null>(() => {
+  const base = view.value?.summary
+  if (!base) return null
+  const acc = selectedBrokerAccount.value
+  if (!acc || !view.value) return base
+  const items = view.value.items.filter(i => (i.broker_account || '未分组') === acc)
+  const totalMv = items.reduce((s, i) => s + (i.market_value ?? 0), 0)
+  const totalCost = items.reduce((s, i) => s + i.cost_price * i.quantity, 0)
+  const totalPnl = items.reduce((s, i) => s + (i.pnl ?? 0), 0)
+  const dailyPnl = items.reduce((s, i) => s + (i.daily_pnl ?? 0), 0)
+  const alloc = (key: 'type' | 'broker' | 'account' | 'broker_account') => {
+    const agg = new Map<string, number>()
+    for (const it of items) {
+      if (it.market_value == null) continue
+      const k = key === 'broker_account'
+        ? (it.broker_account || '未分组')
+        : key === 'type' ? it.type : (it as any)[key] || '未分组'
+      agg.set(k, (agg.get(k) ?? 0) + it.market_value)
+    }
+    return [...agg.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, v]) => ({
+        key: k,
+        label: key === 'type' ? (TYPE_LABELS[k] ?? k) : k,
+        market_value: Math.round(v * 100) / 100,
+        weight_pct: totalMv ? Math.round(v / totalMv * 10000) / 100 : 0,
+      }))
+  }
+  return {
+    ...base,
+    total_market_value: Math.round(totalMv * 100) / 100,
+    total_cost: Math.round(totalCost * 100) / 100,
+    total_pnl: Math.round(totalPnl * 100) / 100,
+    total_pnl_pct: totalCost ? Math.round(totalPnl / totalCost * 10000) / 100 : 0,
+    daily_pnl: Math.round(dailyPnl * 100) / 100,
+    holding_count: items.length,
+    priced_count: items.filter(i => i.price !== null).length,
+    allocation_by_type: alloc('type'),
+    allocation_by_broker: alloc('broker'),
+    allocation_by_account: alloc('account'),
+    allocation_by_broker_account: alloc('broker_account'),
+    accounts: (base.accounts ?? []).filter(a => a.account === acc),
+    warnings: base.warnings.filter(w => items.some(i => w.text.includes(i.name) || w.text.includes(i.code))),
+  }
+})
 
 // ============================================================
 // 筛选（表格展示层过滤，汇总统计始终全量）
@@ -160,6 +319,9 @@ const accountFilterOptions = computed(() => {
 const displayItems = computed(() => {
   if (!view.value) return []
   let items = view.value.items
+  if (selectedBrokerAccount.value) {
+    items = items.filter(i => (i.broker_account || '未分组') === selectedBrokerAccount.value)
+  }
   if (appliedType.value) items = items.filter(i => i.type === appliedType.value)
   if (appliedBroker.value) items = items.filter(i => (i.broker || '未分组') === appliedBroker.value)
   if (appliedAccount.value) items = items.filter(i => (i.account || '未分组') === appliedAccount.value)
@@ -190,6 +352,15 @@ function fmtNum(v: number | null | undefined, digits = 2): string {
 }
 function fmtMoney(v: number | null | undefined): string {
   return v === null || v === undefined ? '—' : `¥${fmtNum(v)}`
+}
+function balNum(a: { balance: Record<string, number | string | null> | null }, key: string): number | null {
+  const v = a.balance?.[key]
+  return typeof v === 'number' ? v : null
+}
+function fmtTime(v: string | null | undefined): string {
+  if (!v) return '—'
+  const d = new Date(v)
+  return Number.isNaN(d.getTime()) ? String(v) : d.toLocaleString('zh-CN')
 }
 function pnlColor(v: number | null | undefined): string | undefined {
   if (v === null || v === undefined) return undefined
@@ -283,7 +454,11 @@ const columnDefs: ColDef[] = [
     },
   },
   { key: 'broker', title: '券商', width: 110, defaultOn: false, render: (row: Holding) => row.broker || '未分组' },
+  { key: 'broker_account', title: '资金账号', width: 130, render: (row: Holding) => h('span', { class: 'mono' }, row.broker_account || '未分组') },
   { key: 'account', title: '账户', width: 100, defaultOn: false, render: (row: Holding) => row.account || '未分组' },
+  { key: 'avail_qty', title: '可用数量', align: 'right' as const, width: 100, defaultOn: false, render: (row: Holding) => row.avail_qty == null ? '—' : fmtNum(row.avail_qty) },
+  { key: 'client_market_value', title: '客户端市值', align: 'right' as const, width: 120, defaultOn: false, render: (row: Holding) => fmtMoney(row.client_market_value) },
+  { key: 'client_profit', title: '客户端盈亏', align: 'right' as const, width: 120, defaultOn: false, render: (row: Holding) => h('span', { class: 'mono', style: { color: pnlColor(row.client_profit) } }, fmtMoney(row.client_profit)) },
   { key: 'quantity', title: '数量', align: 'right' as const, width: 100, sorter: (a, b) => a.quantity - b.quantity, render: (row: Holding) => fmtNum(row.quantity) },
   { key: 'cost_price', title: '成本价', align: 'right' as const, width: 100, sorter: (a, b) => (a.cost_price ?? 0) - (b.cost_price ?? 0), render: (row: Holding) => h('span', { class: 'mono' }, fmtNum(row.cost_price, 3)) },
   {
@@ -902,6 +1077,30 @@ const accountOption = computed(() => {
   }
 })
 
+// 资金账号分布（按券商资金账号，不是「普通/两融」子账户）
+const brokerAccountOption = computed(() => {
+  const alloc = summary.value?.allocation_by_broker_account ?? []
+  return {
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      formatter: (p: any) => `${p[0].name}: ¥${Number(p[0].value).toLocaleString()}`,
+    },
+    grid: { top: 8, left: 8, right: 24, bottom: 8, containLabel: true },
+    xAxis: {
+      type: 'value',
+      axisLabel: { fontSize: 10, formatter: (v: number) => (v >= 10000 ? `${(v / 10000).toFixed(0)}万` : String(v)) },
+      splitLine: { lineStyle: { type: 'dashed', opacity: 0.3 } },
+    },
+    yAxis: { type: 'category', data: alloc.map(a => a.label), axisLabel: { fontSize: 10 } },
+    series: [{
+      type: 'bar', barWidth: 12,
+      itemStyle: { color: '#00776e', borderRadius: 3 },
+      data: alloc.map(a => a.market_value),
+    }],
+  }
+})
+
 const historyOption = computed(() => {
   const snaps = snapshots.value ?? []
   return {
@@ -1233,9 +1432,41 @@ watch(activeTab, (tab) => {
 
       <GlossaryPanel page-key="holdingsAnalysis" />
 
+      <!-- 资金账号切换：外部程序按账号上传，单账号时只显示一行，多账号自动展开 -->
+      <div class="account-switch" v-if="accountOptions.length">
+        <span class="account-switch-label">资金账号</span>
+        <n-select v-model:value="selectedBrokerAccount" :options="accountOptions" clearable placeholder="全部账号（汇总）" size="small" style="width: 240px;" />
+        <span class="account-switch-meta">
+          {{ accountCards.length }} 个账号 · 合计总资产 {{ fmtMoney(externalOverview?.totals.total_asset) }} · 可用 {{ fmtMoney(externalOverview?.totals.available) }} · 当日盈亏 {{ fmtMoney(externalOverview?.totals.today_profit) }}
+        </span>
+        <n-button size="small" quaternary @click="refreshAccountData">同步状态</n-button>
+      </div>
+
       <n-tabs type="line" v-model:value="activeTab" class="holdings-tabs">
         <n-tab-pane name="current" tab="当前持仓">
       <div class="current-section">
+      <!-- 账号总览：每个资金账号一张卡，点击即切换统计口径 -->
+      <div class="account-cards" v-if="accountCards.length">
+        <div v-for="a in accountCards" :key="a.account"
+             :class="['account-card', selectedBrokerAccount === a.account ? 'active' : '']"
+             @click="selectAccount(a.account)">
+          <div class="account-card-head">
+            <b>{{ a.broker || '未命名券商' }}</b>
+            <span class="mono">{{ a.account || '未分组' }}</span>
+          </div>
+          <div class="account-card-grid">
+            <span>总资产 <b>{{ fmtMoney(balNum(a, 'total_asset')) }}</b></span>
+            <span>可用 <b>{{ fmtMoney(balNum(a, 'available')) }}</b></span>
+            <span>持仓市值 <b>{{ fmtMoney(a.holding_market_value) }}</b></span>
+            <span>当日盈亏 <b :style="{ color: pnlColor(balNum(a, 'today_profit')) }">{{ fmtMoney(balNum(a, 'today_profit')) }}</b></span>
+            <span>持仓 <b>{{ a.holding_count }}</b></span>
+            <span>成交/委托 <b>{{ a.trade_count }}/{{ a.order_count }}</b></span>
+            <span>交割单 <b>{{ a.settlement_count }}</b></span>
+            <span>最后同步 <b>{{ fmtTime(a.last_data_at) }}</b></span>
+          </div>
+        </div>
+      </div>
+
       <!-- 风险预警条 -->
       <div v-if="summary && summary.warnings.length" class="warnings-strip">
         <div v-for="(w, i) in summary.warnings" :key="i" :class="['warning-item', w.level]">
@@ -1262,6 +1493,9 @@ watch(activeTab, (tab) => {
         </DataPanel>
         <DataPanel title="账户分布（市值）">
           <BaseChart :option="accountOption" :height="260" />
+        </DataPanel>
+        <DataPanel title="资金账号分布（市值）">
+          <BaseChart :option="brokerAccountOption" :height="200" />
         </DataPanel>
       </div>
 
@@ -1525,6 +1759,33 @@ watch(activeTab, (tab) => {
 
         <n-tab-pane name="ledger" tab="交易台账"><TradingLedgerPanel /></n-tab-pane>
         <n-tab-pane name="review" tab="交易分析"><TradeReviewPanel /></n-tab-pane>
+
+        <n-tab-pane name="data" tab="账户数据">
+          <n-alert type="info" :show-icon="false" class="broker-hint">
+            外部程序按资金账号上传的成交 / 委托 / 资金面板 / 交割单。{{ selectedBrokerAccount ? `当前只看 ${selectedBrokerAccount}` : '当前展示全部账号，可在页首切换。' }}
+            逆回购、可转债、购回、新股入帐、分项费用都在这里，不再只显示股票买卖。
+          </n-alert>
+          <DataPanel title="当日成交（含逆回购 / 可转债 / 购回）">
+            <n-data-table :columns="extTradeColumns" :data="accountTrades"
+              :row-key="(row: any) => row.id" :bordered="false" size="small" max-height="320" :scroll-x="1500" />
+            <div v-if="!accountDataLoading && !accountTrades.length" class="history-empty">暂无成交数据</div>
+          </DataPanel>
+          <DataPanel title="当日委托">
+            <n-data-table :columns="extOrderColumns" :data="accountOrders"
+              :row-key="(row: any) => row.id" :bordered="false" size="small" max-height="280" :scroll-x="1300" />
+            <div v-if="!accountDataLoading && !accountOrders.length" class="history-empty">暂无委托数据</div>
+          </DataPanel>
+          <DataPanel title="资金面板（历史快照）">
+            <n-data-table :columns="extBalanceColumns" :data="accountBalances"
+              :row-key="(row: any) => row.id" :bordered="false" size="small" max-height="240" :scroll-x="1000" />
+            <div v-if="!accountDataLoading && !accountBalances.length" class="history-empty">暂无资金面板数据</div>
+          </DataPanel>
+          <DataPanel title="交割单（分项费用）">
+            <n-data-table :columns="extSettlementColumns" :data="accountSettlements"
+              :row-key="(row: any) => row.id" :bordered="false" size="small" max-height="280" :scroll-x="1200" />
+            <div v-if="!accountDataLoading && !accountSettlements.length" class="history-empty">暂无交割单数据</div>
+          </DataPanel>
+        </n-tab-pane>
       </n-tabs>
 
     </div>
@@ -1946,7 +2207,41 @@ watch(activeTab, (tab) => {
 .warning-item.danger { background: rgba(147, 0, 10, 0.08); color: #93000a; border-color: rgba(147, 0, 10, 0.28); }
 
 .stat-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; }
-.chart-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.chart-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+
+/* 资金账号切换与账号总览卡片 */
+.account-switch {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 0 0 14px; padding: 10px 12px; border-radius: 8px;
+  border: 1px solid var(--border-color, rgba(127,127,127,0.2));
+  background: rgba(127,127,127,0.05);
+}
+.account-switch-label { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+.account-switch-meta { flex: 1; min-width: 220px; font-size: 12px; color: var(--text-secondary); }
+.account-cards {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px; margin-bottom: 16px;
+}
+.account-card {
+  cursor: pointer; padding: 12px; border-radius: 8px; transition: all .15s;
+  border: 1px solid var(--border-color, rgba(127,127,127,0.2));
+  background: rgba(127,127,127,0.04);
+}
+.account-card:hover { border-color: var(--color-primary); }
+.account-card.active {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 1px var(--color-primary) inset;
+}
+.account-card-head {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 8px; margin-bottom: 8px; font-size: 13px;
+}
+.account-card-head .mono { font-size: 11px; color: var(--text-secondary); }
+.account-card-grid {
+  display: grid; grid-template-columns: repeat(2, 1fr);
+  gap: 4px 10px; font-size: 11px; color: var(--text-secondary);
+}
+.account-card-grid b { color: var(--text-primary); font-weight: 600; }
 
 .panel-info { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
 

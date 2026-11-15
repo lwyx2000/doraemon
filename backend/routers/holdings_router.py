@@ -23,7 +23,7 @@ from services.holdings_service import (
     take_snapshot,
     update_holding,
 )
-from services.terminal_broker_service import resolve_or_create_broker_for_upload
+from services.external_upload_service import split_by_account, resolve_groups
 from services.import_log_service import add_import_log
 from core.deps import get_current_user, resolve_external_user_id
 
@@ -35,12 +35,17 @@ def list_holdings(
     type: str | None = None,
     broker: str | None = None,
     account: str | None = None,
+    broker_account: str | None = None,
     user_id: str = Depends(get_current_user),
 ):
-    """持仓明细 + 行情盈亏 + 汇总统计（资产配置/预警），支持按类型/券商/账户过滤。"""
-    if type and type not in HOLDING_TYPES:
-        raise HTTPException(status_code=400, detail=f"未知持仓类型: {type}")
-    data = build_holdings_view(user_id, type_filter=type, broker_filter=broker, account_filter=account)
+    """持仓明细 + 行情盈亏 + 汇总统计，支持按类型/券商/子账户/资金账号过滤。
+
+    2026-11-14 起 type 不再做白名单校验（外部程序会传 repo / bond_cb 等）。
+    """
+    data = build_holdings_view(
+        user_id, type_filter=type, broker_filter=broker, account_filter=account,
+        broker_account_filter=broker_account,
+    )
     return ApiResponse(data=data)
 
 
@@ -70,48 +75,57 @@ def import_holdings_endpoint(
 
 @router.post("/import/api", response_model=ApiResponse[dict])
 def import_holdings_api(body: HoldingUploadRequest):
-    """【无鉴权】机器 / 外部程序批量上传持仓：增量合并（merge）。
+    """【无鉴权】外部程序批量上传持仓（按资金账号）。
 
-    - 调用方须在 user_id / username 中指明归属用户（二选一）；
-    - 券商归属由 account（客户端自传主标识）决定，broker_code 为其历史别名；
-      两者皆空 → 整批条目进入 failed（不整体拒绝），并在上传记录留痕；
-      该 account 首见时按上传携带的 broker_name / remark 自动建券商（落默认终端或指定 terminal）；
-    - 按 code+type+account 去重，已存在=覆盖更新，新增=插入；
-    - 覆盖更新前旧行写入 biz_holdings_history（source=传入的来源标记或 "api"），
-      满足「旧的数据存到数据表中，记录下」的留痕需求。
-    非用户浏览器调用接口，无需 JWT。
+    - 顶层 ``account`` 是整批默认资金账号；逐条 ``broker_account`` 可覆盖，
+      因此**一次请求可以传多个资金账号**（多账号预留，不影响单人使用）；
+    - 每个账号独立解析 / 自动建券商，逐条回填 ``broker``；
+    - 去重键含资金账号，不同账号持有同一标的不会互相覆盖；
+    - ``mode=replace`` 按账号全量快照（清仓自动归档）；``dry_run=1`` 只校验不写库；
+    - ``type`` 自由字符串：逆回购 / 可转债 / 标准券原样保存；
+    - 旧调用（只带顶层 account）行为完全兼容。
     """
     user_id = resolve_external_user_id(body.user_id, body.username)
-    account = (body.account or body.broker_code or "").strip()
-    if not account:
-        # 整批失败：account 缺失
-        failed = [
-            {"index": i, "code": str(it.code or ""), "reason": "account（券商账号）缺失"}
-            for i, it in enumerate(body.items)
-        ]
-        result = {"added": 0, "updated": 0, "failed": failed}
-        add_import_log(user_id, "holdings", body.source or "api", "", "", result, total=len(body.items))
-        return ApiResponse(data=result)
-    # 解析 / 自动创建券商（account 命中复用，否则按上传携带信息新建）
-    broker = resolve_or_create_broker_for_upload(
-        user_id, account,
-        name=body.broker_name, remark=body.remark, terminal_id=body.terminal,
-    )
-    if broker is None:
-        failed = [
-            {"index": i, "code": str(it.code or ""), "reason": "account（券商账号）缺失"}
-            for i, it in enumerate(body.items)
-        ]
-        result = {"added": 0, "updated": 0, "failed": failed}
-        add_import_log(user_id, "holdings", body.source or "api", account, "", result, total=len(body.items))
-        return ApiResponse(data=result)
-    # batch-level 券商名决定每条记录的 broker，覆盖逐条自带 broker
+    default_account = (body.account or body.broker_code or "").strip()
+    source = body.source or "api"
+    dry = int(body.dry_run or 0) == 1
+    mode = str(body.mode or "merge").strip().lower()
+    if mode not in ("merge", "replace"):
+        mode = "merge"
+
     items = [it.model_dump() for it in body.items]
-    for it in items:
-        it["broker"] = broker["name"]
-    result = import_holdings(user_id, items, source=body.source or "api")
-    add_import_log(user_id, "holdings", body.source or "api", account, broker["name"], result, total=len(items))
-    return ApiResponse(data=result)
+    groups, failed = split_by_account(items, default_account)
+    resolved, resolve_failed = resolve_groups(
+        user_id, groups, body.broker_name, body.remark, body.terminal)
+    failed.extend(resolve_failed)
+
+    totals = {"added": 0, "updated": 0, "removed": 0, "failed": list(failed),
+              "by_account": [], "dry_run": dry}
+    for acc, g in resolved.items():
+        res = import_holdings(
+            user_id, g["items"], source=source, default_account=acc,
+            mode=mode, dry_run=dry,
+        )
+        for k in ("added", "updated", "removed"):
+            totals[k] += res.get(k, 0)
+        totals["failed"].extend(res.get("failed", []))
+        totals["by_account"].append({
+            "account": acc, "broker": g["broker_name"],
+            "added": res.get("added", 0), "updated": res.get("updated", 0),
+            "removed": res.get("removed", 0),
+            "failed": len(res.get("failed", [])),
+        })
+        if not dry:
+            add_import_log(user_id, "holdings", source, acc, g["broker_name"],
+                           res, total=len(g["items"]))
+    if not resolved:
+        add_import_log(user_id, "holdings", source, default_account, "",
+                       {"failed": failed}, total=len(items))
+    if dry:
+        totals["would_add"] = totals["added"]
+        totals["would_update"] = totals["updated"]
+        totals["added"] = totals["updated"] = totals["removed"] = 0
+    return ApiResponse(data=totals)
 
 
 # CSV 列名映射（兼容华泰 PC 客户端等常见导出表头）
