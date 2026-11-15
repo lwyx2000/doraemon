@@ -202,4 +202,43 @@ dry = external_batch({
 after = db.fetchone("SELECT count(*) FROM biz_trades WHERE fk_user=1")[0]
 check(dry["dry_run"] and before == after, "dry_run 只预演，不写库")
 
+print("[8] 同日重复上传幂等（收盘后手工重跑 / 断点重传不能 500）")
+same_body = {
+    "username": "sos", "source": "test", "trade_date": DATE,
+    "accounts": [{
+        "account": A1, "broker_name": "华泰证券",
+        "holdings": [holding("600519", "stock", 100, 1680.0, name="贵州茅台",
+                            client_market_value=170000)],
+        "trades": [trade("600519", "buy", 1680.0, 100, trade_id="REP-1")],
+        "orders": [{"order_no": "REP-O1", "code": "600519", "name": "贵州茅台",
+                    "side": "买入", "price": 1680.0, "quantity": 100}],
+        "balance": {"total_asset": 256504.88, "available": 78967.99},
+        "settlements": [{"trade_id": "REP-S1", "code": "600519", "name": "贵州茅台",
+                         "direction": "买入", "price": 1680.0, "quantity": 100}],
+    }],
+}
+r1 = external_batch(same_body).data
+r2 = external_batch(same_body).data
+check(r1["ok"] and r2["ok"], "两次上传都成功: %r / %r" % (r1["totals"], r2["totals"]))
+check(r2["totals"]["failed"] == 0, "第二次上传无失败条目")
+
+print("[9] 交割单行内 trade_date 与请求级不同时，重复上传不 500 不重复")
+hist_body = {
+    "username": "sos", "source": "test", "trade_date": DATE,
+    "accounts": [{
+        "account": A1, "broker_name": "华泰证券",
+        "settlements": [{"trade_id": "HIST-1", "trade_date": "2026-11-03",
+                         "code": "600519", "name": "贵州茅台", "direction": "买入",
+                         "price": 1680.0, "quantity": 100}],
+    }],
+}
+h1 = external_batch(hist_body).data
+n1 = db.fetchone("SELECT count(*) FROM biz_settlements WHERE fk_user=1 AND trade_id=?",
+                 [f"{A1}:HIST-1"])[0]
+h2 = external_batch(hist_body).data
+n2 = db.fetchone("SELECT count(*) FROM biz_settlements WHERE fk_user=1 AND trade_id=?",
+                 [f"{A1}:HIST-1"])[0]
+check(h1["ok"] and h2["ok"] and n1 == n2 == 1,
+      "历史日期交割单重复上传不 500、不重复: %d/%d" % (n1, n2))
+
 print("\nALL EXTERNAL UPLOAD TESTS PASSED")

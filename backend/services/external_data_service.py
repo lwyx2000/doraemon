@@ -12,6 +12,7 @@ brokerAuto 除了持仓与成交，还有委托、资金面板、交割单等数
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from datetime import datetime, timezone
@@ -347,7 +348,14 @@ def import_settlements_json(
         fee_total = _f(raw.get("fee_total"))
         if fee_total is None:
             fee_total = commission + stamp_tax + transfer_fee + other_fee
-        tid = str(raw.get("trade_id") or "") or f"fp:{abs(hash((trade_date, code, direction, price, quantity, raw.get('trade_time'))))}"
+        # 稳定幂等键：无 trade_id 时不能用内置 hash()（PYTHONHASHSEED 随机化，
+        # 进程重启后会变，重复上传会累积不同 id 的行），改用内容 md5。
+        tid = str(raw.get("trade_id") or "").strip()
+        if not tid:
+            fp_src = "|".join(str(x) for x in (
+                trade_date, code, direction, price, quantity,
+                raw.get("trade_time"), raw.get("settle_date")))
+            tid = "fp:" + hashlib.md5(fp_src.encode("utf-8")).hexdigest()[:16]
         valid.append({
             "id": str(uuid.uuid4()), "broker_account": acc,
             "trade_date": str(raw.get("trade_date") or trade_date),
@@ -392,18 +400,35 @@ def import_settlements_json(
     clause = (f"(broker_account IN ({ph}) OR broker_account='' OR broker_account IS NULL)"
               if ph else "1=1")
     params = [user_id, trade_date] + accounts
+    # 交割单行常自带历史 trade_date（如 2026-11-03），与请求级 trade_date 不同。
+    # 只按请求级日期删会漏掉这些旧行，同日重复上传时撞 (fk_user, trade_id)
+    # 唯一索引 → 500。这里按本批实际出现的 (账号, 日期) 组合补删。
+    scopes = sorted({(v["broker_account"], v["trade_date"]) for v in valid
+                     if v["trade_date"] != trade_date})
     if dry_run:
         row = db.fetchone(
             f"SELECT count(*) FROM biz_settlements WHERE fk_user=? AND trade_date=? AND {clause}", params)
-        return {"deleted": 0, "inserted": 0, "would_delete": row[0] if row else 0,
+        would_delete = row[0] if row else 0
+        for acc, td in scopes:
+            r = db.fetchone(
+                "SELECT count(*) FROM biz_settlements WHERE fk_user=? AND trade_date=? "
+                "AND (broker_account=? OR broker_account='' OR broker_account IS NULL)",
+                [user_id, td, acc])
+            would_delete += r[0] if r else 0
+        return {"deleted": 0, "inserted": 0, "would_delete": would_delete,
                 "would_insert": len(valid), "failed": failed,
                 "by_account": [{"account": a, "inserted": len(valid), "failed": 0} for a in accounts],
                 "dry_run": True}
     deleted = db.execute(
         f"DELETE FROM biz_settlements WHERE fk_user=? AND trade_date=? AND {clause}", params).rowcount
+    for acc, td in scopes:
+        deleted += db.execute(
+            "DELETE FROM biz_settlements WHERE fk_user=? AND trade_date=? "
+            "AND (broker_account=? OR broker_account='' OR broker_account IS NULL)",
+            [user_id, td, acc]).rowcount
     if valid:
         db.executemany(
-            "INSERT INTO biz_settlements (id, fk_user, trade_date, settle_date, trade_id, "
+            "INSERT OR REPLACE INTO biz_settlements (id, fk_user, trade_date, settle_date, trade_id, "
             "code, name, type, broker, account, direction, entry_type, price, quantity, "
             "amount, commission, stamp_tax, transfer_fee, other_fee, fee_total, net_amount, "
             "trade_time, currency, source, created_at, broker_account, sub_account, order_no, biz, raw) "
