@@ -15,7 +15,7 @@
 ## 通用约定
 
 - 用户定位：请求体里用 `user_id`（整数）**或** `username`（字符串）二选一。两者都缺 / 不存在 → `400`。
-  ⚠️ 不要用「`user_id=1` 等价于 `username=sos`」的假设，请统一用 `username`。
+  ⚠️ 不要用「`user_id` 等价于某个固定用户名」的假设，请统一用 `username`（当前 `pk_user=1` 是 `trader`）。
 - 响应结构：`{ "code": 200, "message": "success", "data": {...} }`（`ApiResponse`）。
 - 留痕：`source` 标记来源程序，写入 `biz_import_log`，持仓分析 → 上传记录可按资金账号查看。
 - **资金账号模型（本版核心）**：
@@ -46,7 +46,7 @@
 curl -X POST 'http://192.168.3.53:9080/api/v1/external/batch' \
   -H 'Content-Type: application/json' \
   -d '{
-    "username": "sos", "source": "brokerAuto", "trade_date": "2026-11-14", "dry_run": 0,
+    "username": "trader", "source": "brokerAuto", "trade_date": "2026-11-14", "dry_run": 0,
     "accounts": [
       {
         "account": "666622117166", "broker_name": "华泰证券",
@@ -191,7 +191,7 @@ curl -X POST 'http://192.168.3.53:9080/api/v1/external/batch' \
 curl -X POST 'http://192.168.3.53:9080/api/v1/account/balance/import' \
   -H 'Content-Type: application/json' \
   -d '{
-    "username":"sos","source":"brokerAuto","trade_date":"2026-11-14",
+    "username":"trader","source":"brokerAuto","trade_date":"2026-11-14",
     "account":"666622117166","broker_name":"华泰证券",
     "balance":{"total_asset":256504.88,"available":78967.99,"withdrawable":965.71,
                "market_value":177287.30,"position_profit":57122.81,
@@ -202,7 +202,7 @@ curl -X POST 'http://192.168.3.53:9080/api/v1/account/balance/import' \
 ### 3.2 旧端点（兼容，不 recommend 新接入）
 
 - `GET /api/v1/trades?user_id=1&trade_date=...` 仍可用，新增 `broker_account` / `limit` 过滤。
-- `GET /api/v1/trades/dates?username=sos` 列出交易日。
+- `GET /api/v1/trades/dates?username=trader` 列出交易日。
 - `GET /api/v1/holdings/history/archive?hold_id=`（需 JWT）查看持仓覆盖快照。
 - `GET /api/v1/holdings?type=&broker=&account=&broker_account=`（需 JWT）新增资金账号过滤。
 
@@ -236,3 +236,36 @@ curl -X POST 'http://192.168.3.53:9080/api/v1/account/balance/import' \
   `biz_import_log` 静态 DDL 建表，无需手工迁移。
 - 契约回归测试：`python backend/scripts/test_external_upload.py`（用独立临时 SQLite，不碰线上数据）。
 - 安全：无鉴权端点默认只在局域网使用；若暴露到外网，建议加 `X-Upload-Token` 或对 `source` 白名单。
+
+---
+
+## 6. 单人局域网：只保留一个登录账号（2026-11-15）
+
+局域网单人使用，9080 里只需要 `trader` 这一个登录用户的数据；历史全量上传曾写到
+`sos` 名下，加上早期探测留下的 `TESTAPI-*` / `E2E` / `TESTACC` 与旧版无资金账号的
+残留行，会在持仓分析页显示成「未分组」和重复持仓。按账号覆盖删不掉这些孤儿行，
+所以用一次性清理端点收口。
+
+`POST /api/v1/external/purge` — 无鉴权，**默认 `dry_run=1` 只统计**。
+
+```json
+{
+  "username": "trader",
+  "keep_accounts": ["600000135371", "666622117166", "262700008483"],
+  "confirm": "PURGE",
+  "dry_run": 1
+}
+```
+
+真实执行必须 `confirm="PURGE"` 且 `dry_run=0`；`keep_accounts` 必须非空，防止删光。
+返回 `would_delete` / `deleted` / `other_user_ids` / `by_table` 明细，建议先预演对账再执行。
+
+清理范围：
+
+- 其它登录用户：外部上传链路的 `biz_*` 业务表整行删除（含券商注册、终端、账户名）；
+- `trader` 名下：资金账号不在白名单的行全部删除（空账号 / 探测账号 / 旧版残留）；
+- **不动** `biz_users` 登录账号行，避免把人锁在门外或破坏管理员配置；
+- **不动** 自选、策略、AI 报告等用户配置表。
+
+上传目标也随之固定：`brokerAuto` 导出默认 `username=trader`，线上定时任务第一步
+显式带 `&username=trader`，不再依赖部署顺序。

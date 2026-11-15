@@ -2011,7 +2011,7 @@ watch(activeTab, (tab) => {
               <pre class="import-example-pre">curl -X POST 'http://192.168.3.53:9080/api/v1/holdings/import/api' \
   -H 'Content-Type: application/json' \
   -d '{
-    "username": "sos",
+    "username": "trader",
     "source": "my_bot",
     "account": "huatai-12345678",
     "broker_name": "华泰证券",
@@ -2027,7 +2027,7 @@ watch(activeTab, (tab) => {
               <pre class="import-example-pre">curl -X POST 'http://192.168.3.53:9080/api/v1/trades/import' \
   -H 'Content-Type: application/json' \
   -d '{
-    "username": "sos",
+    "username": "trader",
     "source": "my_bot",
     "account": "huatai-12345678",
     "broker_name": "华泰证券",

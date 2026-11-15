@@ -584,3 +584,117 @@ def account_overview(user_id: str) -> dict:
             "today_profit": round(sum((d["balance"] or {}).get("today_profit") or 0 for d in out), 2),
         },
     }
+
+
+# ============================================================
+# 一次性清理：只保留一个登录账号 + 指定资金账号的数据
+# ============================================================
+# 局域网单人使用场景：库里可能积累多个登录用户、探测账号（TESTAPI-* / E2E /
+# TESTACC）、旧版无资金账号的残留行。按账号覆盖只能删「同一个账号」的数据，
+# 无法删掉这些孤儿行，所以提供一个带确认 + 预演的一次性清理端点。
+#
+# 安全边界：
+# - 不动 biz_users（登录账号行），避免把用户锁在门外 / 破坏管理员配置；
+# - 必须显式 confirm=PURGE 且传非空 keep_accounts，默认 dry_run 只统计；
+# - 只删外部上传 / 持仓分析相关的业务表，不动 job_registry 等系统表。
+
+_PURGE_CONFIRM = "PURGE"
+
+# 只清外部上传 / 持仓分析链路的表，不动自选、策略、AI 报告等用户配置。
+_PURGE_USER_TABLES = (
+    "biz_holdings", "biz_trades", "biz_orders", "biz_settlements",
+    "biz_account_balances", "biz_import_log", "biz_holding_snapshots",
+    "biz_terminals", "biz_account_names",
+)
+
+# keep 用户下要按「资金账号白名单」过滤的表 -> 账号列
+_PURGE_ACCOUNT_TABLES = {
+    "biz_holdings": "broker_account",
+    "biz_trades": "broker_account",
+    "biz_orders": "broker_account",
+    "biz_settlements": "broker_account",
+    "biz_account_balances": "broker_account",
+    "biz_import_log": "broker_code",
+}
+
+
+def purge_accounts(keep_user_id: str, keep_accounts: list[str],
+                   dry_run: bool = True, confirm: str = "") -> dict:
+    """只保留 ``keep_user_id`` 名下 ``keep_accounts`` 的业务数据，其余清空。
+
+    - 其它登录用户：所有带 fk_user 列的 biz_* 表整行删除；
+    - keep 用户：账号列不在白名单的行（空账号 / 探测账号）全部删除；
+    - biz_brokers 无 fk_user，按 fk_terminal 关联所属用户处理；
+    - 返回按表的 would_delete / deleted 明细，便于 dry_run 对账。
+    """
+    if confirm != _PURGE_CONFIRM:
+        raise ValueError(f"需要 confirm={_PURGE_CONFIRM} 才能执行清理")
+    keep_set = [str(a).strip() for a in (keep_accounts or []) if str(a).strip()]
+    if not keep_set:
+        raise ValueError("keep_accounts 不能为空，防止把账号数据全删光")
+
+    _ensure_tables()
+    db = get_biz_db()
+    keep_uid = str(keep_user_id)
+
+    other_uids = [str(r[0]) for r in db.fetchall(
+        "SELECT pk_user FROM biz_users WHERE CAST(pk_user AS TEXT) <> ?", [keep_uid])]
+    other_ph = ",".join("?" * len(other_uids)) if other_uids else "NULL"
+    keep_ph = ",".join("?" * len(keep_set))
+
+    by_table: dict[str, dict] = {}
+
+    def _wipe(table: str, where: str, params: list, label: str) -> None:
+        row = db.fetchone(f"SELECT count(*) FROM {table} WHERE {where}", params)
+        n = row[0] if row else 0
+        slot = by_table.setdefault(label, {"would_delete": 0, "deleted": 0})
+        slot["would_delete"] += n
+        if n and not dry_run:
+            db.execute(f"DELETE FROM {table} WHERE {where}", params)
+            slot["deleted"] += n
+
+    # 1) 券商注册：无 fk_user，先按终端归属处理（必须在删 terminals 之前）
+    cols_brokers = [r[1] for r in db.fetchall("PRAGMA table_info(biz_brokers)")]
+    if "fk_terminal" in cols_brokers and "account" in cols_brokers:
+        other_tids = [r[0] for r in db.fetchall(
+            f"SELECT id FROM biz_terminals WHERE CAST(fk_user AS TEXT) IN ({other_ph})",
+            other_uids)] if other_uids else []
+        if other_tids:
+            tph = ",".join("?" * len(other_tids))
+            _wipe("biz_brokers", f"fk_terminal IN ({tph})", other_tids,
+                  "biz_brokers:其它用户")
+        keep_tids = [r[0] for r in db.fetchall(
+            "SELECT id FROM biz_terminals WHERE CAST(fk_user AS TEXT) = ?", [keep_uid])]
+        if keep_tids:
+            tph = ",".join("?" * len(keep_tids))
+            _wipe("biz_brokers",
+                  f"fk_terminal IN ({tph}) AND COALESCE(account,'') NOT IN ({keep_ph})",
+                  keep_tids + keep_set, "biz_brokers:非保留账号")
+
+    # 2) 外部上传链路的业务表：其它用户整行删
+    #    + keep 用户下账号不在白名单的行删（仅限 _PURGE_ACCOUNT_TABLES）
+    for table in _PURGE_USER_TABLES:
+        cols = [r[1] for r in db.fetchall(f"PRAGMA table_info({table})")]
+        if not cols or "fk_user" not in cols:
+            continue
+        if other_uids:
+            _wipe(table, f"CAST(fk_user AS TEXT) IN ({other_ph})", other_uids,
+                  f"{table}:其它用户")
+        acc_col = _PURGE_ACCOUNT_TABLES.get(table)
+        if acc_col and acc_col in cols:
+            _wipe(table,
+                  f"CAST(fk_user AS TEXT) = ? AND COALESCE({acc_col},'') NOT IN ({keep_ph})",
+                  [keep_uid] + keep_set, f"{table}:非保留账号")
+
+    would = sum(v["would_delete"] for v in by_table.values())
+    deleted = sum(v["deleted"] for v in by_table.values())
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "keep_user_id": keep_uid,
+        "keep_accounts": keep_set,
+        "other_user_ids": other_uids,
+        "would_delete": would,
+        "deleted": deleted,
+        "by_table": by_table,
+    }

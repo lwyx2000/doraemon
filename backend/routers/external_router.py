@@ -32,6 +32,7 @@ from services.external_data_service import (
     list_balances,
     list_external_settlements,
     list_orders,
+    purge_accounts,
     register_broker,
 )
 from services.holdings_service import import_holdings
@@ -190,7 +191,7 @@ def external_batch(body: dict = Body(...)):
     body::
 
         {
-          "username": "sos", "source": "brokerAuto", "trade_date": "2026-11-14",
+          "username": "trader", "source": "brokerAuto", "trade_date": "2026-11-14",
           "dry_run": 0,
           "accounts": [
             {"account": "666622117166", "broker_name": "华泰证券",
@@ -312,6 +313,43 @@ def external_batch(body: dict = Body(...)):
         "ok": True, "dry_run": dry, "trade_date": td,
         "account_count": len(results), "results": results, "totals": grand,
     })
+
+
+# ============================================================
+# 一次性清理（局域网单人使用）：只保留一个登录账号的数据
+# ============================================================
+
+@router.post("/external/purge", response_model=ApiResponse[dict])
+def external_purge(body: dict = Body(...)):
+    """一次性清理：只保留 ``username`` 名下 ``keep_accounts`` 的业务数据。
+
+    用于清掉历史遗留的其它登录账号、探测账号（TESTAPI-* / E2E / TESTACC）
+    与旧版无资金账号的残留行。默认 ``dry_run=1`` 只预演；真实执行必须
+    ``confirm="PURGE"`` 且 ``dry_run=0``。不动 ``biz_users``（登录账号行）。
+
+    body::
+
+        {
+          "username": "trader",
+          "keep_accounts": ["600000135371", "666622117166", "262700008483"],
+          "confirm": "PURGE",
+          "dry_run": 1
+        }
+    """
+    uid = resolve_external_user_id(
+        body.get("user_id"),
+        body.get("username") or body.get("keep_username") or "trader",
+    )
+    keep_accounts = body.get("keep_accounts")
+    if not isinstance(keep_accounts, list):
+        raise HTTPException(status_code=400, detail="keep_accounts 必须是数组")
+    dry = _truthy(body.get("dry_run", 1))
+    try:
+        res = purge_accounts(uid, keep_accounts, dry_run=dry,
+                             confirm=str(body.get("confirm") or ""))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return ApiResponse(data=res)
 
 
 # ============================================================
