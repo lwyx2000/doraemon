@@ -30,7 +30,7 @@ def _map_etf(item: dict[str, Any]) -> dict[str, Any] | None:
     change_pct = _safe_float(_pick(item, "涨跌幅"))
     # IOPV 对 ETF≈NAV
     iopv = nav if nav else 0.0
-    category, sub = _classify(name, code)
+    category, sub = _classify(name, code, _pick(item, "基金类型"))
     # 麦蕊 申购状态(sgzt) → subscribe_limit；成交额(元)/成交量(手) 仅新浪兜底源提供，缺失 → None
     subscribe_limit = _pick(item, "申购状态", "sgzt")
     is_suspended = bool(subscribe_limit) and any(k in str(subscribe_limit) for k in ("暂停", "停止"))

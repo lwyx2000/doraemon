@@ -74,16 +74,24 @@ def _safe_int(value, default: int = 0) -> int:
         return default
 
 
-def _classify(name: str, code: str) -> tuple[str, str]:
-    """基于名称/代码轻量分类（非虚构数据）。
+def _classify(name: str, code: str, fund_type: str | None = None) -> tuple[str, str]:
+    """基于名称/代码/权威基金类型分类（非虚构数据）。
 
     注意："香港" 必须与 "港股" 并列——161124「香港小盘」、501025「香港银行」等
     名字里只有"香港"，漏了会掉进 industry，连带 holding_days 按境内 T+1 算。
 
+    fund_type 是上游 fund_rank 的「基金类型」（麦蕊 jjlx），与名称关键词取**并集**：
+      - 名称关键词必须保留：513770 港股通互联网 ETF 在麦蕊归「偏股型基金」但实为跨境 T+2，
+        单靠权威字段会把它误降级成 T+1（同类约 399 只）。
+      - 权威字段用于补漏：162411 华宝油气、160216 国泰大宗商品、163208 诺安油气、
+        165513 中信保诚全球商品 名称无境外关键词，但麦蕊类型=QDII，实际 T+2。
+    两者互不覆盖，避免误升级境内商品 ETF（518880 上海金等「商品型基金」）。
+
     供 ETF / LOF 共用（etf_service 亦复用）。
     """
     n = name
-    if any(k in n for k in ("纳指", "纳斯达克", "标普", "道琼斯", "德国", "法国", "日经", "恒生", "港股", "香港", "美国", "海外", "中概", "原油", "黄金")):
+    ft = str(fund_type or "").strip().upper()
+    if ft == "QDII" or any(k in n for k in ("纳指", "纳斯达克", "标普", "道琼斯", "德国", "法国", "日经", "恒生", "港股", "香港", "美国", "海外", "中概", "原油", "黄金")):
         return "cross_border", "跨境"
     if any(k in n for k in ("沪深300", "中证500", "中证1000", "上证50", "创业板", "科创50", "科创", "中证A500", "深证", "上证")):
         return "broad", "宽基"
@@ -425,7 +433,7 @@ def _merge_supplement_funds(funds: list[dict], fund_subtype: str) -> None:
         if fund_subtype in ("lof", "etf") and row_type != fund_subtype:
             continue
         # 与主链路同口径的分类/持有天数，避免 tab 筛选与 T+N 计算失真
-        category, sub_category = _classify(row.get("name", ""), code)
+        category, sub_category = _classify(row.get("name", ""), code, _pick(row, "基金类型"))
         row["category"] = category
         row["sub_category"] = sub_category
         row["holding_days"] = 2 if category == "cross_border" else 1
@@ -470,7 +478,7 @@ def get_funds_from_api(fund_subtype: str = "etf") -> list[dict]:
         iopv = nav if nav else 0.0
 
         # 名称 → 轻量分类（宽基/行业/跨境），替代此前硬编码 industry（导致网格/轮动/估值 tab 筛选全部失真）
-        category, sub_category = _classify(name, code)
+        category, sub_category = _classify(name, code, _pick(item, "基金类型"))
         # 麦蕊 申购状态(sgzt) → subscribe_limit："暂停申购"→资金容量 C 级(不可行)，"开放申购"→无限制
         subscribe_limit = _pick(item, "申购状态", "sgzt")
         is_suspended = bool(subscribe_limit) and any(k in str(subscribe_limit) for k in ("暂停", "停止"))
