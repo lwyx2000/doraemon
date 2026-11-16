@@ -581,20 +581,6 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  // 批量上传：一次提交多资金账号 / 多数据类型（持仓、成交、委托、资金、交割单）
-  importExternalBatch: (body: Record<string, unknown>) =>
-    request<{
-      ok: boolean
-      dry_run: boolean
-      trade_date: string
-      account_count: number
-      results: Array<Record<string, any>>
-      totals: Record<string, number>
-    }>('/api/v1/external/batch', undefined, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
-
   // 成交记录导入（无鉴权外部接口：按 (user, trade_date) 覆盖上传）
   importTrades: (body: {
     username: string
