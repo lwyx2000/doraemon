@@ -60,6 +60,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '持仓分析', icon: 'briefcase' },
   },
   {
+    path: '/batch-upload',
+    name: 'BatchUpload',
+    component: () => import('../pages/BatchUpload.vue'),
+    meta: { title: '批量上传数据', icon: 'cloud_upload' },
+  },
+  {
     path: '/reits',
     name: 'Reits',
     component: () => import('../pages/Reits.vue'),

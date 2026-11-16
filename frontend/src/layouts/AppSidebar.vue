@@ -25,6 +25,7 @@ WalletOutline,
   LibraryOutline,
   ChatbubblesOutline,
   TimeOutline,
+  CloudUploadOutline,
 } from '@vicons/ionicons5'
 import { useSidebar } from '../composables/useSidebar'
 import { useTabs } from '../composables/useTabs'
@@ -102,6 +103,7 @@ const navItems: NavItem[] = [
   { name: 'DividendFundHub', path: '/dividend-funds', icon: GiftOutline, label: '红利基金' },
   { name: 'PortfolioWatchlist', path: '/portfolio-watchlist', icon: Star, label: '投资组合' },
   { name: 'HoldingsAnalysis', path: '/holdings', icon: BriefcaseOutline, label: '持仓分析' },
+  { name: 'BatchUpload', path: '/batch-upload', icon: CloudUploadOutline, label: '批量上传数据' },
   { name: 'StrategyCenter', path: '/strategy-center', icon: OptionsOutline, label: '策略中心' },
   { name: 'SignalLab', path: '/signal-lab', icon: FlashOutline, label: '信号实验室' },
   { name: 'RotationLab', path: '/rotation-lab', icon: TrendingUp, label: '动量轮动实验室' },
