@@ -369,6 +369,27 @@ const arbitrageColumns = [
     },
   },
   {
+    // 集思录可选增强：原生 estimate_value 全市场为 "-"，网关回退 iopv 并标注口径。
+    // 与「篮子自算净值」并列展示但互不覆盖 —— 这是第三方口径，不是自算结果。
+    title: titleWithHelp('集思录IOPV', undefined,
+      '集思录场内估值口径（原生估值字段全市场为空，此处回退 IOPV）。无数据为 -；T0 标记仅 QDII 板块提供。不参与本页自算溢价与套利判定。'),
+    key: 'jisilu_estimate', align: 'right' as const,
+    render: (row: EtfFund) => {
+      if (row.jisilu_estimate == null) return h('span', { class: 'mono' }, '-')
+      const tips = [
+        `口径：${row.jisilu_estimate_src === 'jisilu_iopv' ? '集思录 IOPV' : '集思录自有估值'}`,
+      ]
+      if (row.jisilu_discount_pct != null) {
+        tips.push(`集思录折溢价 ${row.jisilu_discount_pct >= 0 ? '+' : ''}${row.jisilu_discount_pct.toFixed(2)}%`)
+      }
+      if (row.jisilu_t0 != null) tips.push(row.jisilu_t0 ? 'T+0 可当日回转' : '非 T+0')
+      return h('span', { class: 'mono', title: tips.join('；') }, [
+        row.jisilu_estimate.toFixed(3),
+        row.jisilu_t0 ? h('sup', { style: { color: 'var(--color-primary)' } }, 'T0') : null,
+      ])
+    },
+  },
+  {
     title: titleWithHelp('自算溢价', 'est_premium_pct'), key: 'est_premium_pct', align: 'right' as const,
     render: (row: EtfFund) => {
       if (row.est_premium_pct == null) return h('span', { class: 'mono' }, '-')

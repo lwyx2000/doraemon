@@ -513,6 +513,14 @@ def get_funds_from_api(fund_subtype: str = "etf") -> list[dict]:
             "change_pct": _safe_float(_pick(item, "涨跌幅", "增长率")),
             # 净值日期：跨境篮子自算估值的基准日（53 fund_rank 提供）
             "nav_date": _pick(item, "净值日期"),
+            # 集思录可选增强（网关只是透传，取不到就为 None）：
+            # estimate 原生字段全市场为 "-"，网关回退 iopv 并在 *_src 标注口径；
+            # t0/lof_type 仅 QDII 板块提供。绝不拿它替代篮子自算 est_nav。
+            "jisilu_estimate": _safe_float(_pick(item, "jisilu_estimate"), default=None),
+            "jisilu_estimate_src": _pick(item, "jisilu_estimate_src"),
+            "jisilu_discount_pct": _safe_float(_pick(item, "jisilu_discount_pct"), default=None),
+            "jisilu_t0": _pick(item, "jisilu_t0"),
+            "jisilu_lof_type": _pick(item, "jisilu_lof_type"),
         })
 
     # 补充池：网关麦蕊口径漏掉的仍在交易的场内基金 —— LOF（164705/161831/160717 等）

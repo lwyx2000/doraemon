@@ -542,6 +542,13 @@ export interface FundItem {
   valuation_error_mae?: number | null    // 近 20 日平均绝对误差(%)
   valuation_error_max?: number | null    // 近 20 日最大绝对误差(%)
   underlying_type?: string       // 底层资产类型
+  // 集思录可选增强（网关透传；取不到为 null）。原生 estimate_value 全市场为 "-"，
+  // 网关回退 iopv 并用 jisilu_estimate_src 标注口径，绝不替代自算 est_nav。
+  jisilu_estimate?: number | null
+  jisilu_estimate_src?: string | null
+  jisilu_discount_pct?: number | null
+  jisilu_t0?: boolean | null
+  jisilu_lof_type?: string | null
 }
 
 // 同标的跨基金溢价轮动（后端 services/fund_rotation_service.py）
@@ -670,6 +677,12 @@ export interface EtfFund {
   net_subscribe_share?: number | null   // 日净申赎份额(亿份，正=净申购/流入)
   net_subscribe_amount?: number | null  // 日净申赎额(亿元，正=净申购/流入)
   net_subscribe_date?: string | null    // 快照截止日期
+  // 集思录可选增强（网关透传；ETF 侧 IOPV/T+0 覆盖率最高）
+  jisilu_estimate?: number | null
+  jisilu_estimate_src?: string | null
+  jisilu_discount_pct?: number | null
+  jisilu_t0?: boolean | null
+  jisilu_lof_type?: string | null
 }
 
 

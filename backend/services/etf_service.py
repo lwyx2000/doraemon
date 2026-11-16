@@ -56,6 +56,12 @@ def _map_etf(item: dict[str, Any]) -> dict[str, Any] | None:
         "subscribe_limit": subscribe_limit,
         "is_suspended": is_suspended,
         "holding_days": holding_days,
+        # 集思录可选增强（网关透传；估值原生字段全空时回退 iopv，见 *_src）
+        "jisilu_estimate": _safe_float(_pick(item, "jisilu_estimate"), default=None),
+        "jisilu_estimate_src": _pick(item, "jisilu_estimate_src"),
+        "jisilu_discount_pct": _safe_float(_pick(item, "jisilu_discount_pct"), default=None),
+        "jisilu_t0": _pick(item, "jisilu_t0"),
+        "jisilu_lof_type": _pick(item, "jisilu_lof_type"),
     }
 
 
