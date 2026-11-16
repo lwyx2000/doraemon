@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime
 
@@ -379,6 +380,20 @@ def get_broker_by_account(user_id: str, account: str) -> dict | None:
     return _row_to_broker(row) if row else None
 
 
+def _is_placeholder_broker_name(name: str, account: str) -> bool:
+    """券商名是否是「占位名」——早期没带 broker_name 时按账号自动落的名字。
+
+    页面把这类名字显示成「未标注券商」：空、等于资金账号、或就是一串数字账号。
+    """
+    n = (name or "").strip()
+    a = (account or "").strip()
+    if not n:
+        return True
+    if a and n == a:
+        return True
+    return bool(re.fullmatch(r"\d{6,}", n))
+
+
 def resolve_or_create_broker_for_upload(
     user_id: str,
     account: str,
@@ -401,7 +416,11 @@ def resolve_or_create_broker_for_upload(
         # 可选回写 name / remark（仅当调用方提供且当前为空/不同）
         upd_name = None
         upd_remark = None
-        if name and name.strip() and not existing["name"]:
+        # 2026-11-16：早期上传没带 broker_name，券商名被自动落成「资金账号本身」，
+        # 之后即使客户端补上真名也因 existing["name"] 非空而永不回写，
+        # 页面只能显示「未标注券商」。这里把「空 / 等于账号 / 纯数字账号」视为占位名，
+        # 允许真实券商名覆盖，实现自愈。
+        if name and name.strip() and (not existing["name"] or _is_placeholder_broker_name(existing["name"], account)):
             upd_name = name.strip()
         if remark is not None and remark.strip() and not existing["remark"]:
             upd_remark = remark.strip()

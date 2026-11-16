@@ -558,17 +558,23 @@ def get_holding_history(user_id: str) -> list[dict]:
         return []
     _ensure_tables()
     db = get_biz_db()
+    broker_names = _broker_name_map(user_id)
     rows = db.fetchall(
         "SELECT id, code, name, type, broker, account, quantity, cost_price, "
         "manual_price, open_date, currency, created_at, updated_at, fair_value, "
-        "closed_at, realized_pnl, close_price "
+        "closed_at, realized_pnl, close_price, broker_account "
         "FROM biz_holdings WHERE fk_user = ? AND is_closed = 1 ORDER BY closed_at DESC",
         [user_id],
     )
-    return [
-        {
+    out = []
+    for r in rows:
+        br = r[4] or ""
+        acc = r[17] or ""
+        if _is_placeholder_broker(br, acc) and broker_names.get(acc):
+            br = broker_names[acc]
+        out.append({
             "id": r[0], "code": r[1], "name": r[2], "type": r[3],
-            "broker": r[4] or "", "account": r[5] or "", "quantity": float(r[6]), "cost_price": float(r[7]),
+            "broker": br, "account": r[5] or "", "quantity": float(r[6]), "cost_price": float(r[7]),
             "manual_price": None if r[8] is None else float(r[8]),
             "open_date": r[9], "currency": r[10] or "CNY",
             "created_at": r[11], "updated_at": r[12],
@@ -576,9 +582,8 @@ def get_holding_history(user_id: str) -> list[dict]:
             "closed_at": r[14],
             "realized_pnl": None if r[15] is None else float(r[15]),
             "close_price": None if r[16] is None else float(r[16]),
-        }
-        for r in rows
-    ]
+        })
+    return out
 
 
 # ============================================================
@@ -777,6 +782,42 @@ def _fetch_quotes(holdings: list[dict]) -> dict[str, dict]:
 # 盈亏计算与汇总
 # ============================================================
 
+def _is_placeholder_broker(name: str, account: str) -> bool:
+    """券商名是否是占位值（早期上传没带 broker_name 时按资金账号落的名字）。
+
+    空、等于资金账号、或就是一串数字账号 —— 这类名字页面会显示成「未标注券商」。
+    """
+    n = (name or "").strip()
+    a = (account or "").strip()
+    if not n:
+        return True
+    if a and n == a:
+        return True
+    return n.isdigit() and len(n) >= 6
+
+
+def _broker_name_map(user_id: str) -> dict[str, str]:
+    """资金账号 → 券商名（来自终端管理里的券商档案），用于修正历史占位名。"""
+    if USE_MOCK_DATA:
+        return {}
+    try:
+        db = get_biz_db()
+        rows = db.fetchall(
+            "SELECT b.account, b.name FROM biz_brokers b "
+            "JOIN biz_terminals t ON b.fk_terminal = t.id WHERE t.fk_user = ?",
+            [user_id],
+        )
+    except Exception:
+        return {}
+    out: dict[str, str] = {}
+    for acc, name in rows:
+        a = str(acc or "").strip()
+        n = str(name or "").strip()
+        if a and n and not _is_placeholder_broker(n, a):
+            out[a] = n
+    return out
+
+
 def build_holdings_view(
     user_id: str,
     type_filter: str | None = None,
@@ -787,6 +828,7 @@ def build_holdings_view(
 ) -> dict:
     holdings = _load_holdings(user_id)
     quotes = {} if USE_MOCK_DATA else _fetch_quotes(holdings)
+    broker_names = _broker_name_map(user_id)
 
     items: list[dict] = []
     total_mv = total_cost = total_pnl = 0.0
@@ -902,6 +944,12 @@ def build_holdings_view(
 
         items.append({
             **h,
+            # 历史行可能存的是「券商名 = 资金账号」的占位值，按券商档案补全真实名称
+            "broker": (
+                broker_names.get(h.get("broker_account") or "")
+                if _is_placeholder_broker(h.get("broker") or "", h.get("broker_account") or "")
+                else (h.get("broker") or "")
+            ) or (h.get("broker") or ""),
             "type_label": type_label(h["type"]),
             "broker_account": h.get("broker_account") or "",
             "price": price,
