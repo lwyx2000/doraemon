@@ -636,6 +636,9 @@ const columns = computed(() => {
   return valuationColumns
 })
 
+// 列标题固定不换行：表格总宽按列数展开，超出容器时由 n-data-table 自身出横向滚动条
+const tableScrollX = computed(() => Math.max(1400, columns.value.length * 112))
+
 // 策略说明
 const strategyNotes: Record<string, { title: string; desc: string }> = {
   arbitrage: {
@@ -954,6 +957,7 @@ function exportEtf() {
         <n-data-table
           :columns="columns"
           :data="displayEtfs"
+          :scroll-x="tableScrollX"
           :row-key="(row: EtfFund) => row.code"
           :bordered="false"
           :single-line="false"
@@ -1336,6 +1340,13 @@ function exportEtf() {
   font-size: 13px;
   line-height: 1.6;
   color: var(--text-secondary);
+}
+
+/* 表格列标题/单元格不换行：列多时靠 scroll-x 横向滚动，不再把标题挤成两行 */
+:deep(.n-data-table-th),
+:deep(.n-data-table-th__title),
+:deep(.n-data-table-td) {
+  white-space: nowrap;
 }
 
 /* 表格底部信息 */

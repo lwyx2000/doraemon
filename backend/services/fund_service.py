@@ -444,6 +444,59 @@ def _merge_supplement_funds(funds: list[dict], fund_subtype: str) -> None:
         print(f"[Fund Service] 补充池并入 {added} 只（subtype={fund_subtype}）")
 
 
+def _attach_etf_subscription_and_fee(funds: list[dict]) -> None:
+    """给 ``/funds?type=etf`` 补上 ETF 申赎/份额规模/费率字段。
+
+    ETF-funds 页面实际走 ``/api/v1/funds?type=etf``，而不是 ``/api/v1/etf/``，
+    因此原来页面里的 8 个申赎/费率列永远取不到值。这里复用 ETF 专用服务，
+    保持两套接口对同一只 ETF 的展示口径一致。
+
+    注意：``attach_subscription`` 会顺带把 ``nav_date`` 覆盖成快照 trade_date，
+    这里显式保留 fund_rank 提供的较新净值日期，避免修空列反而让净值回退。
+    """
+    if not funds:
+        return
+
+    from services.etf_subscription_service import attach_subscription
+    from services.fund_fee_service import get_fee_map, start_fill
+
+    codes = [str(f.get("code")) for f in funds if f.get("code")]
+    if not codes:
+        return
+
+    original_nav_dates = {
+        str(f.get("code")): f.get("nav_date")
+        for f in funds
+        if f.get("code") and f.get("nav_date")
+    }
+    try:
+        attach_subscription(funds)
+    except Exception as e:
+        print(f"[Fund Service] ETF 申赎快照附加失败: {e}")
+    for f in funds:
+        nav_date = original_nav_dates.get(str(f.get("code")))
+        if nav_date:
+            f["nav_date"] = nav_date
+
+    try:
+        fee_map = get_fee_map(codes)
+        for f in funds:
+            fee = fee_map.get(str(f.get("code")))
+            if not fee:
+                continue
+            f["mgmt_fee"] = fee.get("mgmt_fee")
+            f["custody_fee"] = fee.get("custody_fee")
+            f["subscribe_fee"] = fee.get("subscribe_fee")
+            f["redemption_fee"] = fee.get("redemption_fee")
+    except Exception as e:
+        print(f"[Fund Service] ETF 费率附加失败: {e}")
+
+    try:
+        start_fill(codes, auto=True)
+    except Exception as e:
+        print(f"[Fund Service] ETF 费率补全触发失败: {e}")
+
+
 def get_funds_from_api(fund_subtype: str = "etf") -> list[dict]:
     """从真实 API 获取基金排行数据。
 
@@ -533,6 +586,8 @@ def get_funds_from_api(fund_subtype: str = "etf") -> list[dict]:
         _attach_index_valuation(funds)
     if fund_subtype == "etf":
         _attach_kline_metrics(funds)
+        # ETF-funds 页面走的 /funds?type=etf 需要申赎/份额/费率列；保持与 /etf/ 同口径
+        _attach_etf_subscription_and_fee(funds)
     # 跨境 LOF/QDII 篮子自算估值（est_nav/est_premium_pct，参考 lofarb；缺数据不写）
     if fund_subtype in ("etf", "lof", "all"):
         attach_estimated_valuations(funds)
