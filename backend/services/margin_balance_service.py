@@ -261,6 +261,10 @@ def _build_full() -> tuple[dict[str, dict[str, float]] | None, str | None]:
     totals = _fetch_eastmoney_total(tail_start, tail_end.isoformat()) if tail_dates else {}
     if not totals and tail_dates:
         notes.append("两融总额源失败")
+    elif totals:
+        # 当日尚未发布时东财没有该日期，不算失败，避免前端误报缺口
+        published_last = max(totals)
+        tail_dates = [d for d in tail_dates if d <= published_last]
 
     failed = 0
     for d in tail_dates:
