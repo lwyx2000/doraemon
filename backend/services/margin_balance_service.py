@@ -15,9 +15,13 @@
    - 单次全史请求最多返回 2000 行，但指定单日/短区间可精确补数。
    - 用于覆盖金十源滞后的最新交易日；字段「融资余额」单位为**元**。
 
-3. ``stock_margin_szse(date)``（深交所官方汇总）
-   - 只能按单日查，字段「融资余额」单位已经是**亿元**。
-   - 用于补齐金十源之后的尾部交易日；当日未发布时跳过，不伪造。
+3. 尾部深市：东方财富两融账户总额 − 上交所官方 − 北交所官方
+   - 东财 ``RPTA_WEB_MARGIN_DAILYTRADE`` 给沪深合计（亿元），一次可取短窗口；
+     北交所 ``stock_margin_bse`` 字段单位万元，换算成亿元。
+   - 2026-11-05 对拍：22785.14 − 11807.98 − 75.45 = 10901.71 亿，
+     官方深交所 10901.80 亿，误差 0.09 亿。
+   - ⚠️ 深交所单日接口 ``stock_margin_szse`` 连续请求会被远端断连反爬，
+     只用于离线补齐固化缺口，不在运行时反复打。
 
 缓存：
    - 30 分钟进程内缓存，缓存完整沪深 map，按需切片，避免 Dashboard 反复打网关。
@@ -43,7 +47,7 @@ _LOCK = threading.Lock()
 _BUILD_LOCK = threading.Lock()
 _GAP: dict[str, dict[str, float]] | None = None
 
-_SOURCE = "AkShare macro_* + stock_margin_sse/szse（沪深合计/分市，亿元）"
+_SOURCE = "AkShare macro_* + stock_margin_sse/bse + 东财两融总额（沪深合计/分市，亿元）"
 
 
 def _meta(is_mock: bool, data_source: str, note: str | None = None) -> dict[str, Any]:
@@ -137,17 +141,78 @@ def _fetch_sse_range(start: str, end: str) -> dict[str, float]:
     return out
 
 
-def _fetch_szse_day(day: str) -> float | None:
-    """深交所官方单日汇总；字段单位已经是亿元。"""
+def _fetch_eastmoney_total(start: str, end: str) -> dict[str, float]:
+    """东方财富两融账户统计的沪深合计融资余额（单位亿元），一次取回短窗口。"""
+    from services.akshare_client import get_session
+
+    try:
+        resp = get_session().get(
+            "https://datacenter-web.eastmoney.com/api/data/v1/get",
+            params={
+                "reportName": "RPTA_WEB_MARGIN_DAILYTRADE",
+                "columns": "ALL",
+                "pageNumber": "1",
+                "pageSize": "200",
+                "sortColumns": "STATISTICS_DATE",
+                "sortTypes": "-1",
+                "p": "1",
+                "pageNo": "1",
+                "pageNum": "1",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        rows = (resp.json().get("result") or {}).get("data") or []
+    except Exception as e:
+        print(f"[Margin Balance] 东方财富两融总额获取失败: {e}")
+        return {}
+
+    out: dict[str, float] = {}
+    for row in rows:
+        d = _norm_date(row.get("STATISTICS_DATE"))
+        v = _positive_float(row.get("FIN_BALANCE"))  # 东财字段单位：亿元
+        if d and v is not None and start <= d <= end:
+            out[d] = round(v, 2)
+    return out
+
+
+def _fetch_bse(day: str) -> float | None:
+    """北交所融资余额（AkShare stock_margin_bse，字段单位万元 → 亿元）。"""
     from services.market_service import _akshare_request
 
     rows = _akshare_request(
-        "stock_margin_szse", {"date": day.replace("-", "")}, retries=1, timeout=12
+        "stock_margin_bse", {"date": day.replace("-", "")}, retries=1, timeout=15
     )
     if isinstance(rows, list) and rows and isinstance(rows[0], dict):
         v = _positive_float(rows[0].get("融资余额"))
-        return round(v, 2) if v is not None else None
+        return round(v / 1e4, 2) if v is not None else None
     return None
+
+
+def _fetch_trade_dates(start: str, end: str) -> list[str]:
+    """只补交易日，避免把周末/节假日请求打到深交所（会招致反爬）。"""
+    from services.akshare_client import get_session
+    from services.market_service import AKSHARE_API_BASE
+
+    try:
+        resp = get_session().get(
+            f"{AKSHARE_API_BASE}/api/quote/trade_calendar",
+            params={"start": start, "end": end},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        dates = (resp.json().get("data") or {}).get("trading_dates") or []
+        return [d for d in dates if start <= d <= end]
+    except Exception as e:
+        print(f"[Margin Balance] 交易日历获取失败，退化为工作日逐日尝试: {e}")
+        cursor = date.fromisoformat(start)
+        last = date.fromisoformat(end)
+        out: list[str] = []
+        while cursor <= last:
+            if cursor.weekday() < 5:
+                out.append(cursor.isoformat())
+            cursor += timedelta(days=1)
+        return out
 
 
 def _build_full() -> tuple[dict[str, dict[str, float]] | None, str | None]:
@@ -187,26 +252,41 @@ def _build_full() -> tuple[dict[str, dict[str, float]] | None, str | None]:
         print(f"[Margin Balance] 沪市近期补数失败: {e}")
         notes.append("沪市近期补数失败")
 
-    # 深市：官方接口只有单日，逐日补；未发布的当天会失败，跳过即可
-    cursor = date.fromisoformat(tail_start) + timedelta(days=1)
-    ok = 0
+    # 深市尾部：东财全市场总额 − 沪市官方 − 北交所官方。
+    # 不用深交所单日接口狂打：2026-11-20 实测连续请求会被远端断连反爬。
+    # 2026-11-05 对拍：22785.14 − 11807.98 − 75.45 = 10901.71 亿，
+    # 官方深交所为 10901.80 亿，误差 0.09 亿（千万级，可接受）。
+    tail_from = (date.fromisoformat(tail_start) + timedelta(days=1)).isoformat()
+    tail_dates = [d for d in _fetch_trade_dates(tail_from, tail_end.isoformat()) if d > (sz_last or "")]
+    totals = _fetch_eastmoney_total(tail_start, tail_end.isoformat()) if tail_dates else {}
+    if not totals and tail_dates:
+        notes.append("两融总额源失败")
+
     failed = 0
-    while cursor <= tail_end:
-        d = cursor.isoformat()
-        if d > (sz_last or ""):
-            try:
-                bal = _fetch_szse_day(d)
-            except Exception as e:
-                print(f"[Margin Balance] 深市 {d} 补数异常: {e}")
-                bal = None
-            if bal is None:
-                failed += 1
-            else:
-                merged_sz[d] = bal
-                ok += 1
-        cursor += timedelta(days=1)
+    for d in tail_dates:
+        total = totals.get(d)
+        sh_val = merged_sh.get(d)
+        if total is None or sh_val is None:
+            failed += 1
+            continue
+        try:
+            bse = _fetch_bse(d)
+        except Exception as e:
+            print(f"[Margin Balance] 北交所 {d} 补数异常: {e}")
+            bse = None
+        if bse is None:
+            failed += 1
+            if failed >= 3:
+                break
+            continue
+        sz_val = round(total - sh_val - bse, 2)
+        if sz_val <= 0 or sz_val < sh_val * 0.05:  # 明显不合理就不写入
+            print(f"[Margin Balance] 深市 {d} 推导值异常: {sz_val}")
+            failed += 1
+            continue
+        merged_sz[d] = sz_val
     if failed:
-        notes.append(f"深市近期 {failed} 日未发布")
+        notes.append(f"深市近期 {failed} 个交易日未取到")
 
     note = "；".join(notes) if notes else None
     return {"sh": merged_sh, "sz": merged_sz}, note
