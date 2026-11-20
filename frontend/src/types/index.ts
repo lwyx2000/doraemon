@@ -1314,10 +1314,17 @@ export interface DTStock {
 // 贪婪恐惧指数（Fear & Greed Index）：6 指标 min-max 加权情绪温度计
 // 计分：上涨占比 0.25 + 涨停(剔ST) 0.20 + 指数距52周高点 0.15 + 量能比 0.20
 //       + 融资余额20日变化 0.10 + (100 − 波动率得分) 0.10；缺失分项按权重归一化
-// 融资盘余额曲线点（沪市融资余额，单位亿元，日期升序）
+// 融资盘余额曲线点（单位亿元，日期升序；单侧缺数用 null，绝不补造）
 export interface MarginBalancePoint {
   date: string
-  balance: number
+  balance: number | null
+}
+
+// 融资盘余额接口：沪深合计 + 沪市 + 深市三序列（同一日期窗口）
+export interface MarginBalanceData {
+  total: MarginBalancePoint[]
+  sh: MarginBalancePoint[]
+  sz: MarginBalancePoint[]
 }
 
 export interface FearGreedPoint {

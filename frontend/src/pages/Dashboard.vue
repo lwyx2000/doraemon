@@ -11,7 +11,7 @@ import type {
   IndexValuation,
   MarketOverview as MarketOverviewData, // 与组件 MarketOverview.vue 重名，需别名
   ZTStats,
-  MarginBalancePoint,
+  MarginBalanceData,
   SectionSourceMeta,
   SwSector,
   FearGreedLatest,
@@ -41,7 +41,7 @@ const indicators = ref<MacroIndicators | null>(null)
 const indices = ref<IndexValuation[]>([])
 const marketOverview = ref<MarketOverviewData | null>(null)
 const ztStats = ref<ZTStats | null>(null)
-const marginBalance = ref<MarginBalancePoint[]>([])
+const marginBalance = ref<MarginBalanceData>({ total: [], sh: [], sz: [] })
 const swSectors = ref<SwSector[]>([])
 const fearGreedLatest = ref<FearGreedLatest | null>(null)
 const fearGreedHistory = ref<FearGreedPoint[]>([])
@@ -97,7 +97,7 @@ const hasData = computed(() =>
   indices.value.length > 0 ||
   !!marketOverview.value ||
   !!ztStats.value ||
-  marginBalance.value.length > 0 ||
+  marginBalance.value.total.length > 0 ||
   swSectors.value.length > 0 ||
   !!fearGreedLatest.value
 )
@@ -163,7 +163,7 @@ async function fetchMacroData(force = false) {
     // 仅刷新按钮 force 穿透，SWR 过期有旧值时立即返旧值后台限流刷新
     reg('overview', () => api.getMarketOverview(force), (d) => { marketOverview.value = d }),
     reg('ztStats', () => api.getMarketZTStats(), (d) => { ztStats.value = d }),
-    reg('marginBalance', () => api.getMarginBalance(120), (d) => { marginBalance.value = d }),
+    reg('marginBalance', () => api.getMarginBalance(2500), (d) => { marginBalance.value = d }),
     reg('swSectors', () => api.getSwSectors(), (d) => { swSectors.value = d }),
     reg('fearGreed', async () => {
       const [latestRes, historyRes] = await Promise.all([
@@ -475,9 +475,9 @@ function handleCheckedChange(keys: (string | number)[]) {
     <Transition name="fade" mode="out-in">
       <SectionSkeleton v-if="sectionLoading.marginBalance" key="skeleton" variant="card" :rows="5" />
       <MarginBalanceChart
-        v-else-if="marginBalance.length > 0"
+        v-else-if="marginBalance.total.length > 0"
         key="content"
-        :points="marginBalance"
+        :data="marginBalance"
         :note="sectionSources.marginBalance?.note"
       />
       <SectionFallback v-else key="fallback" :error="sectionError.marginBalance ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.marginBalance?.isMock && sectionSources.marginBalance?.gatewayEmpty" :min-height="180" @retry="retrySection('marginBalance')" />
