@@ -81,6 +81,21 @@ def fund_ranking() -> ApiResponse[list[FundRankingItem]]:
     return ApiResponse(data=data, meta=meta)
 
 
+@router.get("/margin-balance", response_model=ApiResponse[list[dict]])
+def margin_balance(
+    days: int = Query(default=120, ge=5, le=500, description="最近多少个交易日的融资余额"),
+) -> ApiResponse[list[dict]]:
+    """融资盘余额曲线（沪市，单位亿元，升序）。
+
+    数据源 AkShare stock_margin_sse，显式传日期窗口；30 分钟进程内缓存，
+    网关失败但缓存有值时返回陈旧值并在 meta.note 标明（绝不静默造假）。
+    """
+    from services.margin_balance_service import get_margin_balance
+
+    data, meta = get_margin_balance(days=days)
+    return ApiResponse(data=data, meta=meta)
+
+
 @router.get("/indices", response_model=ApiResponse[list[IndexValuation]])
 def indices(
     category: str | None = Query(default=None),

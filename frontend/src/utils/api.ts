@@ -227,6 +227,10 @@ export const api = {
   getMarketZTStats: () =>
     requestWithMeta<ZTStats>('/api/v1/market/zt-stats'),
 
+  // 融资盘余额曲线（沪市，单位亿元，升序；后端 30 分钟缓存）
+  getMarginBalance: (days = 120) =>
+    requestWithMeta<MarginBalancePoint[]>('/api/v1/market/margin-balance', { days }),
+
   // 基金涨跌排行
   getMarketFundRanking: () =>
     requestWithMeta<FundRankingItem[]>('/api/v1/market/fund-ranking'),
@@ -1209,6 +1213,7 @@ import type {
   BoardSector,
   FundFlows,
   ZTStats,
+  MarginBalancePoint,
   FearGreedPoint,
   FearGreedLatest,
   FearGreedStatus,

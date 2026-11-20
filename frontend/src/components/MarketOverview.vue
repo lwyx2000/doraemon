@@ -2,14 +2,17 @@
 import { ref, computed } from 'vue'
 import { NButton } from 'naive-ui'
 import { ChevronDown, ChevronUp } from '@vicons/ionicons5'
-import type { MarketOverview } from '../types'
+import type { MarketOverview, ZTStats } from '../types'
 import IndexKlineDialog from './IndexKlineDialog.vue'
 
 interface Props {
   overview: MarketOverview
+  ztStats?: ZTStats | null
 }
 
-const props = defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), {
+  ztStats: null,
+})
 
 const isExpanded = ref(false)
 
@@ -122,6 +125,11 @@ const hasMore = computed(() => {
       <div class="volume-item">
         <span class="label">今日实时成交额</span>
         <span class="value">{{ overview.totalVolume }}亿</span>
+      </div>
+      <div class="volume-item limit-stats">
+        <span class="label">涨跌停</span>
+        <span class="value zt-value">涨停 {{ ztStats?.ztCount ?? '—' }}</span>
+        <span class="value dt-value">跌停 {{ ztStats?.dtCount ?? '—' }}</span>
       </div>
       <div class="volume-prev">
         <span class="label">上一日成交额</span>
@@ -360,6 +368,19 @@ const hasMore = computed(() => {
   font-family: 'JetBrains Mono', monospace;
   font-size: 14px;
   font-weight: 600;
+}
+
+/* 涨跌停统计内联在成交额后：涨停红、跌停绿（A股惯例） */
+.limit-stats .value {
+  font-size: 14px;
+}
+
+.limit-stats .zt-value {
+  color: var(--color-danger);
+}
+
+.limit-stats .dt-value {
+  color: var(--color-success);
 }
 
 @media (max-width: 768px) {

@@ -10,10 +10,8 @@ import type {
   MacroIndicators,
   IndexValuation,
   MarketOverview as MarketOverviewData, // 与组件 MarketOverview.vue 重名，需别名
-  BoardSector,
-  FundFlows,
   ZTStats,
-  FundRankingItem,
+  MarginBalancePoint,
   SectionSourceMeta,
   SwSector,
   FearGreedLatest,
@@ -27,12 +25,9 @@ import SectionFallback from '../components/SectionFallback.vue'
 import FieldHelp from '../components/FieldHelp.vue'
 import GlossaryPanel from '../components/GlossaryPanel.vue'
 import MarketOverview from '../components/MarketOverview.vue'
-import BoardSectorPanel from '../components/BoardSectorPanel.vue'
 import SwHeatmap from '../components/SwHeatmap.vue'
 import SwRankTrend from '../components/SwRankTrend.vue'
-import FundFlowPanel from '../components/FundFlowPanel.vue'
-import ZTStatsPanel from '../components/ZTStatsPanel.vue'
-import FundRankingPanel from '../components/FundRankingPanel.vue'
+import MarginBalanceChart from '../components/MarginBalanceChart.vue'
 import FearGreedPanel from '../components/FearGreedPanel.vue'
 import AiInterpretModal from '../components/AiInterpretModal.vue'
 import { useFieldHelp } from '../composables/useFieldHelp'
@@ -45,10 +40,8 @@ const valuationCollapsed = ref(true)
 const indicators = ref<MacroIndicators | null>(null)
 const indices = ref<IndexValuation[]>([])
 const marketOverview = ref<MarketOverviewData | null>(null)
-const boardSectors = ref<BoardSector[]>([])
-const fundFlows = ref<FundFlows | null>(null)
 const ztStats = ref<ZTStats | null>(null)
-const fundRanking = ref<FundRankingItem[]>([])
+const marginBalance = ref<MarginBalancePoint[]>([])
 const swSectors = ref<SwSector[]>([])
 const fearGreedLatest = ref<FearGreedLatest | null>(null)
 const fearGreedHistory = ref<FearGreedPoint[]>([])
@@ -59,18 +52,16 @@ const showAiInterpret = ref(false)
 // 各分区数据来源标记（真实/模拟）
 const sectionSources = ref<Record<string, SectionSourceMeta>>({})
 
-type SectionKey = 'indicators' | 'indices' | 'overview' | 'boardSectors' | 'fundFlows' | 'ztStats' | 'fundRanking' | 'swSectors' | 'fearGreed'
-const TOTAL_SECTIONS = 9
+type SectionKey = 'indicators' | 'indices' | 'overview' | 'ztStats' | 'marginBalance' | 'swSectors' | 'fearGreed'
+const TOTAL_SECTIONS = 7
 
 // 各分区加载状态：骨架屏按分区独立显示，任一接口完成即渲染对应模块
 const sectionLoading = ref<Record<SectionKey, boolean>>({
   indicators: true,
   indices: true,
   overview: true,
-  boardSectors: true,
-  fundFlows: true,
   ztStats: true,
-  fundRanking: true,
+  marginBalance: true,
   swSectors: true,
   fearGreed: true,
 })
@@ -84,10 +75,8 @@ const sectionError = ref<Record<SectionKey, boolean>>({
   indicators: false,
   indices: false,
   overview: false,
-  boardSectors: false,
-  fundFlows: false,
   ztStats: false,
-  fundRanking: false,
+  marginBalance: false,
   swSectors: false,
   fearGreed: false,
 })
@@ -107,10 +96,8 @@ const hasData = computed(() =>
   !!indicators.value ||
   indices.value.length > 0 ||
   !!marketOverview.value ||
-  boardSectors.value.length > 0 ||
-  !!fundFlows.value ||
   !!ztStats.value ||
-  fundRanking.value.length > 0 ||
+  marginBalance.value.length > 0 ||
   swSectors.value.length > 0 ||
   !!fearGreedLatest.value
 )
@@ -175,10 +162,8 @@ async function fetchMacroData(force = false) {
     // overview 带 15s 短缓存 + SWR 后台刷新（2026-10-19 重定，原 600s）；
     // 仅刷新按钮 force 穿透，SWR 过期有旧值时立即返旧值后台限流刷新
     reg('overview', () => api.getMarketOverview(force), (d) => { marketOverview.value = d }),
-    reg('boardSectors', () => api.getMarketBoardSectors(), (d) => { boardSectors.value = d }),
-    reg('fundFlows', () => api.getMarketFundFlows(), (d) => { fundFlows.value = d }),
     reg('ztStats', () => api.getMarketZTStats(), (d) => { ztStats.value = d }),
-    reg('fundRanking', () => api.getMarketFundRanking(), (d) => { fundRanking.value = d }),
+    reg('marginBalance', () => api.getMarginBalance(120), (d) => { marginBalance.value = d }),
     reg('swSectors', () => api.getSwSectors(), (d) => { swSectors.value = d }),
     reg('fearGreed', async () => {
       const [latestRes, historyRes] = await Promise.all([
@@ -452,7 +437,7 @@ function handleCheckedChange(keys: (string | number)[]) {
     </template>
 
     <!-- Page Header -->
-    <PageHeader title="A股大盘行情看板" subtitle="实时行情、板块涨幅、资金流向、龙虎榜" helpKey="dashboard" :updated-at="pageUpdatedAt">
+    <PageHeader title="A股大盘行情看板" subtitle="实时行情、融资余额、涨跌停统计、行业热力图" helpKey="dashboard" :updated-at="pageUpdatedAt">
       <template #actions>
         <n-button size="small" @click="showAiInterpret = true">
           <template #icon><n-icon :component="SparklesOutline" /></template>
@@ -470,7 +455,7 @@ function handleCheckedChange(keys: (string | number)[]) {
     <!-- 市场概况（骨架屏 ↔ 内容平滑过渡） -->
     <Transition name="fade" mode="out-in">
       <SectionSkeleton v-if="sectionLoading.overview" key="skeleton" variant="overview" />
-      <MarketOverview v-else-if="marketOverview" key="content" :overview="marketOverview" />
+      <MarketOverview v-else-if="marketOverview" key="content" :overview="marketOverview" :zt-stats="ztStats" />
       <SectionFallback v-else key="fallback" :error="sectionError.overview ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.overview?.isMock && sectionSources.overview?.gatewayEmpty" :min-height="200" @retry="retrySection('overview')" />
     </Transition>
 
@@ -486,58 +471,17 @@ function handleCheckedChange(keys: (string | number)[]) {
       <SectionFallback v-else key="fallback" :error="sectionError.fearGreed ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.fearGreed?.isMock && sectionSources.fearGreed?.gatewayEmpty" :min-height="160" @retry="retrySection('fearGreed')" />
     </Transition>
 
-    <!-- 新布局：板块 + 资金 + 涨跌停 + 龙虎榜 -->
-    <div class="market-data-grid">
-      <!-- 板块涨幅 -->
-      <Transition name="fade" mode="out-in">
-        <SectionSkeleton v-if="sectionLoading.boardSectors" key="skeleton" variant="card" :rows="6" />
-        <BoardSectorPanel
-          v-else-if="boardSectors.length > 0"
-          key="content"
-          :sectors="boardSectors"
-          title="板块涨幅排行"
-          :max-items="6"
-        />
-        <SectionFallback v-else key="fallback" :error="sectionError.boardSectors ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.boardSectors?.isMock && sectionSources.boardSectors?.gatewayEmpty" :min-height="160" @retry="retrySection('boardSectors')" />
-      </Transition>
-
-      <!-- 资金流向 -->
-      <Transition name="fade" mode="out-in">
-        <SectionSkeleton v-if="sectionLoading.fundFlows" key="skeleton" variant="flow" />
-        <FundFlowPanel
-          v-else-if="fundFlows"
-          key="content"
-          :fund-flows="fundFlows"
-          title="资金流向"
-        />
-        <SectionFallback v-else key="fallback" :error="sectionError.fundFlows ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.fundFlows?.isMock && sectionSources.fundFlows?.gatewayEmpty" :min-height="160" @retry="retrySection('fundFlows')" />
-      </Transition>
-
-      <!-- 涨跌停统计 -->
-      <Transition name="fade" mode="out-in">
-        <SectionSkeleton v-if="sectionLoading.ztStats" key="skeleton" variant="card" :rows="4" />
-        <ZTStatsPanel
-          v-else-if="ztStats"
-          key="content"
-          :zt-stats="ztStats"
-          title="涨跌停统计"
-        />
-        <SectionFallback v-else key="fallback" :error="sectionError.ztStats ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.ztStats?.isMock && sectionSources.ztStats?.gatewayEmpty" :min-height="160" @retry="retrySection('ztStats')" />
-      </Transition>
-
-      <!-- 基金涨跌排行 -->
-      <Transition name="fade" mode="out-in">
-        <SectionSkeleton v-if="sectionLoading.fundRanking" key="skeleton" variant="card" :rows="6" />
-        <FundRankingPanel
-          v-else-if="fundRanking.length > 0"
-          key="content"
-          :funds="fundRanking"
-          title="基金涨跌排行"
-          :max-items="6"
-        />
-        <SectionFallback v-else key="fallback" :error="sectionError.fundRanking ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.fundRanking?.isMock && sectionSources.fundRanking?.gatewayEmpty" :min-height="160" @retry="retrySection('fundRanking')" />
-      </Transition>
-    </div>
+    <!-- 融资盘余额曲线（替换原板块/资金/涨跌停/基金四宫格） -->
+    <Transition name="fade" mode="out-in">
+      <SectionSkeleton v-if="sectionLoading.marginBalance" key="skeleton" variant="card" :rows="5" />
+      <MarginBalanceChart
+        v-else-if="marginBalance.length > 0"
+        key="content"
+        :points="marginBalance"
+        :note="sectionSources.marginBalance?.note"
+      />
+      <SectionFallback v-else key="fallback" :error="sectionError.marginBalance ? '加载失败，请点击重试' : null" :gateway-empty="!sectionSources.marginBalance?.isMock && sectionSources.marginBalance?.gatewayEmpty" :min-height="180" @retry="retrySection('marginBalance')" />
+    </Transition>
 
     <!-- 申万一级行业热力图 -->
     <Transition name="fade" mode="out-in">
@@ -804,21 +748,6 @@ function handleCheckedChange(keys: (string | number)[]) {
   opacity: 0.85;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-}
-
-/* 新布局：市场数据网格 */
-.market-data-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 14px;
-}
-
-@media (max-width: 1400px) {
-  .market-data-grid { grid-template-columns: repeat(2, 1fr); }
-}
-
-@media (max-width: 768px) {
-  .market-data-grid { grid-template-columns: 1fr; }
 }
 
 .config-tabs {
