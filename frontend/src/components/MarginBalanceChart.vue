@@ -3,6 +3,7 @@
  * 宏观看板嵌入式「融资盘余额」面板：沪深合计 / 沪市 / 深市三个 tab。
  * 数据源 /api/v1/market/margin-balance（金十全史 + 交易所官方尾部补齐，单位亿元）。
  * 合计 tab：上方合计曲线，下方堆叠柱状图区分沪市/深市余额贡献。
+ * 支持下方滑块拖拉选区间 / 滚轮缩放；汇总指标与 tooltip 均按当前选中区间取数。
  * 余额增加按 A 股习惯标红、减少标绿；后端 note 用于展示缓存/缺口提示。
  */
 import { computed, ref } from 'vue'
@@ -32,6 +33,7 @@ const tabs: Array<{ key: TabKey; label: string }> = [
 const TOTAL_COLOR = '#7c3aed'
 const SH_COLOR = '#2563eb'
 const SZ_COLOR = '#f59e0b'
+const CHART_HEIGHT = 340
 
 function isNum(v: number | null | undefined): v is number {
   return typeof v === 'number' && Number.isFinite(v)
@@ -41,24 +43,60 @@ function fmt(v: number | null | undefined, digits = 0): string {
   return isNum(v) ? v.toFixed(digits) : '—'
 }
 
-function lastValid(points: MarginBalancePoint[]): number | null {
-  for (let i = points.length - 1; i >= 0; i -= 1) {
-    if (isNum(points[i].balance)) return points[i].balance
-  }
-  return null
+function clampIdx(v: number, hi: number): number {
+  return Math.max(0, Math.min(hi, v))
 }
+
+// ---- 拖拉选区：dataZoom 比例窗口 → 数据索引 → 当前选中区间的点 ----
+// ECharts 对 category 轴按「索引百分比」缩放，起止百分比直接映射到索引。
+const zoomWindow = ref<{ start: number; end: number }>({ start: 0, end: 100 })
+
+function onDataZoom(e: any): void {
+  const ev = Array.isArray(e?.batch) && e.batch.length ? e.batch[0] : e
+  if (!ev) return
+  const start = isNum(ev.start) ? ev.start : zoomWindow.value.start
+  const end = isNum(ev.end) ? ev.end : zoomWindow.value.end
+  if (start !== zoomWindow.value.start || end !== zoomWindow.value.end) {
+    zoomWindow.value = { start, end }
+  }
+}
+
+function switchTab(key: TabKey): void {
+  if (key === activeTab.value) return
+  activeTab.value = key
+  // 切换 tab 会重建图表实例（见模板 :key），dataZoom 回到全区间，汇总同步重置
+  zoomWindow.value = { start: 0, end: 100 }
+}
+
+const series = computed<MarginBalancePoint[]>(() => props.data[activeTab.value] ?? [])
+
+const windowPoints = computed<MarginBalancePoint[]>(() => {
+  const pts = series.value
+  const n = pts.length
+  if (!n) return []
+  const s = clampIdx(Math.floor((zoomWindow.value.start / 100) * (n - 1)), n - 1)
+  const e = clampIdx(Math.ceil((zoomWindow.value.end / 100) * (n - 1)), n - 1)
+  return pts.slice(s, Math.max(s, e) + 1)
+})
 
 type ValidPoint = { date: string; balance: number }
 
-const series = computed<MarginBalancePoint[]>(() => props.data[activeTab.value] ?? [])
 const validPoints = computed<ValidPoint[]>(() =>
-  series.value.filter((p): p is ValidPoint => isNum(p.balance)),
+  windowPoints.value.filter((p): p is ValidPoint => isNum(p.balance)),
 )
 const latest = computed(() => validPoints.value[validPoints.value.length - 1] ?? null)
 const first = computed(() => validPoints.value[0] ?? null)
 
-const latestSh = computed(() => lastValid(props.data.sh ?? []))
-const latestSz = computed(() => lastValid(props.data.sz ?? []))
+// 按日期从完整序列取某市场余额（tooltip / 分市最新用；不受当前 tab 的 axis 收集范围影响）
+function valueOnDate(key: 'sh' | 'sz' | 'total', date: string): number | null {
+  const pts = props.data[key] ?? []
+  const hit = pts.find((p) => p.date === date)
+  return hit && isNum(hit.balance) ? hit.balance : null
+}
+
+const endWindowDate = computed(() => latest.value?.date ?? '')
+const latestSh = computed(() => (endWindowDate.value ? valueOnDate('sh', endWindowDate.value) : null))
+const latestSz = computed(() => (endWindowDate.value ? valueOnDate('sz', endWindowDate.value) : null))
 
 const changeAbs = computed(() => {
   if (!first.value || !latest.value) return null
@@ -88,18 +126,37 @@ const rangeText = computed(() => {
   return `${first.value.date} ~ ${latest.value.date}`
 })
 
-function tooltipValue(params: any[], name: string): number | null {
-  const hit = params.find((p) => p.seriesName === name)
-  return isNum(hit?.value) ? hit.value : null
+// 合计 tab 的 tooltip：按 hover 日期直接查三市数据，避免 axis trigger 只收集当前 grid 的 series
+function totalTooltip(params: any[]): string {
+  if (!params?.length) return ''
+  const date = String(params[0].axisValue ?? '')
+  return [
+    date,
+    `合计 <b>${fmt(valueOnDate('total', date), 2)}</b> 亿`,
+    `沪市 <b>${fmt(valueOnDate('sh', date), 2)}</b> 亿`,
+    `深市 <b>${fmt(valueOnDate('sz', date), 2)}</b> 亿`,
+  ].join('<br/>')
 }
+
+const sliderZoom = (axisIdx: number[]) => ({
+  type: 'slider',
+  xAxisIndex: axisIdx,
+  bottom: 6,
+  height: 18,
+  borderColor: 'rgba(128,128,128,0.35)',
+  fillerColor: 'rgba(124,58,237,0.12)',
+  handleStyle: { color: TOTAL_COLOR },
+  moveHandleSize: 4,
+  textStyle: { fontSize: 10 },
+})
 
 const totalOption = computed(() => {
   const dates = props.data.total.map((p) => p.date)
   return {
     animation: false,
     grid: [
-      { left: 58, right: 18, top: 30, height: '48%' },
-      { left: 58, right: 18, top: '70%', height: '18%' },
+      { left: 58, right: 18, top: 26, height: '46%' },
+      { left: 58, right: 18, top: '68%', height: '14%' },
     ],
     legend: {
       top: 0,
@@ -111,16 +168,7 @@ const totalOption = computed(() => {
     tooltip: {
       trigger: 'axis',
       axisPointer: { type: 'cross', link: [{ xAxisIndex: 'all' }] },
-      formatter: (params: any[]) => {
-        if (!params?.length) return ''
-        const date = String(params[0].axisValue ?? '')
-        return [
-          date,
-          `合计 <b>${fmt(tooltipValue(params, '合计'), 2)}</b> 亿`,
-          `沪市 <b>${fmt(tooltipValue(params, '沪市'), 2)}</b> 亿`,
-          `深市 <b>${fmt(tooltipValue(params, '深市'), 2)}</b> 亿`,
-        ].join('<br/>')
-      },
+      formatter: totalTooltip,
     },
     xAxis: [
       {
@@ -167,7 +215,8 @@ const totalOption = computed(() => {
       },
     ],
     dataZoom: [
-      { type: 'inside', xAxisIndex: [0, 1], start: 0, end: 100, zoomOnMouseWheel: true },
+      { type: 'inside', xAxisIndex: [0, 1], zoomOnMouseWheel: true, moveOnMouseMove: true },
+      sliderZoom([0, 1]),
     ],
     series: [
       {
@@ -222,12 +271,12 @@ const singleOption = computed(() => {
   const points = props.data[key] ?? []
   return {
     animation: false,
-    grid: { left: 58, right: 18, top: 18, bottom: 30 },
+    grid: { left: 58, right: 18, top: 26, bottom: 62 },
     tooltip: {
       trigger: 'axis',
       formatter: (params: any[]) =>
         params.length
-          ? `${params[0].axisValue}<br/>${name}融资余额 <b>${fmt(params[0].value, 2)} 亿</b>`
+          ? `${params[0].axisValue}<br/>${name}融资余额 <b>${fmt(valueOnDate(key, String(params[0].axisValue)), 2)} 亿</b>`
           : '',
     },
     xAxis: {
@@ -251,7 +300,10 @@ const singleOption = computed(() => {
       axisLabel: { color: 'inherit', fontSize: 10, formatter: (v: number) => v.toFixed(0) },
       splitLine: { lineStyle: { type: 'dashed', opacity: 0.25 } },
     },
-    dataZoom: [{ type: 'inside', start: 0, end: 100, zoomOnMouseWheel: true }],
+    dataZoom: [
+      { type: 'inside', zoomOnMouseWheel: true, moveOnMouseMove: true },
+      sliderZoom([0]),
+    ],
     series: [
       {
         name,
@@ -277,7 +329,6 @@ const singleOption = computed(() => {
 })
 
 const chartOption = computed(() => (activeTab.value === 'total' ? totalOption.value : singleOption.value))
-const chartHeight = computed(() => (activeTab.value === 'total' ? 320 : 220))
 </script>
 
 <template>
@@ -299,7 +350,7 @@ const chartHeight = computed(() => (activeTab.value === 'total' ? 320 : 220))
         class="mb-tab"
         :class="{ active: activeTab === tab.key }"
         :aria-selected="activeTab === tab.key"
-        @click="activeTab = tab.key"
+        @click="switchTab(tab.key)"
       >
         {{ tab.label }}
       </button>
@@ -329,11 +380,17 @@ const chartHeight = computed(() => (activeTab.value === 'total' ? 320 : 220))
       </div>
     </div>
 
-    <BaseChart v-if="series.length > 1" :option="chartOption" :height="chartHeight" />
+    <BaseChart
+      v-if="series.length > 1"
+      :key="activeTab"
+      :option="chartOption"
+      :height="CHART_HEIGHT"
+      @datazoom="onDataZoom"
+    />
     <div v-else class="mb-empty">暂无融资余额历史数据</div>
 
     <div v-if="note" class="mb-note">{{ note }}</div>
-    <div v-else-if="activeTab === 'total'" class="mb-hint">下方堆叠柱区分沪市 / 深市余额贡献，滚轮可缩放时间轴</div>
+    <div v-else class="mb-hint">拖动下方滑块选择区间，滚轮也可缩放；上方指标随选中区间联动</div>
   </div>
 </template>
 

@@ -22,6 +22,8 @@ const props = defineProps({
   },
 })
 
+const emit = defineEmits<{ datazoom: [e: unknown] }>()
+
 const { isDark } = useDarkMode()
 
 // Inject theme-aware text color into every option
@@ -57,6 +59,7 @@ const chartHeight = computed(() => `${props.height}px`)
       :autoresize="autoresize"
       :loading="false"
       class="chart-canvas"
+      @datazoom="(e: unknown) => emit('datazoom', e)"
     />
   </div>
 </template>
